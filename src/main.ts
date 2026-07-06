@@ -86,6 +86,11 @@ import {
 } from "./brushes/groups";
 import { DEFAULT_BRUSH_SETTINGS, normalizeBrushSettings } from "./core/brushSettings";
 import {
+  appendStrokeSmoothingSample, createStrokeSmoothingSession,
+  finishStrokeSmoothingSession, normalizeStrokeSmoothingSettings,
+  type StrokeSmoothingSample, type StrokeSmoothingSession,
+} from "./core/strokeSmoothing";
+import {
   applyBrushPreset, brushPresetFromState, deleteBrushPreset, upsertBrushPreset,
 } from "./core/brushPresets";
 import {
@@ -212,6 +217,39 @@ function updateBrushSettingsControls() {
   flowVal.textContent = `${Math.round(currentBrushSettings.flow * 100)}%`;
   pressureSize.checked = currentBrushSettings.pressureSize;
   pressureFlow.checked = currentBrushSettings.pressureFlow;
+}
+
+function updateSmoothingControls() {
+  project.drawingSettings.smoothing = normalizeStrokeSmoothingSettings(project.drawingSettings.smoothing);
+  const smoothing = project.drawingSettings.smoothing;
+  const mode = $("stroke-smoothing-mode") as HTMLSelectElement;
+  const distance = $("stroke-smoothing-distance") as HTMLInputElement;
+  const distanceVal = $("stroke-smoothing-distance-val");
+  const delay = $("stroke-smoothing-delay") as HTMLInputElement;
+  const delayVal = $("stroke-smoothing-delay-val");
+  const finish = $("stroke-smoothing-finish") as HTMLInputElement;
+  const pressure = $("stroke-smoothing-pressure") as HTMLInputElement;
+  const delayRow = $("stroke-smoothing-delay-row") as HTMLElement;
+  mode.value = smoothing.mode;
+  distance.value = String(smoothing.distance);
+  distanceVal.textContent = `${Math.round(smoothing.distance)}px`;
+  delay.value = String(smoothing.delayDistance);
+  delayVal.textContent = `${Math.round(smoothing.delayDistance)}px`;
+  finish.checked = smoothing.finishStabilizedStroke;
+  pressure.checked = smoothing.smoothPressure;
+  delayRow.hidden = smoothing.mode !== "stabilizer";
+  delay.hidden = smoothing.mode !== "stabilizer";
+  delay.disabled = smoothing.mode !== "stabilizer";
+  finish.disabled = smoothing.mode !== "stabilizer";
+}
+
+function setStrokeSmoothingSettings(update: Partial<Project["drawingSettings"]["smoothing"]>) {
+  project.drawingSettings.smoothing = normalizeStrokeSmoothingSettings({
+    ...project.drawingSettings.smoothing,
+    ...update,
+  });
+  markDirty();
+  updateSmoothingControls();
 }
 
 function updateBrushSizeControl() {
@@ -841,6 +879,7 @@ function clearLiveStrokeState() {
   liveStrokeLayerIndex = 0;
   liveStrokeStrokeIndex = 0;
   liveStrokeSubPanelId = null;
+  liveSmoothingSession = null;
   perspectiveSnapLock = null;
 }
 
@@ -883,6 +922,7 @@ let liveStrokeStrokeIndex = 0;
 let liveStrokeSubPanelId: string | null = null;
 let drawingPointerId: number | null = null;
 let liveStrokeHasRealPressure = false;
+let liveSmoothingSession: StrokeSmoothingSession | null = null;
 let layerMoveDrag: {
   pointerId: number;
   layer: Layer;
@@ -1652,13 +1692,27 @@ function capturePointer(e: PointerEvent) {
 }
 
 function appendLiveStrokeSample(e: PointerEvent) {
-  if (!liveStroke) return;
-  const pos = applyPerspectiveSnap(canvasPos(e));
-  const last = liveStroke.points[liveStroke.points.length - 1];
+  if (!liveStroke || !liveSmoothingSession) return;
+  const rawPos = canvasPos(e);
   const pressure = pressureForLiveStroke(e);
-  if (last && Math.hypot(pos.x - last.x, pos.y - last.y) < 1.0) return;
-  liveStroke.points.push(pos);
-  liveStroke.pressures!.push(pressure);
+  const emitted = appendStrokeSmoothingSample(liveSmoothingSession, { point: rawPos, pressure });
+  appendSmoothedStrokeSamples(emitted);
+}
+
+function appendSmoothedStrokeSamples(samples: StrokeSmoothingSample[]) {
+  if (!liveStroke) return;
+  for (const sample of samples) {
+    const pos = applyPerspectiveSnap(sample.point);
+    const last = liveStroke.points[liveStroke.points.length - 1];
+    if (last && Math.hypot(pos.x - last.x, pos.y - last.y) < 1.0) continue;
+    liveStroke.points.push(pos);
+    liveStroke.pressures!.push(sample.pressure);
+  }
+}
+
+function finishLiveStrokeSmoothing() {
+  if (!liveSmoothingSession) return;
+  appendSmoothedStrokeSamples(finishStrokeSmoothingSession(liveSmoothingSession));
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1935,10 +1989,15 @@ canvas.addEventListener("pointerdown", (e) => {
   perspectiveSnapLock = snapGuide && snapGuide.enabled && snapGuide.snapEnabled && !e.altKey
     ? { origin: pos, proj: null, guide: snapGuide }
     : null;
+  const firstPressure = pressureForNewStroke(e);
+  liveSmoothingSession = createStrokeSmoothingSession(
+    { point: pos, pressure: firstPressure },
+    project.drawingSettings.smoothing
+  );
   liveStroke = {
     brush: currentBrush, color: currentColor, size: currentSize,
     brushSettings: { ...currentBrushSettings },
-    points: [pos], pressures: [pressureForNewStroke(e)],
+    points: [applyPerspectiveSnap(pos)], pressures: [firstPressure],
   };
 });
 
@@ -2154,6 +2213,7 @@ window.addEventListener("pointerup", (e) => {
   // Commit any in-progress brush stroke first. Pointer-specific drags (selection
   // moving, scale, pan) must not steal the lift and orphan an uncommitted stroke.
   if (drawing && (drawingPointerId === null || e.pointerId === drawingPointerId)) {
+    finishLiveStrokeSmoothing();
     if (liveStroke) commitLiveStroke();
     drawing = false;
     drawingPointerId = null;
@@ -2278,6 +2338,7 @@ window.addEventListener("pointerup", (e) => {
   }
   if (drawing && drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
   if (drawing && liveStroke) {
+    finishLiveStrokeSmoothing();
     commitLiveStroke();
   }
   drawing = false;
@@ -2304,6 +2365,7 @@ window.addEventListener("pointercancel", (e) => {
   }
   if (!drawing) return;
   if (drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
+  finishLiveStrokeSmoothing();
   if (liveStroke) commitLiveStroke();
   drawing = false;
   drawingPointerId = null;
@@ -2788,6 +2850,32 @@ function drawLiveStrokeOverlay() {
   ctx.restore();
 }
 
+function drawStabilizerLeashOverlay(targetCtx: CanvasRenderingContext2D) {
+  if (!drawing || !liveSmoothingSession || liveSmoothingSession.settings.mode !== "stabilizer") return;
+  if (playing || panDrag || spacePanDown) return;
+  const raw = liveSmoothingSession.lastRaw.point;
+  const output = applyPerspectiveSnap(liveSmoothingSession.lastOutput.point);
+  if (Math.hypot(raw.x - output.x, raw.y - output.y) < 1) return;
+
+  targetCtx.save();
+  targetCtx.beginPath();
+  targetCtx.rect(0, 0, project.width, project.height);
+  targetCtx.clip();
+  targetCtx.strokeStyle = "rgba(255,205,117,0.7)";
+  targetCtx.lineWidth = Math.max(1, 1.5 / viewport.scale);
+  targetCtx.setLineDash([6 / viewport.scale, 5 / viewport.scale]);
+  targetCtx.beginPath();
+  targetCtx.moveTo(output.x, output.y);
+  targetCtx.lineTo(raw.x, raw.y);
+  targetCtx.stroke();
+  targetCtx.setLineDash([]);
+  targetCtx.fillStyle = "rgba(255,205,117,0.95)";
+  targetCtx.beginPath();
+  targetCtx.arc(raw.x, raw.y, Math.max(2, 4 / viewport.scale), 0, Math.PI * 2);
+  targetCtx.fill();
+  targetCtx.restore();
+}
+
 function drawEraserCursorOverlay(targetCtx: CanvasRenderingContext2D) {
   const points = drawing && liveStroke && isEraseBrushKey(liveStroke.brush)
     ? liveStroke.points
@@ -3190,6 +3278,7 @@ function loop(now: number) {
     drawMaskOverlay(ctx);
     drawSelectionOverlay(ctx);
     drawScaleToolOverlay(ctx);
+    drawStabilizerLeashOverlay(ctx);
     drawEraserCursorOverlay(ctx);
 
     // Selected-text outline
@@ -6409,6 +6498,21 @@ function updatePlayheadChrome() {
   });
   updateBrushSettingsControls();
 };
+($("stroke-smoothing-mode") as HTMLSelectElement).onchange = (e) => {
+  setStrokeSmoothingSettings({ mode: (e.target as HTMLSelectElement).value as Project["drawingSettings"]["smoothing"]["mode"] });
+};
+($("stroke-smoothing-distance") as HTMLInputElement).oninput = (e) => {
+  setStrokeSmoothingSettings({ distance: +(e.target as HTMLInputElement).value });
+};
+($("stroke-smoothing-delay") as HTMLInputElement).oninput = (e) => {
+  setStrokeSmoothingSettings({ delayDistance: +(e.target as HTMLInputElement).value });
+};
+($("stroke-smoothing-finish") as HTMLInputElement).onchange = (e) => {
+  setStrokeSmoothingSettings({ finishStabilizedStroke: (e.target as HTMLInputElement).checked });
+};
+($("stroke-smoothing-pressure") as HTMLInputElement).onchange = (e) => {
+  setStrokeSmoothingSettings({ smoothPressure: (e.target as HTMLInputElement).checked });
+};
 
 // ---- text controls --------------------------------------------------------
 
@@ -6947,6 +7051,7 @@ function resetProjectSession(next: Project, fileStatus: string) {
   invalidateBaseFrameCache();
   buildTimeline();
   buildBrushPresetControls();
+  updateSmoothingControls();
   buildLayers();
   buildBreadcrumb();
   buildInspector();
@@ -7328,6 +7433,7 @@ window.addEventListener("keydown", (e) => {
     clearSelection();
     scaleToolDrag = null; // snapshots reference replaced Layer objects
     setStatus(isRedo ? "Redo" : "Undo");
+    updateSmoothingControls();
     buildTimeline();
     buildLayers();
     buildBreadcrumb();
@@ -7405,6 +7511,7 @@ buildProjectSettings();
 buildFontPicker();
 $("font-size-val").textContent = String(currentFontSize);
 updateBrushSettingsControls();
+updateSmoothingControls();
 buildBrushPresetControls();
 buildFileMenu();
 updateExportMenuLabels();

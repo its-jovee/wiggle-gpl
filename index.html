@@ -926,6 +926,28 @@
             <label class="row" style="font-size:11px;color:var(--dim);">
               <input id="brush-pressure-flow" type="checkbox" /> Pressure flow
             </label>
+            <label class="row" style="font-size:11px;color:var(--dim);justify-content:space-between;">
+              <span>Smoothing</span>
+              <select id="stroke-smoothing-mode" class="chip">
+                <option value="off">Off</option>
+                <option value="weighted">Weighted</option>
+                <option value="stabilizer">Stabilizer</option>
+              </select>
+            </label>
+            <label class="row" style="font-size:11px;color:var(--dim);justify-content:space-between;">
+              <span>Distance <span id="stroke-smoothing-distance-val">24px</span></span>
+            </label>
+            <input id="stroke-smoothing-distance" type="range" min="1" max="128" step="1" value="24" />
+            <label id="stroke-smoothing-delay-row" class="row" style="font-size:11px;color:var(--dim);justify-content:space-between;">
+              <span>Delay <span id="stroke-smoothing-delay-val">16px</span></span>
+            </label>
+            <input id="stroke-smoothing-delay" type="range" min="1" max="128" step="1" value="16" />
+            <label class="row" style="font-size:11px;color:var(--dim);">
+              <input id="stroke-smoothing-finish" type="checkbox" checked /> Finish stabilized stroke
+            </label>
+            <label class="row" style="font-size:11px;color:var(--dim);">
+              <input id="stroke-smoothing-pressure" type="checkbox" /> Smooth pressure
+            </label>
           </div>
           <div class="sidebar-section">
             <h2>Brush Presets</h2>

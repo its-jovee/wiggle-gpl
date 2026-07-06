@@ -37,6 +37,16 @@ test("validateProject accepts a fresh default project", () => {
   assert.deepEqual(validation.validateProject(baseProject()), { ok: true });
 });
 
+test("newProject includes default drawing smoothing settings", () => {
+  assert.deepEqual(baseProject().drawingSettings.smoothing, {
+    mode: "off",
+    distance: 24,
+    delayDistance: 16,
+    finishStabilizedStroke: true,
+    smoothPressure: false,
+  });
+});
+
 test("validateProject rejects oversized dimensions", () => {
   const project = baseProject();
   project.width = validation.MAX_PROJECT_DIMENSION + 1;
@@ -85,6 +95,17 @@ test("capProjectFillLimits clamps fill tolerance and gap close", () => {
   assert.deepEqual(validation.validateProject(project), { ok: true });
 });
 
+test("capProjectDrawingSettings clamps smoothing controls", () => {
+  const project = baseProject();
+  project.drawingSettings.smoothing.distance = -30;
+  project.drawingSettings.smoothing.delayDistance = 500;
+  validation.capProjectDrawingSettings(project);
+
+  assert.equal(project.drawingSettings.smoothing.distance, 1);
+  assert.equal(project.drawingSettings.smoothing.delayDistance, 128);
+  assert.deepEqual(validation.validateProject(project), { ok: true });
+});
+
 test("migrateProject caps fill limits and validates", () => {
   const migrated = types.migrateProject({
     version: 8,
@@ -110,6 +131,35 @@ test("migrateProject caps fill limits and validates", () => {
   });
   assert.equal(migrated.panels[0].layers[0].fills[0].tolerance, validation.MAX_FILL_TOLERANCE);
   assert.equal(migrated.panels[0].layers[0].fills[0].gapClosePx, validation.MAX_FILL_GAP_CLOSE);
+});
+
+test("migrateProject backfills and clamps drawing smoothing settings", () => {
+  const migrated = types.migrateProject({
+    version: 8,
+    width: 1080,
+    height: 1920,
+    wiggleFps: 8,
+    brushPresets: [],
+    drawingSettings: {
+      smoothing: {
+        mode: "stabilizer",
+        distance: 999,
+        delayDistance: -10,
+        finishStabilizedStroke: false,
+        smoothPressure: true,
+      },
+    },
+    panels: [types.newPanel()],
+    audio: { sampleRate: 48000, assets: [], tracks: [] },
+  });
+
+  assert.deepEqual(migrated.drawingSettings.smoothing, {
+    mode: "stabilizer",
+    distance: 128,
+    delayDistance: 1,
+    finishStabilizedStroke: false,
+    smoothPressure: true,
+  });
 });
 
 test("migrateProject throws on invalid dimensions", () => {

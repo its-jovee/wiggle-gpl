@@ -16,7 +16,8 @@
 
 import type { AudioProject } from "./audioTypes";
 import { newAudioProject } from "./audioTypes";
-import { assertValidProject, capProjectFillLimits } from "./projectValidation";
+import { assertValidProject, capProjectDrawingSettings, capProjectFillLimits } from "./projectValidation";
+import { DEFAULT_STROKE_SMOOTHING, normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 
 export type Vec2 = { x: number; y: number };
 
@@ -86,6 +87,20 @@ export type BrushPreset = {
   brush: string;
   size: number;
   settings: BrushSettings;
+};
+
+export type StrokeSmoothingMode = "off" | "weighted" | "stabilizer";
+
+export type StrokeSmoothingSettings = {
+  mode: StrokeSmoothingMode;
+  distance: number;
+  delayDistance: number;
+  finishStabilizedStroke: boolean;
+  smoothPressure: boolean;
+};
+
+export type DrawingSettings = {
+  smoothing: StrokeSmoothingSettings;
 };
 
 export type Fill = {
@@ -264,6 +279,7 @@ export type Project = {
   wiggleFps: number;
   panels: Panel[];
   brushPresets: BrushPreset[];
+  drawingSettings: DrawingSettings;
   groups?: FrameGroup[];
   audio?: AudioProject;
 };
@@ -281,7 +297,14 @@ export function newProject(width = TIKTOK_WIDTH, height = TIKTOK_HEIGHT): Projec
     wiggleFps: 8,
     panels: [newPanel()],
     brushPresets: [],
+    drawingSettings: newDrawingSettings(),
     audio: newAudioProject(),
+  };
+}
+
+export function newDrawingSettings(): DrawingSettings {
+  return {
+    smoothing: { ...DEFAULT_STROKE_SMOOTHING },
   };
 }
 
@@ -344,6 +367,7 @@ export function migrateProject(raw: unknown): Project {
   else if (p.version === 1) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(migrateV2toV3(migrateV1toV2(p)))))));
   else throw new Error("unknown project version");
   capProjectFillLimits(project);
+  capProjectDrawingSettings(project);
   assertValidProject(project);
   return project;
 }
@@ -373,13 +397,13 @@ type V3Panel = Omit<V2Panel, "layers"> & {
 type V3Project = {
   version: 3; width: number; height: number; wiggleFps: number; panels: V3Panel[];
 };
-type V4Project = Omit<Project, "version" | "audio" | "brushPresets"> & {
+type V4Project = Omit<Project, "version" | "audio" | "brushPresets" | "drawingSettings"> & {
   version: 4;
   audio?: AudioProject;
 };
-type V5Project = Omit<Project, "version" | "brushPresets"> & { version: 5 };
-type V6Project = Omit<Project, "version" | "brushPresets"> & { version: 6 };
-type V7Project = Omit<Project, "version" | "brushPresets"> & { version: 7; brushPresets?: BrushPreset[] };
+type V5Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 5 };
+type V6Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 6 };
+type V7Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 7; brushPresets?: BrushPreset[] };
 
 function migrateV1toV2(p: Record<string, unknown>): V2Project {
   const panels = ((p.panels as V1Panel[]) ?? []).map((pp) => ({
@@ -488,6 +512,11 @@ function normalizeV8(p: Project): Project {
     version: 8,
     audio: p.audio ?? newAudioProject(),
     brushPresets: p.brushPresets ?? [],
+    drawingSettings: {
+      ...newDrawingSettings(),
+      ...(p.drawingSettings ?? {}),
+      smoothing: normalizeStrokeSmoothingSettings(p.drawingSettings?.smoothing),
+    },
     panels: p.panels.map((panel) => ({
       ...panel,
       layers: panel.layers.map(normalizeLayerV7),
@@ -500,5 +529,10 @@ function normalizeV8(p: Project): Project {
 }
 
 function migrateV7toV8(p: V7Project): Project {
-  return normalizeV8({ ...p, version: 8, brushPresets: p.brushPresets ?? [] });
+  return normalizeV8({
+    ...p,
+    version: 8,
+    brushPresets: p.brushPresets ?? [],
+    drawingSettings: newDrawingSettings(),
+  });
 }

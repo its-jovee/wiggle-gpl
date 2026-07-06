@@ -6,6 +6,7 @@
 // ============================================================================
 
 import type { Fill, Layer, Project, SubPanel } from "./types";
+import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 
 export const MAX_PROJECT_DIMENSION = 4096;
 export const MIN_PROJECT_DIMENSION = 1;
@@ -52,6 +53,14 @@ export function capProjectFillLimits(project: Project): void {
       panel.subPanels![i] = capSubPanelFills(panel.subPanels![i]);
     }
   }
+}
+
+/** Clamp project-level drawing controls that can arrive out-of-range in files. */
+export function capProjectDrawingSettings(project: Project): void {
+  project.drawingSettings = {
+    ...project.drawingSettings,
+    smoothing: normalizeStrokeSmoothingSettings(project.drawingSettings?.smoothing),
+  };
 }
 
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
