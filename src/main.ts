@@ -3573,9 +3573,7 @@ function buildBrushPresetControls() {
   host.appendChild(select);
 
   const actions = document.createElement("div");
-  actions.className = "layer-actions";
-  actions.style.marginTop = "6px";
-  actions.style.flexWrap = "wrap";
+  actions.className = "brush-preset-actions";
   const save = document.createElement("button");
   save.className = "chip";
   save.textContent = "Save";
@@ -3652,9 +3650,7 @@ function buildPerspectiveInspector() {
     { kind: "fisheye", label: "Fisheye" },
   ];
   const row = document.createElement("div");
-  row.style.display = "flex";
-  row.style.flexWrap = "wrap";
-  row.style.gap = "6px";
+  row.className = "context-action-row";
   for (const k of kinds) {
     const btn = document.createElement("button");
     btn.className = "chip" + (guide.kind === k.kind ? " active" : "");
@@ -3687,9 +3683,7 @@ function buildPerspectiveInspector() {
     bindLabel.textContent = "Snaps strokes on";
     host.appendChild(bindLabel);
     const bindRow = document.createElement("div");
-    bindRow.style.display = "flex";
-    bindRow.style.flexWrap = "wrap";
-    bindRow.style.gap = "6px";
+    bindRow.className = "context-action-row";
     const mkBindChip = (label: string, active: boolean, onClick: () => void) => {
       const btn = document.createElement("button");
       btn.className = "chip" + (active ? " active" : "");
@@ -3724,10 +3718,7 @@ function buildPerspectiveInspector() {
 
   const mkToggle = (label: string, value: boolean, onChange: (v: boolean) => void) => {
     const lab = document.createElement("label");
-    lab.style.display = "flex";
-    lab.style.alignItems = "center";
-    lab.style.gap = "6px";
-    lab.style.margin = "8px 0 0";
+    lab.className = "control-check";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = value;
@@ -3798,7 +3789,7 @@ function buildEditContext() {
 
   if (currentBrush === SCALE_KEY && !selectionState) {
     const hint = document.createElement("div");
-    hint.style.cssText = "font-size:11px;color:var(--dim);line-height:1.45;";
+    hint.className = "context-hint";
     hint.textContent = "Scale: drag handles around the active layer to resize or rotate its content.";
     host.appendChild(hint);
     if (selectionClipboard) {
@@ -3810,7 +3801,7 @@ function buildEditContext() {
   if (!selectionState) {
     if (currentBrush === MARQUEE_KEY) {
       const hint = document.createElement("div");
-      hint.style.cssText = "font-size:11px;color:var(--dim);line-height:1.45;";
+      hint.className = "context-hint";
       hint.textContent = "Marquee: drag a region to clip brush/bucket. Drag inside to move items.";
       host.appendChild(hint);
     }
@@ -3821,7 +3812,8 @@ function buildEditContext() {
   }
 
   const info = document.createElement("div");
-  info.style.cssText = "font-size:11px;color:var(--dim);line-height:1.45;margin-bottom:8px;";
+  info.className = "context-hint";
+  info.style.marginBottom = "8px";
   if (selectionState.mode === "region") {
     info.textContent = `Region selection (${selectionState.tool}). Paint inside; drag or handle-transform to cut.`;
   } else {
@@ -4021,6 +4013,7 @@ function buildTransportBar(): HTMLElement {
 
   const playBtn = document.createElement("button");
   playBtn.id = "play";
+  playBtn.className = "transport-primary";
   playBtn.textContent = playing ? "Stop" : "Play";
   playBtn.onclick = () => {
     if (playing) void stopPlayback(playheadMs);
@@ -4031,7 +4024,7 @@ function buildTransportBar(): HTMLElement {
   const loopBtn = document.createElement("button");
   loopBtn.id = "loop-toggle";
   loopBtn.textContent = loopPlayback ? "Loop: On" : "Loop: Off";
-  loopBtn.className = loopPlayback ? "active" : "";
+  loopBtn.className = "transport-toggle" + (loopPlayback ? " active" : "");
   loopBtn.onclick = () => {
     loopPlayback = !loopPlayback;
     loopBtn.textContent = loopPlayback ? "Loop: On" : "Loop: Off";
@@ -4043,7 +4036,7 @@ function buildTransportBar(): HTMLElement {
   jitterBtn.id = "jitter-toggle";
   jitterBtn.textContent = jitterEnabled ? "Stroke wiggle: On" : "Stroke wiggle: Off";
   jitterBtn.title = "Toggle render-time stroke wiggle on/off (does not change saved points)";
-  jitterBtn.className = jitterEnabled ? "active" : "";
+  jitterBtn.className = "transport-toggle" + (jitterEnabled ? " active" : "");
   jitterBtn.onclick = () => {
     jitterEnabled = !jitterEnabled;
     jitterBtn.textContent = jitterEnabled ? "Stroke wiggle: On" : "Stroke wiggle: Off";
@@ -4055,6 +4048,7 @@ function buildTransportBar(): HTMLElement {
 
   const groupBtn = document.createElement("button");
   groupBtn.id = "group-selected";
+  groupBtn.className = "transport-command";
   groupBtn.textContent = "Group";
   groupBtn.title = "Group selected frames (Shift-click to select range)";
   const range = selectedPanelRange();
@@ -4507,7 +4501,8 @@ function buildVideoTrack(): HTMLElement {
   const head = document.createElement("div");
   head.className = "audio-track-head";
   const label = document.createElement("span");
-  label.style.cssText = "font-size:11px;color:var(--ink);grid-column:1/-1;";
+  label.className = "track-name";
+  label.style.gridColumn = "1 / -1";
   label.textContent = "Video";
   head.appendChild(label);
   row.appendChild(head);
@@ -5389,7 +5384,7 @@ function buildLayers() {
   host.innerHTML = "";
   const panel = activePanel();
   if (panel.kind === "timelapse" && !activeSubPanelId) {
-    host.innerHTML = '<div style="font-size:11px;color:var(--dim);">Timelapse panels have no layers — edit the source panel.</div>';
+    host.innerHTML = '<div class="context-hint">Timelapse panels have no layers — edit the source panel.</div>';
     return;
   }
   const cont = activeContainer();
@@ -5590,10 +5585,10 @@ function buildProjectSettings() {
 
   const row = (label: string, child: HTMLElement) => {
     const wrap = document.createElement("div");
-    wrap.style.cssText = "display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:6px;";
+    wrap.className = "property-row";
     const lab = document.createElement("span");
     lab.textContent = label;
-    lab.style.cssText = "font-size:11px;color:var(--dim);";
+    lab.className = "property-label";
     wrap.append(lab, child);
     host.appendChild(wrap);
   };
@@ -5616,7 +5611,7 @@ function buildProjectSettings() {
   row("Stroke wiggle rate", fps);
 
   const fpsUnit = document.createElement("div");
-  fpsUnit.style.cssText = "font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.4;";
+  fpsUnit.className = "property-note";
   fpsUnit.textContent = "Ticks per second for hand-drawn wiggle (default 8). Panel durations are measured in these ticks.";
   host.appendChild(fpsUnit);
 }
