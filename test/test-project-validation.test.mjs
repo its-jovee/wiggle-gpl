@@ -1,0 +1,128 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+
+const outDir = join(tmpdir(), "wigglestudio-project-validation-test");
+
+function compileProjectValidation() {
+  rmSync(outDir, { recursive: true, force: true });
+  execFileSync("npx", [
+    "tsc",
+    "--outDir", outDir,
+    "--module", "commonjs",
+    "--moduleResolution", "node",
+    "--target", "ES2020",
+    "--lib", "ES2020,DOM",
+    "--skipLibCheck",
+    "--esModuleInterop",
+    "--noEmit", "false",
+    "src/core/audioTypes.ts",
+    "src/core/types.ts",
+    "src/core/projectValidation.ts",
+  ], { stdio: "inherit" });
+}
+
+compileProjectValidation();
+const types = await import(`${outDir}/types.js`);
+const validation = await import(`${outDir}/projectValidation.js`);
+
+function baseProject() {
+  return types.newProject();
+}
+
+test("validateProject accepts a fresh default project", () => {
+  assert.deepEqual(validation.validateProject(baseProject()), { ok: true });
+});
+
+test("validateProject rejects oversized dimensions", () => {
+  const project = baseProject();
+  project.width = validation.MAX_PROJECT_DIMENSION + 1;
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /width/);
+});
+
+test("validateProject rejects too many panels", () => {
+  const project = baseProject();
+  while (project.panels.length <= validation.MAX_PANELS) {
+    project.panels.push(types.newPanel());
+  }
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /panels exceeds max/);
+});
+
+test("validateProject rejects too many stroke points", () => {
+  const project = baseProject();
+  project.panels[0].layers[0].strokes.push({
+    brush: "round",
+    color: "#fff",
+    size: 4,
+    points: Array.from({ length: validation.MAX_POINTS_PER_STROKE + 1 }, (_, i) => ({ x: i, y: 0 })),
+  });
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /points exceeds max/);
+});
+
+test("capProjectFillLimits clamps fill tolerance and gap close", () => {
+  const project = baseProject();
+  project.panels[0].layers[0].fills.push({
+    point: { x: 10, y: 10 },
+    color: "#fff",
+    seed: 1,
+    afterStrokeIndex: 0,
+    tolerance: 999,
+    gapClosePx: 999,
+  });
+  validation.capProjectFillLimits(project);
+  const fill = project.panels[0].layers[0].fills[0];
+  assert.equal(fill.tolerance, validation.MAX_FILL_TOLERANCE);
+  assert.equal(fill.gapClosePx, validation.MAX_FILL_GAP_CLOSE);
+  assert.deepEqual(validation.validateProject(project), { ok: true });
+});
+
+test("migrateProject caps fill limits and validates", () => {
+  const migrated = types.migrateProject({
+    version: 8,
+    width: 1080,
+    height: 1920,
+    wiggleFps: 8,
+    brushPresets: [],
+    panels: [{
+      ...types.newPanel(),
+      layers: [{
+        ...types.newLayer(),
+        fills: [{
+          point: { x: 1, y: 1 },
+          color: "#000",
+          seed: 2,
+          afterStrokeIndex: 0,
+          tolerance: 200,
+          gapClosePx: 200,
+        }],
+      }],
+    }],
+    audio: { sampleRate: 48000, assets: [], tracks: [] },
+  });
+  assert.equal(migrated.panels[0].layers[0].fills[0].tolerance, validation.MAX_FILL_TOLERANCE);
+  assert.equal(migrated.panels[0].layers[0].fills[0].gapClosePx, validation.MAX_FILL_GAP_CLOSE);
+});
+
+test("migrateProject throws on invalid dimensions", () => {
+  assert.throws(
+    () => types.migrateProject({
+      version: 8,
+      width: 99999,
+      height: 1080,
+      wiggleFps: 8,
+      brushPresets: [],
+      panels: [types.newPanel()],
+      audio: { sampleRate: 48000, assets: [], tracks: [] },
+    }),
+    /invalid project/
+  );
+});
