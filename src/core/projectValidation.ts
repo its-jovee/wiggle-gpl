@@ -5,7 +5,8 @@
 // are capped in place so slightly out-of-range editor values still load.
 // ============================================================================
 
-import type { Fill, Layer, Project, SubPanel } from "./types";
+import type { BrushPreset, Fill, Layer, Project, Stroke, SubPanel } from "./types";
+import { normalizeBrushSettings } from "./brushSettings";
 import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 
 export const MAX_PROJECT_DIMENSION = 4096;
@@ -43,6 +44,33 @@ function capSubPanelFills(subPanel: SubPanel): SubPanel {
   return { ...subPanel, layers };
 }
 
+function normalizeStrokeBrushSettings(stroke: Stroke): Stroke {
+  if (!stroke.brushSettings) return stroke;
+  return {
+    ...stroke,
+    brushSettings: normalizeBrushSettings(stroke.brushSettings),
+  };
+}
+
+function capLayerBrushSettings(layer: Layer): Layer {
+  const strokes = layer.strokes.map(normalizeStrokeBrushSettings);
+  if (strokes.every((s, i) => s === layer.strokes[i])) return layer;
+  return { ...layer, strokes };
+}
+
+function capSubPanelBrushSettings(subPanel: SubPanel): SubPanel {
+  const layers = subPanel.layers.map(capLayerBrushSettings);
+  if (layers.every((l, i) => l === subPanel.layers[i])) return subPanel;
+  return { ...subPanel, layers };
+}
+
+function capBrushPresetSettings(preset: BrushPreset): BrushPreset {
+  return {
+    ...preset,
+    settings: normalizeBrushSettings(preset.settings),
+  };
+}
+
 /** Clamp fill tolerance / gap-close on every layer (including sub-panels). */
 export function capProjectFillLimits(project: Project): void {
   for (const panel of project.panels) {
@@ -51,6 +79,19 @@ export function capProjectFillLimits(project: Project): void {
     }
     for (let i = 0; i < (panel.subPanels ?? []).length; i++) {
       panel.subPanels![i] = capSubPanelFills(panel.subPanels![i]);
+    }
+  }
+}
+
+/** Clamp serialized brush options on strokes and project brush presets. */
+export function capProjectBrushSettings(project: Project): void {
+  project.brushPresets = project.brushPresets.map(capBrushPresetSettings);
+  for (const panel of project.panels) {
+    for (let i = 0; i < panel.layers.length; i++) {
+      panel.layers[i] = capLayerBrushSettings(panel.layers[i]);
+    }
+    for (let i = 0; i < (panel.subPanels ?? []).length; i++) {
+      panel.subPanels![i] = capSubPanelBrushSettings(panel.subPanels![i]);
     }
   }
 }

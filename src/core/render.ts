@@ -34,10 +34,8 @@ import {
 } from "./renderSchedule";
 import { layerVersion } from "./layerVersion";
 import {
-  brushSpacing,
-  brushStampFlow,
-  brushStampSize,
-  normalizeBrushSettings,
+  brushSettingsSignatureValues,
+  effectiveBrushSettings,
 } from "./brushSettings";
 
 const WIGGLE_AMPLITUDE = 2.5;
@@ -1049,7 +1047,7 @@ function mixStroke(h: number, s: Stroke): number {
   h = mixString(h, s.brush);
   h = mixString(h, s.color);
   h = mixFloat(h, s.size);
-  const brushSettings = normalizeBrushSettings(s.brushSettings);
+  const brushSettings = brushSettingsSignatureValues(s.brushSettings);
   h = mixFloat(h, brushSettings.spacingScale);
   h = mixFloat(h, brushSettings.flow);
   h = mixHash(h, brushSettings.pressureSize ? 1 : 0);
@@ -1605,8 +1603,8 @@ function walkLayerStrokes(
     const strokeSeed = effectiveStrokeIndex + layerSeed;
     const jittered = amplitude === 0 ? pts : getJitteredPoints(stroke, strokeSeed, tick, amplitude);
     const stampTick = amplitude === 0 ? strokeSeed : tick;
-    const settings = normalizeBrushSettings(stroke.brushSettings);
-    const spacing = brushSpacing(brush.spacing, stroke.size, settings);
+    const effectiveSettings = effectiveBrushSettings(brush.spacing, stroke.size, stroke.brushSettings);
+    const spacing = effectiveSettings.spacing;
 
     const pressures = stroke.pressures;
     const pAt = (i: number) => pressures?.[i] ?? 1;
@@ -1619,9 +1617,9 @@ function walkLayerStrokes(
       } else if (budget.remaining > 0) {
         brush.stamp({
           ctx, pos: jittered[0], delta: { x: 1, y: 0 },
-          color: stroke.color, size: brushStampSize(stroke.size, pAt(0), settings), tick: stampTick,
+          color: stroke.color, size: effectiveSettings.stampSize(stroke.size, pAt(0)), tick: stampTick,
           seed: si + layerSeed, bg,
-          pressure: pAt(0), flow: brushStampFlow(pAt(0), settings), dist: 0,
+          pressure: pAt(0), flow: effectiveSettings.stampFlow(pAt(0)), dist: 0,
         });
         budget.remaining -= pointLen;
         drawn[si] = true;
@@ -1674,12 +1672,12 @@ function walkLayerStrokes(
             pos: { x: a.x + ux * along, y: a.y + uy * along },
             delta,
             color: stroke.color,
-            size: brushStampSize(stroke.size, p, settings),
+            size: effectiveSettings.stampSize(stroke.size, p),
             tick: stampTick,
             seed: (si + layerSeed) * 100 + k,
             bg,
             pressure: p,
-            flow: brushStampFlow(p, settings),
+            flow: effectiveSettings.stampFlow(p),
             dist: walked + along,
           });
         }

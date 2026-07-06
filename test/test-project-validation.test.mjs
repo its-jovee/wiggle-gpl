@@ -21,6 +21,7 @@ function compileProjectValidation() {
     "--noEmit", "false",
     "src/core/audioTypes.ts",
     "src/core/types.ts",
+    "src/core/brushSettings.ts",
     "src/core/projectValidation.ts",
   ], { stdio: "inherit" });
 }
@@ -160,6 +161,68 @@ test("migrateProject backfills and clamps drawing smoothing settings", () => {
     finishStabilizedStroke: false,
     smoothPressure: true,
   });
+});
+
+test("migrateProject clamps stroke and preset brush settings", () => {
+  const invalidBrushSettings = {
+    spacingScale: 99,
+    flow: -2,
+    pressureSize: false,
+    pressureFlow: true,
+  };
+  const panel = types.newPanel();
+  panel.layers[0].strokes.push({
+    brush: "round",
+    color: "#ffffff",
+    size: 2,
+    brushSettings: { ...invalidBrushSettings },
+    points: [{ x: 1, y: 1 }],
+  });
+  panel.subPanels = [{
+    id: "sub-1",
+    bounds: { x: 0, y: 0, w: 100, h: 100 },
+    shape: "rect",
+    border: { brush: "round", color: "#ffffff", thickness: 2, wiggleAmplitude: 2 },
+    bg: null,
+    layers: [{
+      ...types.newLayer(),
+      strokes: [{
+        brush: "round",
+        color: "#ffffff",
+        size: 2,
+        brushSettings: { ...invalidBrushSettings },
+        points: [{ x: 2, y: 2 }],
+      }],
+    }],
+    activeLayerIndex: 0,
+  }];
+
+  const migrated = types.migrateProject({
+    version: 8,
+    width: 1080,
+    height: 1920,
+    wiggleFps: 8,
+    brushPresets: [{
+      id: "preset-1",
+      name: "Bad Preset",
+      brush: "round",
+      size: 2,
+      settings: { ...invalidBrushSettings },
+    }],
+    drawingSettings: types.newDrawingSettings(),
+    panels: [panel],
+    audio: { sampleRate: 48000, assets: [], tracks: [] },
+  });
+
+  const expected = {
+    spacingScale: 3,
+    flow: 0.1,
+    pressureSize: false,
+    pressureFlow: true,
+  };
+  assert.deepEqual(migrated.panels[0].layers[0].strokes[0].brushSettings, expected);
+  assert.deepEqual(migrated.panels[0].subPanels[0].layers[0].strokes[0].brushSettings, expected);
+  assert.deepEqual(migrated.brushPresets[0].settings, expected);
 });
 
 test("migrateProject throws on invalid dimensions", () => {

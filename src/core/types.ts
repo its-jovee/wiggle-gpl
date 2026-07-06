@@ -16,7 +16,12 @@
 
 import type { AudioProject } from "./audioTypes";
 import { newAudioProject } from "./audioTypes";
-import { assertValidProject, capProjectDrawingSettings, capProjectFillLimits } from "./projectValidation";
+import {
+  assertValidProject,
+  capProjectBrushSettings,
+  capProjectDrawingSettings,
+  capProjectFillLimits,
+} from "./projectValidation";
 import { DEFAULT_STROKE_SMOOTHING, normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 
 export type Vec2 = { x: number; y: number };
@@ -367,6 +372,7 @@ export function migrateProject(raw: unknown): Project {
   else if (p.version === 1) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(migrateV2toV3(migrateV1toV2(p)))))));
   else throw new Error("unknown project version");
   capProjectFillLimits(project);
+  capProjectBrushSettings(project);
   capProjectDrawingSettings(project);
   assertValidProject(project);
   return project;
