@@ -158,13 +158,13 @@
     .recent-label { padding: 4px 7px; color: var(--dim); font-size: 10px; text-transform: uppercase;
       letter-spacing: .08em; }
     .app-grid {
-      display: grid; grid-template-columns: 238px minmax(360px, 1fr) 324px; min-height: 0;
+      display: grid; grid-template-columns: 216px minmax(480px, 1fr) 272px; min-height: 0;
       background: var(--app-bg);
     }
-    body.mode-edit .app-grid { grid-template-columns: 68px minmax(360px, 1fr) 324px; }
+    body.mode-edit .app-grid { grid-template-columns: 68px minmax(480px, 1fr) 272px; }
     .stage-wrap {
       display: grid; grid-template-rows: 1fr auto; min-height: 0;
-      padding: 16px; gap: 12px; background: var(--app-bg);
+      padding: 12px; gap: 10px; background: var(--app-bg);
     }
     .stage-area { display: grid; place-items: center; min-height: 0; overflow: hidden;
       position: relative; background: var(--canvas-matte); border: 1px solid var(--border-subtle);
@@ -313,6 +313,29 @@
     .tool-context { display: none; }
     .tool-context.active { display: block; }
     .tool-contexts { margin-top: 12px; }
+    .workspace-section > summary,
+    #timeline-region > summary {
+      cursor: pointer; list-style: none; display: flex; align-items: center;
+      justify-content: space-between; color: var(--text-primary); font-size: 12px;
+      font-weight: 700; padding: 2px 0 10px;
+    }
+    .workspace-section > summary::-webkit-details-marker,
+    #timeline-region > summary::-webkit-details-marker { display: none; }
+    .workspace-section > summary::after,
+    #timeline-region > summary::after {
+      content: ""; width: 9px; height: 9px; flex: 0 0 9px; background: currentColor;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1.5l4 3.5-4 3.5' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1.5l4 3.5-4 3.5' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
+      transition: transform var(--dur-normal) var(--ease-out);
+    }
+    .workspace-section[open] > summary::after,
+    #timeline-region[open] > summary::after { transform: rotate(90deg); }
+    .workspace-section > summary:hover,
+    #timeline-region > summary:hover { color: var(--accent-ink); }
+    #timeline-region { min-height: 30px; }
+    #timeline-region:not([open]) { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: #fff; padding: 7px 10px 0; }
+    #timeline-region:not([open]) > summary { padding-bottom: 7px; }
+    #timeline-region[open] > summary { padding: 0 2px 6px; color: var(--text-secondary); font-size: 11px; }
     .sidebar-section {
       border-top: 1px solid rgba(255,251,242,.075);
       padding: 12px 0 2px;
@@ -1134,7 +1157,8 @@
         <button id="rail-draw" class="rail-button active" type="button">Draw</button>
         <button id="rail-edit" class="rail-button" type="button">Edit</button>
       </div>
-      <h2 class="side-title">Tools</h2>
+      <details class="workspace-section tools-section" open>
+      <summary>Tools</summary>
       <div class="tool-group">
         <div class="tool-group-label">Draw</div>
         <div id="tools-draw" class="tool-grid"></div>
@@ -1285,6 +1309,7 @@
           </div>
         </details>
       </div>
+      </details>
     </aside>
 
     <div class="stage-wrap">
@@ -1302,27 +1327,30 @@
           <button id="zoom-fit" type="button" title="Fit to viewport">⤢</button>
         </div>
       </div>
-      <div id="timeline"></div>
+      <details id="timeline-region">
+        <summary>Timeline</summary>
+        <div id="timeline"></div>
+      </details>
     </div>
     <aside class="right-sidebar">
       <input id="load-project-file" type="file" accept="application/json,.wiggle.json,.json" style="display:none" />
 
-      <details class="section-details" open>
+      <details class="section-details">
         <summary>Project</summary>
         <div class="section-body"><div id="project-settings"></div></div>
       </details>
 
-      <details class="section-details" open>
+      <details class="section-details">
         <summary id="inspector-heading">Properties</summary>
         <div class="section-body"><div id="inspector"></div></div>
       </details>
 
-      <details class="section-details draw-only" open>
+      <details class="section-details draw-only">
         <summary>Layer Animation</summary>
         <div class="section-body"><div id="layer-animation"></div></div>
       </details>
 
-      <details class="section-details draw-only" open>
+      <details class="section-details draw-only">
         <summary>Layers</summary>
         <div class="section-body"><div id="layers"></div></div>
       </details>
