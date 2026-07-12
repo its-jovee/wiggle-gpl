@@ -1,5 +1,5 @@
 // ============================================================================
-// core/export.ts — render the sequence to video at 1080x1920.
+// core/export.ts — render the sequence and individual panels to video.
 //
 // TWO PATHS:
 //   exportWebM()  — MediaRecorder, ~real-time capture. Good for quick previews.
@@ -28,6 +28,8 @@ export type ExportRenderOpts = {
 
 export type MP4ExportOptions = {
   includeAudioTail?: boolean;
+  /** Restrict the export to one panel, without timeline audio. */
+  panelIndex?: number;
   contentVersion?: number;
   onProgressEvent?: ExportProgressCallback;
   shouldCancel?: () => boolean;
@@ -118,10 +120,12 @@ export async function exportMP4(
   const progress = createExportProgressReporter("MP4", onProgress, opts?.onProgressEvent);
   try {
     const { canvas, ctx } = makeStage(project);
-    const visualMs = expandedDurationMs(project);
+    const panel = opts?.panelIndex === undefined ? undefined : project.panels[opts.panelIndex];
+    if (opts?.panelIndex !== undefined && !panel) throw new Error("Cannot export a missing panel");
+    const visualMs = panel?.durationMs ?? expandedDurationMs(project);
     const audioMs = totalAudioDuration(project.audio);
-    const totalMs = opts?.includeAudioTail ? Math.max(visualMs, audioMs) : visualMs;
-    const totalFrames = Math.round((totalMs / 1000) * exportFps);
+    const totalMs = panel ? visualMs : (opts?.includeAudioTail ? Math.max(visualMs, audioMs) : visualMs);
+    const totalFrames = Math.max(1, Math.round((totalMs / 1000) * exportFps));
     const contentVersion = opts?.contentVersion ?? 0;
 
     // Lazy-load ffmpeg so it doesn't bloat initial page load.
@@ -138,14 +142,16 @@ export async function exportMP4(
       if (opts?.shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
       const elapsedMs = (f / exportFps) * 1000;
       const visualElapsedMs = Math.min(elapsedMs, Math.max(0, visualMs - 1));
-      const { index, localMs } = sequenceAtTime(project, visualElapsedMs);
-      const panel = project.panels[index];
+      const { index, localMs } = panel
+        ? { index: opts!.panelIndex!, localMs: visualElapsedMs }
+        : sequenceAtTime(project, visualElapsedMs);
+      const framePanel = project.panels[index];
       // Deterministic tick: derived purely from time, never from a wall clock.
       const tick = Math.floor((localMs / 1000) * project.wiggleFps);
-      renderPanel(ctx, panel, tick, project.width, project.height, {
+      renderPanel(ctx, framePanel, tick, project.width, project.height, {
         allPanels: project.panels,
-        timelapseProgress: panel.kind === "timelapse"
-          ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+        timelapseProgress: framePanel.kind === "timelapse"
+          ? timelapseProgressQuantized(localMs, framePanel.durationMs, project.wiggleFps) : undefined,
         localMs,
         wiggleFps: project.wiggleFps,
         contentVersion,
@@ -157,7 +163,7 @@ export async function exportMP4(
       progress.render((f + 1) / totalFrames, f + 1, totalFrames);
     }
 
-    const audioArgs = await writeAudioInputs(ffmpeg, project);
+    const audioArgs = panel ? { inputs: [], output: ["-an"] } : await writeAudioInputs(ffmpeg, project);
     progress.encode();
 
     // TikTok-optimal H.264 settings:

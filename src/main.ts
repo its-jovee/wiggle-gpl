@@ -31,7 +31,7 @@ import {
 import { StudioIcons, type IconNode } from "./icons/studio";
 import { BRUSHES, brushByKey } from "./brushes/registry";
 import { BUILTIN_PALETTES, loadLospecPalette, Palette } from "./core/palette";
-import { exportWebM, exportMP4, exportPanelPNG, exportPNGSequence, downloadBlob } from "./core/export";
+import { exportWebM, exportMP4, downloadBlob } from "./core/export";
 import { exportProgressStatus } from "./core/exportProgress";
 import {
   AudioAsset, AudioClip, AudioTrack, ensureAudioProject,
@@ -471,8 +471,7 @@ function updateExportMenuLabels() {
   const dims = formatCanvasDimensions(project.width, project.height);
   $("export-webm-dims").textContent = `${dims} · .webm`;
   $("export-mp4-dims").textContent = `${dims} · .mp4`;
-  $("export-png-dims").textContent = `${dims} · .png`;
-  $("export-png-sequence-dims").textContent = `${dims} · 30fps · .zip`;
+  $("export-panel-mp4-dims").textContent = `${dims} · .mp4`;
 }
 
 function resizeCanvasForProject() {
@@ -6736,7 +6735,7 @@ function askAudioTailChoice(): Promise<boolean | null> {
   });
 }
 
-async function runExport(format: "webm" | "mp4" | "png" | "png-sequence") {
+async function runExport(format: "webm" | "mp4" | "panel-mp4") {
   closeExportMenu();
   const wasPlaying = playing;
   await stopPlayback(playheadMs);
@@ -6756,9 +6755,8 @@ async function runExport(format: "webm" | "mp4" | "png" | "png-sequence") {
 
   exportCancelled = false;
   const exportLabel = format === "webm" ? "WebM"
-    : format === "mp4" ? "MP4"
-      : format === "png" ? "PNG"
-        : "PNG sequence";
+    : format === "mp4" ? "Full sequence MP4"
+      : "Current panel MP4";
   $("export-title").textContent = `Exporting ${exportLabel}…`;
   $("export-audio-choice").hidden = true;
   $("export-progress-panel").hidden = false;
@@ -6788,22 +6786,15 @@ async function runExport(format: "webm" | "mp4" | "png" | "png-sequence") {
       });
       downloadBlob(blob, "wiggle.mp4");
       setStatus("MP4 done");
-    } else if (format === "png") {
-      const blob = await exportPanelPNG(project, activePanelIndex, wiggleTick, {
-        contentVersion: renderContentVersion,
-        onProgressEvent,
-        shouldCancel,
-      });
-      downloadBlob(blob, `wiggle-panel-${String(activePanelIndex + 1).padStart(3, "0")}.png`);
-      setStatus("PNG done");
     } else {
-      const blob = await exportPNGSequence(project, 30, {
+      const blob = await exportMP4(project, 30, undefined, {
+        panelIndex: activePanelIndex,
         contentVersion: renderContentVersion,
         onProgressEvent,
         shouldCancel,
       });
-      downloadBlob(blob, "wiggle-png-sequence.zip");
-      setStatus("PNG sequence done");
+      downloadBlob(blob, `wiggle-panel-${String(activePanelIndex + 1).padStart(3, "0")}.mp4`);
+      setStatus("Current panel MP4 done");
     }
   } catch (err) {
     if (isAbortError(err) || exportCancelled) {
@@ -6820,8 +6811,7 @@ async function runExport(format: "webm" | "mp4" | "png" | "png-sequence") {
 
 ($("export-webm") as HTMLButtonElement).onclick = () => { void runExport("webm"); };
 ($("export-mp4") as HTMLButtonElement).onclick = () => { void runExport("mp4"); };
-($("export-png") as HTMLButtonElement).onclick = () => { void runExport("png"); };
-($("export-png-sequence") as HTMLButtonElement).onclick = () => { void runExport("png-sequence"); };
+($("export-panel-mp4") as HTMLButtonElement).onclick = () => { void runExport("panel-mp4"); };
 ($("export-cancel") as HTMLButtonElement).onclick = () => { exportCancelled = true; };
 
 function openAboutDialog() {
@@ -6998,9 +6988,8 @@ function commandList(): Command[] {
       }
     } },
     { id: "export-webm-command", label: "Quick WebM", group: "Export", run: () => ($("export-webm") as HTMLButtonElement).click() },
-    { id: "export-mp4-command", label: "Final MP4", group: "Export", run: () => ($("export-mp4") as HTMLButtonElement).click() },
-    { id: "export-png-command", label: "Current panel PNG", group: "Export", run: () => ($("export-png") as HTMLButtonElement).click() },
-    { id: "export-png-sequence-command", label: "PNG sequence ZIP (30 fps)", group: "Export", run: () => ($("export-png-sequence") as HTMLButtonElement).click() },
+    { id: "export-panel-mp4-command", label: "Current panel MP4", group: "Export", run: () => ($("export-panel-mp4") as HTMLButtonElement).click() },
+    { id: "export-mp4-command", label: "Full sequence MP4", group: "Export", run: () => ($("export-mp4") as HTMLButtonElement).click() },
     { id: "help-commands", label: "Command Palette", group: "Help", shortcut: "⌘K", run: openCommandPalette },
     { id: "help-about", label: "About WiggleStudio", group: "Help", run: openAboutDialog },
     { id: "marquee-rect", label: "Marquee: Rectangle", group: "Edit", run: () => {
