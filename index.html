@@ -1001,6 +1001,97 @@
       width: min(360px, calc(100% - 32px)); justify-self: center;
       box-shadow: var(--shadow-sm);
     }
+
+    /* ── Studio rebuild ────────────────────────────────────────────────
+       A compact, low-glare shell keeps focus on the animated artwork. The
+       canvas remains bright by design, while active tools use the project
+       violet as a precise state signal rather than decoration. */
+    :root {
+      --app-bg: #10121a;
+      --window-bg: #151822;
+      --sidebar-bg: #181b26;
+      --panel-bg: #1d2130;
+      --panel-bg-raised: #232838;
+      --canvas-matte: #292e42;
+      --text-primary: #f3f5fb;
+      --text-secondary: #c4c9d9;
+      --text-muted: #9299ad;
+      --text-disabled: #62697d;
+      --border-subtle: rgba(203, 212, 235, .12);
+      --border-strong: rgba(203, 212, 235, .2);
+      --accent: #8c7cff;
+      --accent-hover: #a295ff;
+      --accent-active: #7665e8;
+      --accent-ink: #b5adff;
+      --accent-soft: rgba(140, 124, 255, .16);
+      --accent-glow: 0 0 0 3px rgba(140, 124, 255, .2);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.22);
+      --shadow-md: 0 12px 26px rgba(0,0,0,.28);
+      --shadow-lg: 0 24px 56px rgba(0,0,0,.42);
+      --shadow-pop: 0 16px 36px rgba(0,0,0,.36);
+    }
+    body { background: var(--app-bg); }
+    .topbar {
+      background: rgba(21, 24, 34, .92);
+      border-color: var(--border-subtle);
+      box-shadow: 0 1px 0 rgba(255,255,255,.03);
+    }
+    .wordmark, .wordmark b { color: var(--text-primary); }
+    .brand-mark { color: var(--accent); }
+    .mode-switcher { background: #10131c; border-color: var(--border-subtle); }
+    .mode-button.active, .rail-button.active {
+      background: #2a2e40; border-color: rgba(181,173,255,.3); color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 1px 2px rgba(0,0,0,.3);
+    }
+    .menu-button { color: var(--text-secondary); }
+    .menu-button:hover, .menu-button.open { color: #fff; background: rgba(255,255,255,.07); border-color: var(--border-subtle); }
+    .stage-wrap { background: var(--app-bg); }
+    .stage-area {
+      background-color: var(--canvas-matte);
+      background-image: radial-gradient(rgba(181,173,255,.13) 1px, transparent 1px);
+      border-color: rgba(181,173,255,.17);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
+    }
+    #stage { border-color: rgba(255,255,255,.38); box-shadow: 0 22px 44px rgba(0,0,0,.35); }
+    .left-sidebar, .right-sidebar {
+      background: rgba(29,33,48,.96); border-color: rgba(203,212,235,.16) !important;
+      box-shadow: var(--shadow-pop), inset 0 1px 0 rgba(255,255,255,.035);
+    }
+    .sidebar-section, .section-details { border-color: var(--border-subtle); }
+    .workspace-section > summary, #timeline-region > summary, .side-title { color: var(--text-primary); }
+    .tool-group-label, .section-details > summary, h2, .control-row, .control-check, .control-note { color: var(--text-secondary); }
+    .chip, .chip.tool, .brush-picker-trigger, .cellbtn, .dur, .frame-dur,
+    .layer-name, .frame-group-repeat, .track-strip, .edit-timeline,
+    .audio-timeline, .audio-track-head input[type=text], input[type=text],
+    select, input[type=number] {
+      background: #151924; color: var(--text-primary); border-color: var(--border-subtle);
+    }
+    .chip.tool { color: var(--text-secondary); }
+    .chip:hover, .chip.tool:hover, .brush-picker-trigger:hover, button.ghost:hover,
+    .cellbtn:hover, .layer-row:hover:not(.active), .iconbtn:hover:not(:disabled),
+    .zoom-pill button:hover, .brush-option:hover, .brush-option:focus { background: #2a3042; color: #fff; }
+    .chip.active, .cellbtn.active, .layer-row.active, .brush-option.active {
+      color: #fff; border-color: rgba(181,173,255,.6); background: var(--accent-soft);
+    }
+    .file-menu, .brush-menu, .command-palette, .toast, .export-sheet, .about-sheet, .canvas-hint {
+      background: #232838; border-color: rgba(203,212,235,.2); color: var(--text-primary);
+    }
+    .menu-item { color: var(--text-primary); }
+    .menu-item:hover:not(:disabled) { background: var(--accent); color: #fff; }
+    .menu-item small, .file-menu .menu-item small { color: var(--text-muted); }
+    #timeline { background: #1d2130; border-color: var(--border-subtle); box-shadow: var(--shadow-sm); }
+    #timeline-region:not([open]) { background: #1d2130; border-color: var(--border-subtle); }
+    .timeline-tabs, .timeline-transport, .onion-skin-bar { border-color: var(--border-subtle); }
+    .timeline-transport button, .panel-cell { background: #171b27; border-color: var(--border-subtle); color: var(--text-secondary); }
+    .timeline-transport button:hover, .panel-cell:hover { background: #282e40; border-color: rgba(203,212,235,.25); color: #fff; }
+    .panel-cell.active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(140,124,255,.34), var(--accent-glow); }
+    .add-panel { border-color: rgba(203,212,235,.26); color: var(--text-muted); }
+    .zoom-pill { background: rgba(29,33,48,.92); border-color: rgba(203,212,235,.2); }
+    .zoom-pill button { color: var(--text-secondary); }
+    input[type=range] { background: #454c61; }
+    input[type=range]::-webkit-slider-thumb { background: var(--accent); border-color: #1d2130; }
+    .file-warning, .recovery-prompt { background: #3b2c21; border-color: #bc7445; color: #fff0e6; }
+    .right-sidebar #status { border-color: var(--border-subtle); }
     /* ── Range inputs ── */
     input[type=range] { -webkit-appearance: none; appearance: none; height: 4px;
       background: rgba(255,251,242,.1); border-radius: 2px; outline: none; }
