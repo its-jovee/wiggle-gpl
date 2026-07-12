@@ -30,7 +30,7 @@ compileBrushPresets();
 const types = await import(`${outDir}/types.js`);
 const presets = await import(`${outDir}/brushPresets.js`);
 
-test("v7 project migrates to v8 with empty project brush presets", () => {
+test("v7 project migrates to current version with empty project brush presets", () => {
   const migrated = types.migrateProject({
     version: 7,
     width: 1080,
@@ -40,7 +40,7 @@ test("v7 project migrates to v8 with empty project brush presets", () => {
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
 
-  assert.equal(migrated.version, 8);
+  assert.equal(migrated.version, 9);
   assert.deepEqual(migrated.brushPresets, []);
 });
 

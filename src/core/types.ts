@@ -155,7 +155,18 @@ export type TextElement = {
   exit?: AnimationSpec;
 };
 
-export type LayerKind = "draw" | "text";
+export type ToneStyle = "halftone" | "hatch" | "crosshatch";
+
+/** Saved settings for a static, rasterized manga texture layer. */
+export type ToneSettings = {
+  style: ToneStyle;
+  color: string;
+  spacing: number;
+  size: number;
+  angle: number;
+};
+
+export type LayerKind = "draw" | "text" | "tone";
 
 export type Layer = {
   id: string;
@@ -165,6 +176,8 @@ export type Layer = {
   blendMode?: LayerBlendMode;
   mask?: LayerMask;
   kind?: LayerKind;
+  /** Present on dedicated tone layers. It is rasterized during render, never wiggled. */
+  tone?: ToneSettings;
   clipToBelow?: boolean;
   animation?: LayerAnimation;
   strokes: Stroke[];
@@ -278,7 +291,7 @@ export type FrameGroup = {
 };
 
 export type Project = {
-  version: 8;
+  version: 9;
   width: number;
   height: number;
   wiggleFps: number;
@@ -296,7 +309,7 @@ export const TIKTOK_HEIGHT = 1920;
 
 export function newProject(width = TIKTOK_WIDTH, height = TIKTOK_HEIGHT): Project {
   return {
-    version: 8,
+    version: 9,
     width,
     height,
     wiggleFps: 8,
@@ -334,6 +347,9 @@ export function newLayer(name = "Layer", kind: LayerKind = "draw"): Layer {
     opacity: 1,
     blendMode: "normal",
     kind,
+    tone: kind === "tone" ? {
+      style: "halftone", color: "#202020", spacing: 18, size: 5, angle: 45,
+    } : undefined,
     strokes: [],
     fills: [],
     texts: kind === "text" ? [] : undefined,
@@ -357,20 +373,13 @@ export function newSubPanel(
 
 // ---- Migration -------------------------------------------------------------
 
-/** Loads any prior version (v1-v7) and returns a v8 project. */
+/** Loads any prior version (v1-v8) and returns a v9 project. */
 export function migrateProject(raw: unknown): Project {
   if (!raw || typeof raw !== "object") throw new Error("not a project");
   const p = raw as Record<string, unknown>;
-  let project: Project;
-  if (p.version === 8) project = normalizeV8(raw as Project);
-  else if (p.version === 7) project = migrateV7toV8(raw as V7Project);
-  else if (p.version === 6) project = migrateV7toV8(migrateV6toV7(raw as V6Project));
-  else if (p.version === 5) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(raw as V5Project)));
-  else if (p.version === 4) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(raw as V4Project))));
-  else if (p.version === 3) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(raw as V3Project)))));
-  else if (p.version === 2) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(migrateV2toV3(raw as V2Project))))));
-  else if (p.version === 1) project = migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(migrateV2toV3(migrateV1toV2(p)))))));
-  else throw new Error("unknown project version");
+  const project = p.version === 9
+    ? normalizeV9(raw as Project)
+    : migrateV8toV9(migrateLegacyToV8(p));
   capProjectFillLimits(project);
   capProjectBrushSettings(project);
   capProjectDrawingSettings(project);
@@ -410,6 +419,26 @@ type V4Project = Omit<Project, "version" | "audio" | "brushPresets" | "drawingSe
 type V5Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 5 };
 type V6Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 6 };
 type V7Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 7; brushPresets?: BrushPreset[] };
+type V8Project = Omit<Project, "version"> & { version: 8 };
+
+function migrateLegacyToV8(p: Record<string, unknown>): V8Project {
+  if (p.version === 8) return p as V8Project;
+  if (p.version === 7) return migrateV7toV8(p as V7Project);
+  if (p.version === 6) return migrateV7toV8(migrateV6toV7(p as V6Project));
+  if (p.version === 5) return migrateV7toV8(migrateV6toV7(migrateV5toV6(p as V5Project)));
+  if (p.version === 4) return migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(p as V4Project))));
+  if (p.version === 3) return migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(p as V3Project)))));
+  if (p.version === 2) {
+    const v3 = migrateV2toV3(p as V2Project);
+    return migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(v3)))));
+  }
+  if (p.version === 1) {
+    const v2 = migrateV1toV2(p);
+    const v3 = migrateV2toV3(v2);
+    return migrateV7toV8(migrateV6toV7(migrateV5toV6(migrateV4toV5(migrateV3toV4(v3)))));
+  }
+  throw new Error("unknown project version");
+}
 
 function migrateV1toV2(p: Record<string, unknown>): V2Project {
   const panels = ((p.panels as V1Panel[]) ?? []).map((pp) => ({
@@ -512,7 +541,29 @@ function migrateV6toV7(p: V6Project): V7Project {
   return normalizeV7({ ...p, version: 7 });
 }
 
-function normalizeV8(p: Project): Project {
+function normalizeV9(p: Project): Project {
+  return {
+    ...p,
+    version: 9,
+    audio: p.audio ?? newAudioProject(),
+    brushPresets: p.brushPresets ?? [],
+    drawingSettings: {
+      ...newDrawingSettings(),
+      ...(p.drawingSettings ?? {}),
+      smoothing: normalizeStrokeSmoothingSettings(p.drawingSettings?.smoothing),
+    },
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      layers: panel.layers.map(normalizeLayerV7),
+      subPanels: (panel.subPanels ?? []).map((sp) => ({
+        ...sp,
+        layers: sp.layers.map(normalizeLayerV7),
+      })),
+    })),
+  };
+}
+
+function normalizeV8(p: V8Project): V8Project {
   return {
     ...p,
     version: 8,
@@ -534,11 +585,15 @@ function normalizeV8(p: Project): Project {
   };
 }
 
-function migrateV7toV8(p: V7Project): Project {
+function migrateV7toV8(p: V7Project): V8Project {
   return normalizeV8({
     ...p,
     version: 8,
     brushPresets: p.brushPresets ?? [],
     drawingSettings: newDrawingSettings(),
   });
+}
+
+function migrateV8toV9(p: V8Project): Project {
+  return normalizeV9({ ...p, version: 9 } as Project);
 }

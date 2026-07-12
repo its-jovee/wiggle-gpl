@@ -9,7 +9,7 @@ import {
   Project, Stroke, Panel, Layer, Fill, SubPanel, TextElement, Vec2, SelectionShape,
   AnimationSpec, AnimationKind, SubPanelShape, LayerAnimation,
   EasingKind, LayerLoopKind, LayerAnimTransform, FrameGroup, BrushPreset,
-  PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings,
+  PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings, ToneStyle,
   newProject as createProject, newPanel, newLayer, newSubPanel, newPerspectiveGuide, migrateProject,
 } from "./core/types";
 import {
@@ -31,7 +31,7 @@ import {
 import { StudioIcons, type IconNode } from "./icons/studio";
 import { BRUSHES, brushByKey } from "./brushes/registry";
 import { BUILTIN_PALETTES, loadLospecPalette, Palette } from "./core/palette";
-import { exportWebM, exportMP4, downloadBlob } from "./core/export";
+import { exportWebM, exportMP4, exportPanelPNG, exportPNGSequence, downloadBlob } from "./core/export";
 import { exportProgressStatus } from "./core/exportProgress";
 import {
   AudioAsset, AudioClip, AudioTrack, ensureAudioProject,
@@ -471,6 +471,8 @@ function updateExportMenuLabels() {
   const dims = formatCanvasDimensions(project.width, project.height);
   $("export-webm-dims").textContent = `${dims} · .webm`;
   $("export-mp4-dims").textContent = `${dims} · .mp4`;
+  $("export-png-dims").textContent = `${dims} · .png`;
+  $("export-png-sequence-dims").textContent = `${dims} · 30fps · .zip`;
 }
 
 function resizeCanvasForProject() {
@@ -1936,10 +1938,11 @@ canvas.addEventListener("pointerdown", (e) => {
   if (panel.kind === "timelapse") return;
   let layer = activeLayer();
   if (!layer || !layer.visible) return;
-  // Drawing into a text layer is disallowed; switch to first draw layer.
-  if (layer.kind === "text") {
+  // Texture and text layers are output-only; send paint tools to a real draw
+  // layer so an accidental stroke cannot silently disappear on a tone layer.
+  if (layer.kind !== "draw" && layer.kind !== undefined) {
     const c = activeContainer();
-    const idx = c.layers.findIndex(l => l.kind !== "text");
+    const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible);
     if (idx < 0) return;
     c.setActiveLayerIndex(idx);
     buildLayers();
@@ -5550,11 +5553,18 @@ function buildLayers() {
       if (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.classList.contains("drag-handle")) return;
       cont.setActiveLayerIndex(li);
       buildLayers();
+      buildInspector();
     };
     if (layer.kind === "text") {
       const tag = document.createElement("span");
       tag.textContent = "T";
       tag.title = "Text layer";
+      tag.className = "layer-tag";
+      row.appendChild(tag);
+    } else if (layer.kind === "tone") {
+      const tag = document.createElement("span");
+      tag.textContent = "TONE";
+      tag.title = "Static raster texture layer";
       tag.className = "layer-tag";
       row.appendChild(tag);
     }
@@ -5571,6 +5581,19 @@ function buildLayers() {
     buildLayers();
   };
   host.appendChild(add);
+
+  const addTone = document.createElement("button");
+  addTone.textContent = "+ Manga tone"; addTone.className = "ghost";
+  addTone.style.marginTop = "4px";
+  addTone.title = "Add a static halftone or hatching raster layer";
+  addTone.onclick = () => {
+    cont.layers.push(newLayer("Manga tone", "tone"));
+    cont.setActiveLayerIndex(cont.layers.length - 1);
+    commitHistory();
+    buildLayers();
+    buildInspector();
+  };
+  host.appendChild(addTone);
 
   // Rulers are layer-bound: switching layers can swap which ruler applies,
   // so keep the perspective inspector in sync.
@@ -5951,6 +5974,49 @@ function appendLayerInspector(host: HTMLElement, layer: Layer) {
     wrap.appendChild(child);
     section.appendChild(wrap);
   };
+
+  if (layer.kind === "tone" && layer.tone) {
+    const tone = layer.tone;
+    const style = document.createElement("select");
+    const toneStyles: { value: ToneStyle; label: string }[] = [
+      { value: "halftone", label: "Halftone dots" },
+      { value: "hatch", label: "Hatching" },
+      { value: "crosshatch", label: "Crosshatching" },
+    ];
+    for (const option of toneStyles) {
+      const el = document.createElement("option");
+      el.value = option.value;
+      el.textContent = option.label;
+      el.selected = tone.style === option.value;
+      style.appendChild(el);
+    }
+    style.onchange = () => {
+      tone.style = style.value as ToneStyle;
+      commitHistory([layer]);
+      buildLayers();
+    };
+    row("Texture", style);
+    appendColorRow(section, "Color", () => tone.color, (color) => { tone.color = color; });
+
+    const toneRange = (
+      label: string,
+      key: "spacing" | "size" | "angle",
+      min: number,
+      max: number,
+      step: number
+    ) => {
+      const input = document.createElement("input");
+      input.type = "range";
+      input.min = String(min); input.max = String(max); input.step = String(step);
+      input.value = String(tone[key]);
+      input.oninput = () => { tone[key] = +input.value; };
+      input.onchange = () => commitHistory([layer]);
+      row(label, input);
+    };
+    toneRange("Spacing", "spacing", 4, 80, 1);
+    toneRange("Dot / line", "size", 1, 48, 0.5);
+    toneRange("Angle", "angle", 0, 180, 1);
+  }
 
   const clip = document.createElement("input");
   clip.type = "checkbox";
@@ -6670,7 +6736,7 @@ function askAudioTailChoice(): Promise<boolean | null> {
   });
 }
 
-async function runExport(format: "webm" | "mp4") {
+async function runExport(format: "webm" | "mp4" | "png" | "png-sequence") {
   closeExportMenu();
   const wasPlaying = playing;
   await stopPlayback(playheadMs);
@@ -6689,7 +6755,11 @@ async function runExport(format: "webm" | "mp4") {
   }
 
   exportCancelled = false;
-  $("export-title").textContent = format === "webm" ? "Exporting WebM…" : "Exporting MP4…";
+  const exportLabel = format === "webm" ? "WebM"
+    : format === "mp4" ? "MP4"
+      : format === "png" ? "PNG"
+        : "PNG sequence";
+  $("export-title").textContent = `Exporting ${exportLabel}…`;
   $("export-audio-choice").hidden = true;
   $("export-progress-panel").hidden = false;
   updateExportProgress(format === "mp4" ? "Loading encoder…" : "Starting…", 0);
@@ -6709,7 +6779,7 @@ async function runExport(format: "webm" | "mp4") {
       });
       downloadBlob(blob, "wiggle.webm");
       setStatus("WebM done");
-    } else {
+    } else if (format === "mp4") {
       const blob = await exportMP4(project, 30, undefined, {
         includeAudioTail,
         contentVersion: renderContentVersion,
@@ -6718,12 +6788,28 @@ async function runExport(format: "webm" | "mp4") {
       });
       downloadBlob(blob, "wiggle.mp4");
       setStatus("MP4 done");
+    } else if (format === "png") {
+      const blob = await exportPanelPNG(project, activePanelIndex, wiggleTick, {
+        contentVersion: renderContentVersion,
+        onProgressEvent,
+        shouldCancel,
+      });
+      downloadBlob(blob, `wiggle-panel-${String(activePanelIndex + 1).padStart(3, "0")}.png`);
+      setStatus("PNG done");
+    } else {
+      const blob = await exportPNGSequence(project, 30, {
+        contentVersion: renderContentVersion,
+        onProgressEvent,
+        shouldCancel,
+      });
+      downloadBlob(blob, "wiggle-png-sequence.zip");
+      setStatus("PNG sequence done");
     }
   } catch (err) {
     if (isAbortError(err) || exportCancelled) {
       setStatus("Export cancelled");
     } else {
-      showError(`${format === "webm" ? "WebM" : "MP4"} failed: ${(err as Error).message}`);
+      showError(`${exportLabel} failed: ${(err as Error).message}`);
     }
   } finally {
     closeExportOverlay();
@@ -6734,6 +6820,8 @@ async function runExport(format: "webm" | "mp4") {
 
 ($("export-webm") as HTMLButtonElement).onclick = () => { void runExport("webm"); };
 ($("export-mp4") as HTMLButtonElement).onclick = () => { void runExport("mp4"); };
+($("export-png") as HTMLButtonElement).onclick = () => { void runExport("png"); };
+($("export-png-sequence") as HTMLButtonElement).onclick = () => { void runExport("png-sequence"); };
 ($("export-cancel") as HTMLButtonElement).onclick = () => { exportCancelled = true; };
 
 function openAboutDialog() {
@@ -6911,6 +6999,8 @@ function commandList(): Command[] {
     } },
     { id: "export-webm-command", label: "Quick WebM", group: "Export", run: () => ($("export-webm") as HTMLButtonElement).click() },
     { id: "export-mp4-command", label: "Final MP4", group: "Export", run: () => ($("export-mp4") as HTMLButtonElement).click() },
+    { id: "export-png-command", label: "Current panel PNG", group: "Export", run: () => ($("export-png") as HTMLButtonElement).click() },
+    { id: "export-png-sequence-command", label: "PNG sequence ZIP (30 fps)", group: "Export", run: () => ($("export-png-sequence") as HTMLButtonElement).click() },
     { id: "help-commands", label: "Command Palette", group: "Help", shortcut: "⌘K", run: openCommandPalette },
     { id: "help-about", label: "About WiggleStudio", group: "Help", run: openAboutDialog },
     { id: "marquee-rect", label: "Marquee: Rectangle", group: "Edit", run: () => {

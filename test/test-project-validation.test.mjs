@@ -48,6 +48,18 @@ test("newProject includes default drawing smoothing settings", () => {
   });
 });
 
+test("new tone layer stores static manga texture settings", () => {
+  const tone = types.newLayer("Manga tone", "tone");
+  assert.equal(tone.kind, "tone");
+  assert.deepEqual(tone.tone, {
+    style: "halftone",
+    color: "#202020",
+    spacing: 18,
+    size: 5,
+    angle: 45,
+  });
+});
+
 test("validateProject rejects oversized dimensions", () => {
   const project = baseProject();
   project.width = validation.MAX_PROJECT_DIMENSION + 1;

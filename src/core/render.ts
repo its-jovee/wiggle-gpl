@@ -37,6 +37,7 @@ import {
   brushSettingsSignatureValues,
   effectiveBrushSettings,
 } from "./brushSettings";
+import { renderTone } from "./tone";
 
 const WIGGLE_AMPLITUDE = 2.5;
 /** Float tolerance when comparing stroke-length budgets (accumulated segment lengths). */
@@ -701,7 +702,13 @@ function drawLayerRaw(
   if (ox > 0 || oy > 0) oc.translate(ox, oy);
 
   const wiggleAmp = opts?.skipJitter ? 0 : WIGGLE_AMPLITUDE;
-  const drawn = walkLayerStrokes(oc, layer.strokes, layerIndex, tick, budget, bg, wiggleAmp);
+  const drawn = layer.kind === "tone"
+    ? []
+    : walkLayerStrokes(oc, layer.strokes, layerIndex, tick, budget, bg, wiggleAmp);
+
+  // Texture layers are intentionally static: their raster does not receive
+  // animated stroke jitter and is therefore identical on every wiggle tick.
+  if (layer.kind === "tone" && layer.tone) renderTone(oc, layer.tone, width, height);
 
   let usedStaleFillMask = false;
   if (!opts?.skipFills && layer.fills.length > 0) {
