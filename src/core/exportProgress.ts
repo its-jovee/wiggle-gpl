@@ -5,7 +5,7 @@
 // normalizes progress reporting so callers can show phase-aware status text.
 // ============================================================================
 
-export type ExportFormat = "WebM" | "MP4";
+export type ExportFormat = "WebM" | "MP4" | "PNG" | "PNG sequence";
 export type ExportProgressPhase = "render" | "encode" | "done" | "failed";
 
 export type ExportProgress = {
