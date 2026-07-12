@@ -317,7 +317,7 @@ export function newPanel(): Panel {
   return {
     id: crypto.randomUUID(),
     durationMs: 1000,
-    bg: "#1a1a2e",
+    bg: "#ffffff",
     paletteId: null,
     layers: [newLayer("Layer 1")],
     activeLayerIndex: 0,

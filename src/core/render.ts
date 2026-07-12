@@ -490,11 +490,11 @@ function paintOverscanOverlay(
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
   const editMode = alpha < 1;
-  // In edit mode use the canvas matte color (#0b0a08) at high opacity so the
-  // bleed margin looks neutral — matching the stage-area CSS background.
+  // In edit mode use a quiet light matte so the bleed area recedes without
+  // turning the editor into a dark surround.
   // In playback/export mode keep solid black for a clean mask.
-  ctx.fillStyle = editMode ? "#0b0a08" : "#000000";
-  ctx.globalAlpha = editMode ? 0.92 : 1;
+  ctx.fillStyle = editMode ? "#e8edf4" : "#000000";
+  ctx.globalAlpha = editMode ? 1 : 1;
   if (oy > 0) {
     ctx.fillRect(0, 0, bufW, oy);
     ctx.fillRect(0, oy + height, bufW, oy);
@@ -504,8 +504,8 @@ function paintOverscanOverlay(
     ctx.fillRect(ox + width, oy, ox, height);
   }
   if (editMode) {
-    ctx.globalAlpha = 0.25;
-    ctx.strokeStyle = "#ffffff";
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#cbd5e1";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([]);
     ctx.strokeRect(ox + 0.5, oy + 0.5, width - 1, height - 1);
