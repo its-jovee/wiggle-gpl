@@ -1303,6 +1303,36 @@
     .timeline-panel .add-panel { width: 100%; min-height: 44px; }
     .timeline-panel .panel-cell.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
     .timeline-panel .panel-cell.drop-after { box-shadow: 0 3px 0 0 var(--accent); }
+    /* A timeline follows its own viewport: a narrow panel reads down the page,
+       while a wider panel restores the familiar left-to-right filmstrip. */
+    @container (min-width: 360px) {
+      .timeline-panel .timeline-transport { display: flex; flex-wrap: wrap; padding: 8px 10px; }
+      .timeline-panel .timeline-transport button {
+        width: auto; min-width: 32px; padding: 4px 10px; overflow: visible;
+        text-overflow: clip;
+      }
+      .timeline-panel .timeline-transport .frame-counter { grid-column: auto; margin-left: auto; }
+      .timeline-panel .timeline-filmstrip {
+        flex-direction: row; align-items: stretch; overflow-x: auto; overflow-y: hidden; padding: 10px;
+      }
+      .timeline-panel .panel-cell {
+        width: auto; flex: 0 0 auto; grid-template-columns: 1fr; column-gap: 5px;
+      }
+      .timeline-panel .panel-cell canvas { grid-row: auto; }
+      .timeline-panel .panel-cell > div:not(.exposure-control):not(.panel-cell-actions),
+      .timeline-panel .exposure-control,
+      .timeline-panel .duration-ms-details,
+      .timeline-panel .panel-cell-actions { grid-column: auto; }
+      .timeline-panel .panel-cell-actions { display: flex !important; }
+      .timeline-panel .panel-cell.active .panel-cell-actions { max-height: 40px; }
+      .timeline-panel .onion-skin-bar { display: flex; padding: 4px 10px; }
+      .timeline-panel .onion-skin-bar select { width: auto; }
+      .timeline-panel .onion-skin-bar input[type=range] { grid-column: auto; width: 80px; }
+      .timeline-panel .frame-group-cells { flex-direction: row; }
+      .timeline-panel .add-panel { width: 62px; min-height: auto; }
+      .timeline-panel .panel-cell.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
+      .timeline-panel .panel-cell.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
+    }
     @container (max-width: 230px) {
       .timeline-panel .timeline-transport { grid-template-columns: 1fr; }
       .timeline-panel .panel-cell { grid-template-columns: 1fr; }
