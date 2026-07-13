@@ -4267,7 +4267,10 @@ function buildPanelCell(filmstrip: HTMLElement, i: number, p: Panel) {
     if (!e.dataTransfer?.types.includes("text/plain")) return;
     e.preventDefault();
     const rect = cell.getBoundingClientRect();
-    const isBefore = e.clientX < rect.left + rect.width / 2;
+    const vertical = !!cell.closest(".timeline-panel");
+    const isBefore = vertical
+      ? e.clientY < rect.top + rect.height / 2
+      : e.clientX < rect.left + rect.width / 2;
     document.querySelectorAll(".panel-cell").forEach((c) =>
       c.classList.remove("drop-before", "drop-after"));
     cell.classList.add(isBefore ? "drop-before" : "drop-after");
@@ -4277,7 +4280,10 @@ function buildPanelCell(filmstrip: HTMLElement, i: number, p: Panel) {
     cell.classList.remove("drop-before", "drop-after");
     const raw = e.dataTransfer!.getData("text/plain");
     const rect = cell.getBoundingClientRect();
-    const isBefore = e.clientX < rect.left + rect.width / 2;
+    const vertical = !!cell.closest(".timeline-panel");
+    const isBefore = vertical
+      ? e.clientY < rect.top + rect.height / 2
+      : e.clientX < rect.left + rect.width / 2;
     handlePanelDrop(i, isBefore, raw);
   });
 
@@ -4371,6 +4377,7 @@ function buildTimeline() {
   const tl = $("timeline");
   const previousFilmstrip = tl.querySelector(".timeline-filmstrip") as HTMLElement | null;
   const previousFilmstripScrollLeft = previousFilmstrip?.scrollLeft ?? 0;
+  const previousFilmstripScrollTop = previousFilmstrip?.scrollTop ?? 0;
   tl.innerHTML = "";
   tl.classList.toggle("track-mode", timelineMode === "tracks" && workspaceMode === "draw");
   tl.classList.toggle("edit-mode", workspaceMode === "edit");
@@ -4432,13 +4439,24 @@ function buildTimeline() {
 
   const activeCell = filmstrip.querySelector<HTMLElement>(".panel-cell.active");
   if (activeCell) {
-    filmstrip.scrollLeft = timelineScrollAfterRebuild({
-      previousScrollLeft: previousFilmstripScrollLeft,
-      viewportWidth: filmstrip.clientWidth,
-      contentWidth: filmstrip.scrollWidth,
-      activeLeft: activeCell.offsetLeft,
-      activeRight: activeCell.offsetLeft + activeCell.offsetWidth,
-    });
+    if (filmstrip.closest(".timeline-panel")) {
+      const activeTop = activeCell.offsetTop;
+      const activeBottom = activeTop + activeCell.offsetHeight;
+      const viewportBottom = previousFilmstripScrollTop + filmstrip.clientHeight;
+      filmstrip.scrollTop = activeTop < previousFilmstripScrollTop
+        ? activeTop
+        : activeBottom > viewportBottom
+          ? activeBottom - filmstrip.clientHeight
+          : previousFilmstripScrollTop;
+    } else {
+      filmstrip.scrollLeft = timelineScrollAfterRebuild({
+        previousScrollLeft: previousFilmstripScrollLeft,
+        viewportWidth: filmstrip.clientWidth,
+        contentWidth: filmstrip.scrollWidth,
+        activeLeft: activeCell.offsetLeft,
+        activeRight: activeCell.offsetLeft + activeCell.offsetWidth,
+      });
+    }
   }
 
   // Onion skin bar — only in cells mode
@@ -7573,7 +7591,82 @@ window.addEventListener("keyup", (e) => {
   stageArea.classList.remove("space-pan", "panning");
 });
 
+// ---- movable workspace panels --------------------------------------------
+
+const workspacePanels = Array.from(document.querySelectorAll<HTMLElement>(".workspace-panel"));
+
+function raiseWorkspacePanel(panel: HTMLElement) {
+  for (const item of workspacePanels) item.classList.toggle("is-front", item === panel);
+}
+
+function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
+  const rect = panel.getBoundingClientRect();
+  const margin = 8;
+  const minTop = 52;
+  const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+  const maxTop = Math.max(minTop, window.innerHeight - 48);
+  panel.style.left = `${Math.max(margin, Math.min(maxLeft, left))}px`;
+  panel.style.right = "auto";
+  panel.style.top = `${Math.max(minTop, Math.min(maxTop, top))}px`;
+  panel.style.bottom = "auto";
+  panel.style.maxHeight = `calc(100vh - ${minTop + margin}px)`;
+}
+
+function initWorkspacePanels() {
+  for (const panel of workspacePanels) {
+    const titlebar = panel.querySelector<HTMLElement>(".workspace-panel-titlebar");
+    if (!titlebar) continue;
+
+    titlebar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const rect = panel.getBoundingClientRect();
+      const offsetX = event.clientX - rect.left;
+      const offsetY = event.clientY - rect.top;
+      raiseWorkspacePanel(panel);
+      panel.classList.add("is-moving");
+      titlebar.setPointerCapture(event.pointerId);
+
+      const move = (next: PointerEvent) => {
+        moveWorkspacePanel(panel, next.clientX - offsetX, next.clientY - offsetY);
+      };
+      const up = () => {
+        panel.classList.remove("is-moving");
+        titlebar.removeEventListener("pointermove", move);
+        titlebar.removeEventListener("pointerup", up);
+        titlebar.removeEventListener("pointercancel", up);
+        fitViewport();
+      };
+      titlebar.addEventListener("pointermove", move);
+      titlebar.addEventListener("pointerup", up);
+      titlebar.addEventListener("pointercancel", up);
+    });
+
+    titlebar.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      const rect = panel.getBoundingClientRect();
+      const amount = event.shiftKey ? 48 : 12;
+      const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+      const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+      raiseWorkspacePanel(panel);
+      moveWorkspacePanel(panel, rect.left + dx, rect.top + dy);
+    });
+
+    panel.addEventListener("pointerdown", () => raiseWorkspacePanel(panel));
+  }
+
+  window.addEventListener("resize", () => {
+    for (const panel of workspacePanels) {
+      if (!panel.style.left) continue;
+      const rect = panel.getBoundingClientRect();
+      moveWorkspacePanel(panel, rect.left, rect.top);
+    }
+  });
+}
+
 // initial paint
+initWorkspacePanels();
 buildBrushBar();
 buildPalette();
 buildTimeline();
