@@ -7594,6 +7594,25 @@ window.addEventListener("keyup", (e) => {
 // ---- movable workspace panels --------------------------------------------
 
 const workspacePanels = Array.from(document.querySelectorAll<HTMLElement>(".workspace-panel"));
+type WorkspaceAnchor = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+const workspaceDockTargets = document.createElement("div");
+workspaceDockTargets.className = "workspace-dock-targets";
+workspaceDockTargets.setAttribute("aria-hidden", "true");
+const workspaceAnchorLabels: Record<WorkspaceAnchor, string> = {
+  "top-left": "Top left",
+  "top-right": "Top right",
+  "bottom-left": "Bottom left",
+  "bottom-right": "Bottom right",
+};
+for (const anchor of Object.keys(workspaceAnchorLabels) as WorkspaceAnchor[]) {
+  const target = document.createElement("span");
+  target.className = "workspace-dock-target";
+  target.dataset.anchor = anchor;
+  target.textContent = workspaceAnchorLabels[anchor];
+  workspaceDockTargets.appendChild(target);
+}
+document.body.appendChild(workspaceDockTargets);
 
 function raiseWorkspacePanel(panel: HTMLElement) {
   for (const item of workspacePanels) item.classList.toggle("is-front", item === panel);
@@ -7604,7 +7623,7 @@ function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   const margin = 8;
   const minTop = 52;
   const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
-  const maxTop = Math.max(minTop, window.innerHeight - 48);
+  const maxTop = Math.max(minTop, window.innerHeight - rect.height - margin);
   panel.style.left = `${Math.max(margin, Math.min(maxLeft, left))}px`;
   panel.style.right = "auto";
   panel.style.top = `${Math.max(minTop, Math.min(maxTop, top))}px`;
@@ -7612,13 +7631,75 @@ function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   panel.style.maxHeight = `calc(100vh - ${minTop + margin}px)`;
 }
 
+function anchorAtPoint(x: number, y: number): WorkspaceAnchor | null {
+  const edge = 108;
+  const top = 52;
+  const bottom = window.innerHeight - 8;
+  const left = 8;
+  const right = window.innerWidth - 8;
+  if (x <= left + edge && y <= top + edge) return "top-left";
+  if (x >= right - edge && y <= top + edge) return "top-right";
+  if (x <= left + edge && y >= bottom - edge) return "bottom-left";
+  if (x >= right - edge && y >= bottom - edge) return "bottom-right";
+  return null;
+}
+
+function showWorkspaceDockTargets(anchor: WorkspaceAnchor | null) {
+  workspaceDockTargets.classList.add("is-visible");
+  for (const target of workspaceDockTargets.querySelectorAll<HTMLElement>(".workspace-dock-target")) {
+    target.classList.toggle("is-active", target.dataset.anchor === anchor);
+  }
+}
+
+function hideWorkspaceDockTargets() {
+  workspaceDockTargets.classList.remove("is-visible");
+  workspaceDockTargets.querySelectorAll(".workspace-dock-target.is-active")
+    .forEach((target) => target.classList.remove("is-active"));
+}
+
+function dockWorkspacePanel(panel: HTMLElement, anchor: WorkspaceAnchor) {
+  const rect = panel.getBoundingClientRect();
+  const margin = 16;
+  const minTop = 56;
+  const left = anchor.endsWith("left") ? margin : window.innerWidth - rect.width - margin;
+  const top = anchor.startsWith("top") ? minTop : window.innerHeight - rect.height - margin;
+  moveWorkspacePanel(panel, left, top);
+  panel.dataset.workspaceAnchor = anchor;
+  panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = anchor;
+}
+
+function addWorkspaceAnchorSelect(panel: HTMLElement, titlebar: HTMLElement) {
+  const select = document.createElement("select");
+  select.className = "workspace-anchor-select";
+  select.setAttribute("aria-label", "Dock panel to workspace corner");
+  select.title = "Dock panel to a workspace corner";
+  for (const [value, label] of [["free", "Dock"], ...Object.entries(workspaceAnchorLabels)]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  }
+  select.addEventListener("pointerdown", (event) => event.stopPropagation());
+  select.addEventListener("change", () => {
+    if (select.value === "free") {
+      delete panel.dataset.workspaceAnchor;
+      return;
+    }
+    dockWorkspacePanel(panel, select.value as WorkspaceAnchor);
+    raiseWorkspacePanel(panel);
+  });
+  titlebar.insertBefore(select, titlebar.querySelector(".workspace-panel-grip"));
+}
+
 function initWorkspacePanels() {
   for (const panel of workspacePanels) {
     const titlebar = panel.querySelector<HTMLElement>(".workspace-panel-titlebar");
     if (!titlebar) continue;
+    addWorkspaceAnchorSelect(panel, titlebar);
 
     titlebar.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
+      if ((event.target as HTMLElement).closest("select, button, input")) return;
       event.preventDefault();
       const rect = panel.getBoundingClientRect();
       const offsetX = event.clientX - rect.left;
@@ -7626,15 +7707,24 @@ function initWorkspacePanels() {
       raiseWorkspacePanel(panel);
       panel.classList.add("is-moving");
       titlebar.setPointerCapture(event.pointerId);
+      showWorkspaceDockTargets(anchorAtPoint(event.clientX, event.clientY));
 
       const move = (next: PointerEvent) => {
         moveWorkspacePanel(panel, next.clientX - offsetX, next.clientY - offsetY);
+        showWorkspaceDockTargets(anchorAtPoint(next.clientX, next.clientY));
       };
-      const up = () => {
+      const up = (next: PointerEvent) => {
         panel.classList.remove("is-moving");
         titlebar.removeEventListener("pointermove", move);
         titlebar.removeEventListener("pointerup", up);
         titlebar.removeEventListener("pointercancel", up);
+        const anchor = anchorAtPoint(next.clientX, next.clientY);
+        if (anchor) dockWorkspacePanel(panel, anchor);
+        else {
+          delete panel.dataset.workspaceAnchor;
+          panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = "free";
+        }
+        hideWorkspaceDockTargets();
         fitViewport();
       };
       titlebar.addEventListener("pointermove", move);
@@ -7643,6 +7733,7 @@ function initWorkspacePanels() {
     });
 
     titlebar.addEventListener("keydown", (event) => {
+      if ((event.target as HTMLElement).closest("select, button, input")) return;
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
       const rect = panel.getBoundingClientRect();
