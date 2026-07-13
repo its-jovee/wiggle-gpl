@@ -7594,15 +7594,23 @@ window.addEventListener("keyup", (e) => {
 // ---- movable workspace panels --------------------------------------------
 
 const workspacePanels = Array.from(document.querySelectorAll<HTMLElement>(".workspace-panel"));
-type WorkspaceAnchor = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+type WorkspaceAnchor = "top-left" | "top-center" | "top-right"
+  | "bottom-left" | "bottom-center" | "bottom-right";
+type WorkspaceDockLane = "left" | "center" | "right";
+
+const workspaceDockMargin = 16;
+const workspaceDockTop = 56;
+const workspaceDockGap = 12;
 
 const workspaceDockTargets = document.createElement("div");
 workspaceDockTargets.className = "workspace-dock-targets";
 workspaceDockTargets.setAttribute("aria-hidden", "true");
 const workspaceAnchorLabels: Record<WorkspaceAnchor, string> = {
   "top-left": "Top left",
+  "top-center": "Top centre",
   "top-right": "Top right",
   "bottom-left": "Bottom left",
+  "bottom-center": "Bottom centre",
   "bottom-right": "Bottom right",
 };
 for (const anchor of Object.keys(workspaceAnchorLabels) as WorkspaceAnchor[]) {
@@ -7621,27 +7629,67 @@ function raiseWorkspacePanel(panel: HTMLElement) {
 function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   const rect = panel.getBoundingClientRect();
   const margin = 8;
-  const minTop = 52;
+  const minTop = workspaceDockTop;
   const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
   const maxTop = Math.max(minTop, window.innerHeight - rect.height - margin);
   panel.style.left = `${Math.max(margin, Math.min(maxLeft, left))}px`;
   panel.style.right = "auto";
   panel.style.top = `${Math.max(minTop, Math.min(maxTop, top))}px`;
   panel.style.bottom = "auto";
-  panel.style.maxHeight = `calc(100vh - ${minTop + margin}px)`;
 }
 
 function anchorAtPoint(x: number, y: number): WorkspaceAnchor | null {
   const edge = 108;
-  const top = 52;
+  const top = workspaceDockTop;
   const bottom = window.innerHeight - 8;
   const left = 8;
   const right = window.innerWidth - 8;
-  if (x <= left + edge && y <= top + edge) return "top-left";
-  if (x >= right - edge && y <= top + edge) return "top-right";
-  if (x <= left + edge && y >= bottom - edge) return "bottom-left";
-  if (x >= right - edge && y >= bottom - edge) return "bottom-right";
+  const column = x <= left + edge ? "left" : x >= right - edge ? "right" : "center";
+  if (y <= top + edge) return `top-${column}` as WorkspaceAnchor;
+  if (y >= bottom - edge) return `bottom-${column}` as WorkspaceAnchor;
   return null;
+}
+
+function dockedPanelsInLane(lane: WorkspaceDockLane, edge: "top" | "bottom") {
+  return workspacePanels.filter((panel) => panel.dataset.workspaceAnchor === `${edge}-${lane}`);
+}
+
+function dockLeft(panel: HTMLElement, lane: WorkspaceDockLane) {
+  const width = panel.getBoundingClientRect().width;
+  if (lane === "left") return workspaceDockMargin;
+  if (lane === "right") return window.innerWidth - width - workspaceDockMargin;
+  return (window.innerWidth - width) / 2;
+}
+
+function layoutDockedPanels() {
+  const availableHeight = Math.max(72, window.innerHeight - workspaceDockTop - workspaceDockMargin);
+  for (const lane of ["left", "center", "right"] as WorkspaceDockLane[]) {
+    const topPanels = dockedPanelsInLane(lane, "top");
+    const bottomPanels = dockedPanelsInLane(lane, "bottom");
+    const panels = [...topPanels, ...bottomPanels];
+    if (!panels.length) continue;
+
+    // Panels keep their natural content height. When a lane gets crowded, each
+    // receives an equal maximum slice and its own scrolling content area.
+    const maxPanelHeight = Math.max(72, Math.floor(
+      (availableHeight - workspaceDockGap * Math.max(0, panels.length - 1)) / panels.length,
+    ));
+    for (const panel of panels) panel.style.maxHeight = `${maxPanelHeight}px`;
+
+    let top = workspaceDockTop;
+    for (const panel of topPanels) {
+      moveWorkspacePanel(panel, dockLeft(panel, lane), top);
+      top += panel.getBoundingClientRect().height + workspaceDockGap;
+    }
+
+    let bottom = window.innerHeight - workspaceDockMargin;
+    for (const panel of [...bottomPanels].reverse()) {
+      const height = panel.getBoundingClientRect().height;
+      bottom -= height;
+      moveWorkspacePanel(panel, dockLeft(panel, lane), bottom);
+      bottom -= workspaceDockGap;
+    }
+  }
 }
 
 function showWorkspaceDockTargets(anchor: WorkspaceAnchor | null) {
@@ -7658,14 +7706,9 @@ function hideWorkspaceDockTargets() {
 }
 
 function dockWorkspacePanel(panel: HTMLElement, anchor: WorkspaceAnchor) {
-  const rect = panel.getBoundingClientRect();
-  const margin = 16;
-  const minTop = 56;
-  const left = anchor.endsWith("left") ? margin : window.innerWidth - rect.width - margin;
-  const top = anchor.startsWith("top") ? minTop : window.innerHeight - rect.height - margin;
-  moveWorkspacePanel(panel, left, top);
   panel.dataset.workspaceAnchor = anchor;
   panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = anchor;
+  layoutDockedPanels();
 }
 
 function addWorkspaceAnchorSelect(panel: HTMLElement, titlebar: HTMLElement) {
@@ -7683,6 +7726,8 @@ function addWorkspaceAnchorSelect(panel: HTMLElement, titlebar: HTMLElement) {
   select.addEventListener("change", () => {
     if (select.value === "free") {
       delete panel.dataset.workspaceAnchor;
+      panel.style.maxHeight = `calc(100vh - ${workspaceDockTop + 8}px)`;
+      layoutDockedPanels();
       return;
     }
     dockWorkspacePanel(panel, select.value as WorkspaceAnchor);
@@ -7723,6 +7768,8 @@ function initWorkspacePanels() {
         else {
           delete panel.dataset.workspaceAnchor;
           panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = "free";
+          panel.style.maxHeight = `calc(100vh - ${workspaceDockTop + 8}px)`;
+          layoutDockedPanels();
         }
         hideWorkspaceDockTargets();
         fitViewport();
@@ -7748,12 +7795,17 @@ function initWorkspacePanels() {
   }
 
   window.addEventListener("resize", () => {
-    for (const panel of workspacePanels) {
+    for (const panel of workspacePanels.filter((panel) => !panel.dataset.workspaceAnchor)) {
       if (!panel.style.left) continue;
       const rect = panel.getBoundingClientRect();
       moveWorkspacePanel(panel, rect.left, rect.top);
     }
+    layoutDockedPanels();
   });
+
+  const dockResizeObserver = new ResizeObserver(() => layoutDockedPanels());
+  for (const panel of workspacePanels) dockResizeObserver.observe(panel);
+  layoutDockedPanels();
 }
 
 // initial paint

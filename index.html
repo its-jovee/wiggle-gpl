@@ -1207,7 +1207,7 @@
       container-type: inline-size;
       resize: both;
       min-width: 196px;
-      min-height: 180px;
+      min-height: 72px;
       max-width: calc(100vw - 16px);
       max-height: calc(100vh - 60px);
     }
@@ -1247,21 +1247,22 @@
       box-shadow: var(--shadow-sm); transition: border-color var(--dur-fast) var(--ease-standard),
         color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
     }
-    .workspace-dock-target[data-anchor="top-left"], .workspace-dock-target[data-anchor="bottom-left"] { left: 0; }
-    .workspace-dock-target[data-anchor="top-right"], .workspace-dock-target[data-anchor="bottom-right"] { right: 0; }
-    .workspace-dock-target[data-anchor="top-left"], .workspace-dock-target[data-anchor="top-right"] { top: 0; }
-    .workspace-dock-target[data-anchor="bottom-left"], .workspace-dock-target[data-anchor="bottom-right"] { bottom: 0; }
+    .workspace-dock-target[data-anchor$="left"] { left: 0; }
+    .workspace-dock-target[data-anchor$="center"] { left: 50%; transform: translateX(-50%); }
+    .workspace-dock-target[data-anchor$="right"] { right: 0; }
+    .workspace-dock-target[data-anchor^="top"] { top: 0; }
+    .workspace-dock-target[data-anchor^="bottom"] { bottom: 0; }
     .workspace-dock-target.is-active { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
     .left-sidebar {
-      left: 16px; right: auto; top: 56px; height: calc(100vh - 72px); width: min(250px, calc(100vw - 32px));
+      left: 16px; right: auto; top: 56px; height: auto; width: min(250px, calc(100vw - 32px));
       padding: 8px 12px 12px; overflow: auto; background: #1d2130;
     }
     .timeline-panel {
-      left: 278px; top: 56px; height: calc(100vh - 72px); width: min(220px, calc(100vw - 32px));
+      left: 278px; top: 56px; height: auto; width: min(220px, calc(100vw - 32px));
       padding: 8px; overflow: hidden; display: flex; flex-direction: column;
     }
     .right-sidebar {
-      left: auto; right: 16px; top: 56px; height: calc(100vh - 72px); width: min(272px, calc(100vw - 32px));
+      left: auto; right: 16px; top: 56px; height: auto; width: min(272px, calc(100vw - 32px));
       padding: 8px 12px 12px; overflow: auto; background: #1d2130;
     }
     body.mode-edit .left-sidebar .workspace-panel-titlebar { display: flex !important; }
