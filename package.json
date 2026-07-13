@@ -38,7 +38,7 @@
     "mac": {
       "target": "dir",
       "category": "public.app-category.graphics-design",
-      "icon": null
+      "icon": "build/wiggle-gpl.icns"
     },
     "directories": {
       "buildResources": "build",
