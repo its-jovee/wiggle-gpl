@@ -2649,7 +2649,7 @@ function paintEditorPanelBackground(panel: Panel) {
   ctx.globalAlpha = 1;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = panel.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(overscanX, overscanY, project.width, project.height);
 }
 
 function drawEditorActiveContent(panel: Panel, label: string) {

@@ -174,7 +174,8 @@ export function renderPanel(
     paintBgUnder(ctx, panel.bg, width, height, ox, oy);
   }
 
-  // Margin overlay — darkens bleed area; opaque at overscanDim=1 (playback mode)
+  // Editor bleed stays transparent so the workspace grid can show through.
+  // Playback uses an opaque mask to keep the exported frame boundary clean.
   if (!opts?.skipBg && (ox > 0 || oy > 0)) {
     paintOverscanOverlay(ctx, width, height, ox, oy, bufW, opts?.overscanDim ?? 0.55);
   }
@@ -490,22 +491,18 @@ function paintOverscanOverlay(
 ) {
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
-  const editMode = alpha < 1;
-  // In edit mode use a quiet light matte so the bleed area recedes without
-  // turning the editor into a dark surround.
-  // In playback/export mode keep solid black for a clean mask.
-  ctx.fillStyle = editMode ? "#e8edf4" : "#000000";
-  ctx.globalAlpha = editMode ? 1 : 1;
-  if (oy > 0) {
-    ctx.fillRect(0, 0, bufW, oy);
-    ctx.fillRect(0, oy + height, bufW, oy);
-  }
-  if (ox > 0) {
-    ctx.fillRect(0, oy, ox, height);
-    ctx.fillRect(ox + width, oy, ox, height);
-  }
-  if (editMode) {
-    ctx.globalAlpha = 1;
+  if (alpha >= 1) {
+    ctx.fillStyle = "#000000";
+    if (oy > 0) {
+      ctx.fillRect(0, 0, bufW, oy);
+      ctx.fillRect(0, oy + height, bufW, oy);
+    }
+    if (ox > 0) {
+      ctx.fillRect(0, oy, ox, height);
+      ctx.fillRect(ox + width, oy, ox, height);
+    }
+  } else {
+    // Keep a precise frame edge without covering the dotted workspace below.
     ctx.strokeStyle = "#cbd5e1";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([]);
