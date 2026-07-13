@@ -11,6 +11,7 @@
 // CommonJS so Electron doesn't trip over our root `"type": "module"`.
 
 const { app, BrowserWindow, dialog, ipcMain, session } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
@@ -24,6 +25,7 @@ const ISOLATION_HEADERS = {
 };
 let productionAppUrl = null;
 let assetServer = null;
+let mainWindow = null;
 
 function applyIsolationHeaders() {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -127,6 +129,60 @@ function createWindow() {
   } else {
     win.loadURL(productionAppUrl);
   }
+
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+  mainWindow = win;
+  return win;
+}
+
+/**
+ * GitHub Releases are the update source. We intentionally require an explicit
+ * download choice so an animation session is never interrupted by a large
+ * package download; installation happens only after a second confirmation.
+ */
+function configureAutoUpdates() {
+  if (!app.isPackaged) return;
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on("error", (error) => {
+    // Update availability must never prevent the editor from opening.
+    console.warn("update check failed:", error.message);
+  });
+  autoUpdater.on("update-available", async (info) => {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Download update", "Not now"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update available",
+      message: `Wiggle GPL ${info.version} is ready.`,
+      detail: "Download it now and choose when to restart the editor.",
+    });
+    if (result.response === 0) await autoUpdater.downloadUpdate();
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    mainWindow?.setProgressBar(progress.percent / 100);
+  });
+  autoUpdater.on("update-downloaded", async (info) => {
+    mainWindow?.setProgressBar(-1);
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Restart and install", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update downloaded",
+      message: `Wiggle GPL ${info.version} is ready to install.`,
+      detail: "Restarting now closes the editor and installs the update.",
+    });
+    if (result.response === 0) autoUpdater.quitAndInstall();
+  });
+
+  autoUpdater.checkForUpdates().catch((error) => {
+    console.warn("update check failed:", error.message);
+  });
 }
 
 function safeFileName(name) {
@@ -190,6 +246,7 @@ app.whenReady().then(async () => {
   registerAudioIpc();
   if (!VITE_DEV_URL) productionAppUrl = await startAssetServer();
   createWindow();
+  configureAutoUpdates();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

@@ -12,6 +12,18 @@ npm run dev          # browser dev server (http://localhost:5173)
 npm run electron:dev # desktop app (requires dev server running)
 ```
 
+## macOS install and updates
+
+Open the release DMG and drag **Wiggle GPL** into **Applications**. The desktop
+app checks the public GitHub Releases feed at launch. When a newer signed
+release is available, it asks before downloading and asks again before restart
+and installation.
+
+Releases are published by pushing a version tag, for example `v0.1.1`. Before
+publishing, configure these GitHub Actions secrets: `CSC_LINK`,
+`CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and
+`APPLE_TEAM_ID`. macOS requires a signed application for in-app updates.
+
 ## What's here at fork time
 - **Native 9:16 canvas** — draw directly at TikTok dimensions.
 - **31 brushes** (`src/brushes/registry.ts`) — ported from Decker's

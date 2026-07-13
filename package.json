@@ -1,7 +1,7 @@
 {
   "name": "wiggle-gpl",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "GPL-3.0-only",
   "type": "module",
   "main": "electron/main.cjs",
@@ -14,7 +14,8 @@
     "preview": "vite preview",
     "perf:project": "node scripts/perf-project.mjs",
     "electron:dev": "VITE_DEV_URL=http://localhost:5173 electron .",
-    "electron:build": "npm run build && electron-builder --mac --config.directories.output=release"
+    "electron:build": "npm run build && electron-builder --mac",
+    "electron:release": "npm run build && electron-builder --mac --publish always"
   },
   "devDependencies": {
     "electron": "^32.3.3",
@@ -26,7 +27,8 @@
   "dependencies": {
     "@ffmpeg/core": "0.12.6",
     "@ffmpeg/ffmpeg": "^0.12.10",
-    "@ffmpeg/util": "^0.12.1"
+    "@ffmpeg/util": "^0.12.1",
+    "electron-updater": "^6.8.9"
   },
   "build": {
     "appId": "com.wigglegpl.app",
@@ -36,10 +38,16 @@
       "electron/**/*"
     ],
     "mac": {
-      "target": "dir",
+      "target": ["dmg", "zip"],
       "category": "public.app-category.graphics-design",
       "icon": "build/wiggle-gpl.icns"
     },
+    "publish": [{
+      "provider": "github",
+      "owner": "its-jovee",
+      "repo": "wiggle-gpl",
+      "releaseType": "release"
+    }],
     "directories": {
       "buildResources": "build",
       "output": "release"
