@@ -57,7 +57,104 @@ test("new tone layer stores static manga texture settings", () => {
     spacing: 18,
     size: 5,
     angle: 45,
+    coverage: "painted",
   });
+});
+
+test("v9 project with a tone layer migrates to v10 with full coverage", () => {
+  const v9Tone = {
+    id: "tone-1",
+    name: "Manga tone",
+    visible: true,
+    opacity: 1,
+    blendMode: "normal",
+    kind: "tone",
+    tone: { style: "halftone", color: "#202020", spacing: 18, size: 5, angle: 45 },
+    strokes: [],
+    fills: [],
+  };
+  const migrated = types.migrateProject({
+    version: 9,
+    width: 1080,
+    height: 1920,
+    wiggleFps: 8,
+    brushPresets: [],
+    panels: [{
+      ...types.newPanel(),
+      layers: [v9Tone],
+      subPanels: [{
+        ...types.newSubPanel({ x: 0, y: 0, w: 10, h: 10 }, { brush: "round", color: "#fff", thickness: 2, wiggleAmplitude: 2 }),
+        layers: [{ ...v9Tone, id: "tone-2" }],
+      }],
+    }],
+    audio: { sampleRate: 48000, assets: [], tracks: [] },
+  });
+  assert.equal(migrated.version, 10);
+  assert.equal(migrated.panels[0].layers[0].tone.coverage, "full");
+  assert.equal(migrated.panels[0].subPanels[0].layers[0].tone.coverage, "full");
+});
+
+test("older project versions still chain through to v10", () => {
+  const migrated = types.migrateProject({
+    version: 8,
+    width: 1080,
+    height: 1920,
+    wiggleFps: 8,
+    brushPresets: [],
+    panels: [types.newPanel()],
+    audio: { sampleRate: 48000, assets: [], tracks: [] },
+  });
+  assert.equal(migrated.version, 10);
+});
+
+test("new raster layer stores a valid empty PNG data URL", () => {
+  const raster = types.newLayer("Raster", "raster");
+  assert.equal(raster.kind, "raster");
+  assert.match(raster.raster.data, /^data:image\/png;base64,/);
+  assert.equal(raster.raster.width, types.TIKTOK_WIDTH);
+  assert.equal(raster.raster.height, types.TIKTOK_HEIGHT);
+  assert.equal(validation.validateProject({
+    ...baseProject(),
+    panels: [{ ...types.newPanel(), layers: [raster] }],
+  }).ok, true);
+});
+
+test("validateProject rejects malformed raster layer data", () => {
+  const project = baseProject();
+  const bad = { ...types.newLayer("Raster", "raster"), raster: { data: "not-a-png", width: 100, height: 100 } };
+  project.panels[0].layers.push(bad);
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /raster data must be a PNG data URL/);
+});
+
+test("validateProject rejects oversized raster dimensions", () => {
+  const project = baseProject();
+  const bad = types.newLayer("Raster", "raster", { width: validation.MAX_PROJECT_DIMENSION + 1, height: 1920 });
+  project.panels[0].layers.push(bad);
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /raster dimensions/);
+});
+
+test("validateProject rejects oversized raster data", () => {
+  const project = baseProject();
+  const huge = "data:image/png;base64," + "A".repeat(validation.MAX_RASTER_DATA_CHARS + 1);
+  const bad = { ...types.newLayer("Raster", "raster"), raster: { data: huge, width: 100, height: 100 } };
+  project.panels[0].layers.push(bad);
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /exceeds max/);
+});
+
+test("raster data URL survives a JSON round-trip byte-for-byte", () => {
+  const raster = types.newLayer("Raster", "raster");
+  const project = types.migrateProject({
+    ...baseProject(),
+    panels: [{ ...types.newPanel(), layers: [raster] }],
+  });
+  const roundTripped = JSON.parse(JSON.stringify(project));
+  assert.equal(roundTripped.panels[0].layers[0].raster.data, raster.raster.data);
 });
 
 test("validateProject rejects oversized dimensions", () => {

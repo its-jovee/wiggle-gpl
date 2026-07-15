@@ -10,7 +10,7 @@
 //
 // CommonJS so Electron doesn't trip over our root `"type": "module"`.
 
-const { app, BrowserWindow, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const fs = require("fs");
 const http = require("http");
@@ -22,10 +22,12 @@ const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
 const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://lospec.com; worker-src 'self' blob:;",
 };
 let productionAppUrl = null;
 let assetServer = null;
 let mainWindow = null;
+const approvedAudioPaths = new Set();
 
 function applyIsolationHeaders() {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -34,6 +36,7 @@ function applyIsolationHeaders() {
         ...details.responseHeaders,
         "Cross-Origin-Opener-Policy": [ISOLATION_HEADERS["Cross-Origin-Opener-Policy"]],
         "Cross-Origin-Embedder-Policy": [ISOLATION_HEADERS["Cross-Origin-Embedder-Policy"]],
+        "Content-Security-Policy": [ISOLATION_HEADERS["Content-Security-Policy"]],
       },
     });
   });
@@ -104,6 +107,84 @@ function startAssetServer() {
       resolve(`http://127.0.0.1:${address.port}/index.html`);
     });
   });
+}
+
+/**
+ * The default Electron menu's Edit > Undo/Redo use the native `undo`/`redo`
+ * roles, which call `webContents.undo()` — text-field undo only. That does
+ * nothing to the app's drawing history. Replace just those two items with
+ * custom entries that ask the focused window's renderer to run the app's
+ * own undo/redo; everything else keeps the standard role so text editing,
+ * clipboard, etc. still behave normally.
+ */
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const sendToFocused = (channel) => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    win?.webContents.send(channel);
+  };
+
+  const template = [
+    ...(isMac ? [{
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    }] : []),
+    {
+      label: "File",
+      submenu: [isMac ? { role: "close" } : { role: "quit" }],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        // registerAccelerator: false — the shortcut is still shown in the
+        // menu label, but Electron won't fire `click` from the raw
+        // keypress. The renderer's own keydown handler (main.ts) is the
+        // single source of truth for Cmd+Z / Shift+Cmd+Z; without this flag
+        // both it and this menu item would fire on every press, undoing
+        // twice. The menu item stays reachable by actually clicking it.
+        { label: "Undo", accelerator: "CmdOrCtrl+Z", registerAccelerator: false, click: () => sendToFocused("menu:undo") },
+        { label: "Redo", accelerator: "Shift+CmdOrCtrl+Z", registerAccelerator: false, click: () => sendToFocused("menu:redo") },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        ...(isMac ? [{ type: "separator" }, { role: "front" }] : [{ role: "close" }]),
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function createWindow() {
@@ -195,6 +276,15 @@ async function defaultAudioDir() {
   return dir;
 }
 
+function isApprovedAudioPath(filePath) {
+  if (typeof filePath !== "string") return false;
+  const resolved = path.resolve(filePath);
+  for (const approved of approvedAudioPaths) {
+    if (resolved === approved) return true;
+  }
+  return false;
+}
+
 function registerAudioIpc() {
   ipcMain.handle("audio:pick-files", async () => {
     const result = await dialog.showOpenDialog({
@@ -206,6 +296,7 @@ function registerAudioIpc() {
       ],
     });
     if (result.canceled) return [];
+    for (const filePath of result.filePaths) approvedAudioPaths.add(path.resolve(filePath));
     return result.filePaths.map((filePath) => ({
       path: filePath,
       name: path.basename(filePath),
@@ -213,11 +304,13 @@ function registerAudioIpc() {
   });
 
   ipcMain.handle("audio:read-file", async (_event, filePath) => {
+    if (!isApprovedAudioPath(filePath)) throw new Error("audio path was not selected by the user");
     const data = await fs.promises.readFile(filePath);
     return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   });
 
   ipcMain.handle("audio:file-exists", async (_event, filePath) => {
+    if (!isApprovedAudioPath(filePath)) return false;
     try {
       await fs.promises.access(filePath, fs.constants.R_OK);
       return true;
@@ -227,14 +320,21 @@ function registerAudioIpc() {
   });
 
   ipcMain.handle("audio:save-recording", async (_event, payload) => {
-    const dir = payload?.directory || await defaultAudioDir();
+    // The renderer may suggest a directory, but recordings always stay inside
+    // the app-owned folder. This prevents a compromised renderer from writing
+    // into arbitrary OS locations.
+    const dir = await defaultAudioDir();
     await fs.promises.mkdir(dir, { recursive: true });
-    const ext = payload?.extension || "webm";
+    const ext = /^(webm|wav|mp3|m4a|ogg|opus|aac|flac)$/i.test(payload?.extension ?? "")
+      ? payload.extension.toLowerCase()
+      : "webm";
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const base = safeFileName(payload?.name || `voice-${stamp}`);
     const filePath = path.join(dir, `${base}.${ext}`);
+    if (!payload?.bytes) throw new Error("recording bytes are required");
     const bytes = Buffer.from(payload.bytes);
     await fs.promises.writeFile(filePath, bytes);
+    approvedAudioPaths.add(path.resolve(filePath));
     return { path: filePath, name: path.basename(filePath) };
   });
 
@@ -243,6 +343,7 @@ function registerAudioIpc() {
 
 app.whenReady().then(async () => {
   applyIsolationHeaders();
+  buildAppMenu();
   registerAudioIpc();
   if (!VITE_DEV_URL) productionAppUrl = await startAssetServer();
   createWindow();

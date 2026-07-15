@@ -22,6 +22,7 @@ import {
 } from "./core/selection";
 import {
   clearRenderCache, clearTimelapseCache, createRenderCache, renderCacheStats, renderPanel, renderStroke,
+  stampStrokeToCanvas,
   resetRenderCacheStats, computeTotalLength, trimFramePool, setAsyncRenderInvalidate,
 } from "./core/render";
 import {
@@ -50,13 +51,14 @@ import {
 } from "./core/sequence";
 import { AudioPreview } from "./core/audioPreview";
 import { audioBridge } from "./core/electronAudio";
+import { menuBridge } from "./core/electronMenu";
 import { audioDurationMs, drawWaveform, waveformPeaks } from "./core/waveform";
 import { FONT_OPTIONS, DEFAULT_FONT } from "./core/fonts";
 import { hashId, isInsideBounds, shapePoints, pointsToPath, strokeBorder } from "./core/subpanel";
 import { easeProgress } from "./core/anim";
 import { timelineScrollAfterRebuild } from "./core/timelineScroll";
 import { backfillSyntheticStartupPressures, readPointerPressure, simplifyStroke } from "./core/input";
-import { bumpLayerVersion } from "./core/layerVersion";
+import { bumpLayerVersion, layerVersion } from "./core/layerVersion";
 import { canMergeLayerDown, clearLayerContents, duplicateLayer, mergeLayerDown } from "./core/layerOps";
 import {
   deleteMask as deleteMaskState,
@@ -71,16 +73,22 @@ import {
 } from "./core/viewport";
 import {
   canUseFileSystemAccess, clearRecoverySnapshot, openProjectFromPicker,
-  persistenceState, projectHash, readFallbackFile, readRecents,
+  persistenceState, projectHash, projectHashFromString, readFallbackFile, readRecents,
   readRecoverySnapshot, recoverProject, resetCurrentFile, saveAsProject,
-  saveProject as persistSaveProject, writeHandle, writeRecoverySnapshot,
+  saveProject as persistSaveProject, serializeProject, writeHandleString,
+  writeRecoverySnapshotString,
 } from "./core/persistence";
 import {
   CANVAS_PRESETS, canvasPresetByKey, defaultCanvasPreset, formatCanvasDimensions,
 } from "./core/canvasPresets";
 import * as history from "./core/history";
+import {
+  getRasterCanvas, installRasterCanvas, markRasterEdited, nextRasterStrokeIndex, onRasterReady,
+  pruneRasterStore, syncRasterToLayer,
+} from "./core/rasterStore";
 import { drawBrushPreview } from "./brushes/preview";
 import { drawEraserTracePreview, isErasePreviewBrush } from "./core/eraserPreview";
+import { floodFillImageData } from "./core/fill";
 import {
   BRUSH_TOOLS, BrushToolKey, brushesForTool, brushToolForKey, defaultBrushForTool,
 } from "./brushes/groups";
@@ -151,6 +159,11 @@ let currentBrushSettings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
 let activeBrushPresetId: string | null = null;
 let closeBrushPicker: (() => void) | null = null;
 const lastBrushByTool: Partial<Record<BrushToolKey, string>> = {};
+/** Whether the Tone tool chip is engaged, and which layer to restore when
+ *  the user switches to any other tool/brush. The Tone tool is a layer
+ *  shortcut, not a brush — currentBrush is left untouched while it's active. */
+let toneToolActive = false;
+let toneToolPrevLayerIndex: number | null = null;
 let currentPalette: Palette = BUILTIN_PALETTES[0];
 let currentFont = DEFAULT_FONT.family;
 let currentFontSize = 64;
@@ -172,7 +185,7 @@ let _autosaveInFlight = false;
 let _recoveryClean = false; // set after recovery write, cleared on any edit
 const dirtyThumbnailPanelIds = new Set<string>();
 
-function markDirty() { _isDirty = true; _recoveryClean = false; updateFileChrome(); }
+function markDirty() { _isDirty = true; _recoveryClean = false; updateFileChrome(); requestLoopFrame(); }
 function markClean() { _isDirty = false; updateFileChrome(); }
 let keyframeArm: "from" | "to" | null = null;
 let animHintShown = false;
@@ -243,6 +256,9 @@ function updateSmoothingControls() {
   finish.disabled = smoothing.mode !== "stabilizer";
 }
 
+/** Mutates + marks dirty, but does NOT commit history — callers on a
+ *  continuously-firing input (a slider's `oninput`) must commit separately
+ *  on release (`onchange`), or every drag tick floods the undo stack. */
 function setStrokeSmoothingSettings(update: Partial<Project["drawingSettings"]["smoothing"]>) {
   project.drawingSettings.smoothing = normalizeStrokeSmoothingSettings({
     ...project.drawingSettings.smoothing,
@@ -379,6 +395,7 @@ let baseFrameCache: { key: string; canvas: HTMLCanvasElement; ctx: CanvasRenderi
 const displayRenderCache = createRenderCache(64);
 const perfEnabled = new URLSearchParams(location.search).has("perf");
 const perfProjectUrl = new URLSearchParams(location.search).get("project");
+const historyCheckEnabled = new URLSearchParams(location.search).has("historycheck");
 
 type PerfBucket = { count: number; totalMs: number; maxMs: number };
 type PerfReport = {
@@ -523,7 +540,14 @@ function iconButton(
   return btn;
 }
 
-history.init(project);
+history.init(project, { activePanelIndex });
+pruneRasterStoreForProject(project);
+onRasterReady(() => {
+  renderContentVersion++;
+  invalidateBaseFrameCache();
+  dirtyThumbnailPanelIds.add(activePanel().id);
+  requestLoopFrame();
+});
 resetCurrentFile(project);
 
 let viewport: ViewportState = { scale: 1, tx: 0, ty: 0 };
@@ -533,6 +557,7 @@ let panDrag: { pointerId: number; x: number; y: number; tx: number; ty: number }
 function applyViewport() {
   applyTransform(canvas, viewport);
   $("zoom-label").textContent = `${Math.round(viewport.scale * 100)}%`;
+  requestLoopFrame();
 }
 
 function fitViewport() {
@@ -564,6 +589,11 @@ function resetViewport() {
 }
 
 window.addEventListener("resize", () => fitViewport());
+// rAF is naturally paused while the tab is hidden; force one frame on return
+// so the canvas isn't stuck showing whatever was last painted before hiding.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) requestLoopFrame();
+});
 
 // ---- container helpers ----------------------------------------------------
 
@@ -616,6 +646,21 @@ function activeLayer(): Layer | null {
   return c.layers[c.getActiveLayerIndex()] ?? null;
 }
 
+function projectLayerIds(source: Project): Set<string> {
+  const ids = new Set<string>();
+  for (const panel of source.panels) {
+    for (const layer of panel.layers) ids.add(layer.id);
+    for (const subPanel of panel.subPanels ?? []) {
+      for (const layer of subPanel.layers) ids.add(layer.id);
+    }
+  }
+  return ids;
+}
+
+function pruneRasterStoreForProject(source: Project): void {
+  pruneRasterStore(projectLayerIds(source));
+}
+
 /**
  * Commit an edit to undo history and invalidate render caches.
  *
@@ -626,18 +671,131 @@ function activeLayer(): Layer | null {
  * renders, but unchanged content still re-hashes to the same sig so the
  * raw-layer cache keeps hitting.
  */
+/** Find which panels a set of changed layers live on, so `history.push` can
+ *  reuse the serialized string of every other panel. Always includes the
+ *  active panel — guides, bg, sub-panel bounds and texts all live there and
+ *  aren't necessarily reflected in `changedLayers`. */
+function changedPanelIdsFor(changedLayers: Layer[]): Set<string> {
+  const ids = new Set<string>();
+  ids.add(activePanel().id);
+  if (changedLayers.length === 0) return ids;
+  const changedSet = new Set(changedLayers);
+  for (const panel of project.panels) {
+    if (panel.layers.some(l => changedSet.has(l))) {
+      ids.add(panel.id);
+      continue;
+    }
+    if (panel.subPanels?.some(sp => sp.layers.some(l => changedSet.has(l)))) ids.add(panel.id);
+  }
+  return ids;
+}
+
+/** JSON-value deep equality (key order independent) — only used behind
+ *  `?historycheck` to verify the structural-sharing history entry
+ *  reconstructs to the same project that was just pushed. */
+function historyCheckDeepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => historyCheckDeepEqual(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const keysA = Object.keys(ao);
+  const keysB = Object.keys(bo);
+  return keysA.length === keysB.length && keysA.every(k => historyCheckDeepEqual(ao[k], bo[k]));
+}
+
 function commitHistory(changedLayers?: Layer[]) {
   if (changedLayers) {
     for (const l of changedLayers) bumpLayerVersion(l);
   } else {
     bumpAllProjectLayers();
   }
-  history.push(project);
+  const changedPanelIds = changedLayers ? changedPanelIdsFor(changedLayers) : undefined;
+  history.push(project, { activePanelIndex }, changedPanelIds);
+  if (historyCheckEnabled) {
+    const expected = JSON.parse(JSON.stringify(project));
+    const actual = history.debugCurrentReconstruction();
+    if (!historyCheckDeepEqual(expected, actual)) {
+      console.error("historycheck: history entry mismatch after commitHistory", {
+        changedLayerCount: changedLayers?.length,
+        stack: new Error().stack,
+      });
+    }
+  }
   markDirty();
   dirtyThumbnailPanelIds.add(activePanel().id);
   renderContentVersion++;
   invalidateBaseFrameCache();
   updateCanvasHint();
+  updateUndoRedoButtons();
+}
+
+function updateUndoRedoButtons() {
+  const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement | null;
+  const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement | null;
+  if (undoBtn) undoBtn.disabled = !history.canUndo();
+  if (redoBtn) redoBtn.disabled = !history.canRedo();
+}
+
+/** Cleanly terminate any live pointer interaction before an undo/redo swaps
+ *  `project` out from under it — the interaction's in-flight state (live
+ *  stroke, drag snapshots) points at Layer/Panel objects from the project
+ *  being discarded. Undoing mid-interaction means the user wants out, so we
+ *  drop the in-flight edit rather than committing it. */
+function cancelLiveInteractionsForUndo() {
+  if (drawing) {
+    finishLiveStrokeSmoothing();
+    drawing = false;
+    drawingPointerId = null;
+    clearLiveStrokeState();
+  }
+  layerMoveDrag = null;
+  perspectiveDrag = null;
+  selectDrag = null;
+  pendingRegionTransform = null;
+  subPanelDrag = null;
+  transformSnapshots = null;
+  keyframeArm = null;
+  scaleToolDrag = null; // snapshots reference replaced Layer objects
+}
+
+function performUndoRedo(isRedo: boolean) {
+  cancelLiveInteractionsForUndo();
+  const snap = isRedo ? history.redo() : history.undo();
+  if (!snap) { setStatus(isRedo ? "Nothing to redo" : "Nothing to undo"); return; }
+  project = snap.project;
+  pruneRasterStoreForProject(project);
+  markDirty();
+  // Any panel could have changed after undo/redo — mark all thumbnails stale.
+  for (const id of thumbCanvases.keys()) dirtyThumbnailPanelIds.add(id);
+  renderContentVersion++;
+  // NOTE: the raw-layer cache is intentionally NOT cleared here. Undo/redo
+  // rebuilds every Layer object, but the cache is keyed by content hash
+  // (layerSig) + tick, not object identity — a restored layer with
+  // identical content re-hashes to the same sig and keeps hitting its old
+  // cache entry. Wholesale clearing forced every layer to re-stamp after
+  // every undo/redo, the same cost invalidateBaseFrameCache's comment
+  // argues against for ordinary edits. If stale pixels ever show up after
+  // undo, suspect a sig collision or a layerVersion bump that isn't
+  // reflected in layerSig's inputs — not this omission.
+  resizeCanvasForProject();
+  activePanelIndex = Math.max(0, Math.min(snap.ctx.activePanelIndex, project.panels.length - 1));
+  activeSubPanelId = null;
+  selectedSubPanelId = null;
+  selectedText = null;
+  clearSelection();
+  setStatus(isRedo ? "Redo" : "Undo");
+  updateSmoothingControls();
+  buildTimeline();
+  buildLayers();
+  buildBreadcrumb();
+  buildInspector();
+  buildEditContext();
+  updateUndoRedoButtons();
+  requestLoopFrame();
 }
 
 /** Bump versions of every layer a marquee selection touches (live drags mutate
@@ -687,6 +845,10 @@ function pasteSelection() {
   if (activePanel().kind === "timelapse") { setStatus("Cannot paste onto a timelapse panel"); return; }
   let layer = activeLayer();
   if (!layer) return;
+  if (layer.kind === "raster") {
+    showToast("Object copy/paste doesn't work on raster layers yet", "info");
+    return;
+  }
   // Redirect away from text layers (same restriction as brush drawing).
   if (layer.kind === "text") {
     const drawLayer = activeContainer().layers.find(l => l.kind !== "text" && l.visible);
@@ -703,7 +865,7 @@ function pasteSelection() {
     if (!layer.texts) layer.texts = [];
     layer.texts.push(copy);
   }
-  commitHistory();
+  commitHistory([layer]);
   const count = strokes.length + fills.length + texts.length;
   setStatus(`Pasted ${count} item(s)`);
   buildEditContext();
@@ -842,7 +1004,10 @@ function duplicateSelection() {
     bounds: boundsFromItems(newItems, measureText),
     items: newItems,
   };
-  commitHistory();
+  const touchedLayers = [...new Set(
+    newItems.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+  )];
+  commitHistory(touchedLayers);
   buildTimeline();
   buildLayers();
   buildInspector();
@@ -859,10 +1024,14 @@ function bumpAllProjectLayers() {
   }
 }
 
-// When a deferred fill-mask recompute lands, repaint from fresh caches.
+// When a deferred fill-mask recompute lands, repaint from fresh caches. This
+// fires from an async task, possibly after the rAF loop has gone idle — it
+// must wake the loop itself, not just mark state dirty for a loop that may
+// no longer be running.
 setAsyncRenderInvalidate(() => {
   invalidateBaseFrameCache();
   dirtyThumbnailPanelIds.add(activePanel().id);
+  requestLoopFrame();
 });
 
 function invalidateBaseFrameCache() {
@@ -888,17 +1057,53 @@ function commitLiveStroke() {
   if (!liveStroke || !liveStrokeLayer) return;
   simplifyStroke(liveStroke);
   const clipShape = activeRegionShape(selectionState);
+  const segments: Stroke[] = [];
   if (clipShape) {
     const inverted = selectionState?.mode === "region" ? !!selectionState.inverted : false;
     const { inside, outside } = splitStrokeAtShape(liveStroke, clipShape);
-    const segments = inverted ? outside : inside;
-    for (const seg of segments) {
-      if (seg.points.length >= 1) liveStrokeLayer.strokes.push(seg);
-    }
+    segments.push(...(inverted ? outside : inside).filter((seg) => seg.points.length >= 1));
   } else {
-    liveStrokeLayer.strokes.push(liveStroke);
+    segments.push(liveStroke);
   }
+
+  if (liveStrokeLayer.kind === "raster") {
+    const rasterCanvas = getRasterCanvas(liveStrokeLayer);
+    if (!rasterCanvas) {
+      showToast("Layer still loading", "info");
+      return;
+    }
+    let strokeIndex = nextRasterStrokeIndex(liveStrokeLayer);
+    for (const segment of segments) {
+      stampStrokeToCanvas(
+        rasterCanvas.getContext("2d")!,
+        segment,
+        liveStrokeLayerIndex,
+        strokeIndex++,
+        activePanel().bg
+      );
+    }
+    if (segments.length > 0) {
+      markRasterEdited(liveStrokeLayer);
+      syncRasterToLayer(liveStrokeLayer);
+      commitHistory([liveStrokeLayer]);
+    }
+    return;
+  }
+
+  for (const segment of segments) liveStrokeLayer.strokes.push(segment);
   commitHistory([liveStrokeLayer]);
+}
+
+/** Returns the index of the container's first paintable tone layer, creating
+ *  one (and committing history) if none exists yet. Shared by the "+ Manga
+ *  tone" button and the Tone tool chip. */
+function ensurePaintedToneLayer(cont: ReturnType<typeof activeContainer>): number {
+  const idx = cont.layers.findIndex((l) => l.kind === "tone" && l.tone?.coverage === "painted");
+  if (idx >= 0) return idx;
+  cont.layers.push(newLayer("Manga tone", "tone"));
+  cont.setActiveLayerIndex(cont.layers.length - 1);
+  commitHistory();
+  return cont.layers.length - 1;
 }
 
 function ensureTextLayer(): Layer {
@@ -1390,6 +1595,9 @@ function deleteSelection() {
   if (!selectionState || selectionState.mode !== "object" || selectionState.phase !== "idle") return;
   const panel = activePanel();
   bumpMarqueeItemLayers(selectionState.items);
+  const touchedLayers = [...new Set(
+    selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+  )];
   for (const ref of selectionState.items) {
     if (ref.kind === "stroke") {
       const idx = ref.layer.strokes.indexOf(ref.stroke);
@@ -1407,14 +1615,28 @@ function deleteSelection() {
     }
   }
   clearSelection();
-  commitHistory();
+  commitHistory(touchedLayers);
   buildTimeline();
   buildLayers();
   buildInspector();
   buildEditContext();
 }
 
-function moveLayerContents(layer: Layer, dx: number, dy: number) {
+function moveLayerContents(layer: Layer, dx: number, dy: number): boolean {
+  if (layer.kind === "raster") {
+    const rasterCanvas = getRasterCanvas(layer);
+    if (!rasterCanvas || !layer.raster) return false;
+    const scratch = document.createElement("canvas");
+    scratch.width = rasterCanvas.width;
+    scratch.height = rasterCanvas.height;
+    scratch.getContext("2d")!.drawImage(rasterCanvas, 0, 0);
+    const rasterCtx = rasterCanvas.getContext("2d")!;
+    rasterCtx.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+    rasterCtx.drawImage(scratch, dx, dy);
+    markRasterEdited(layer);
+    syncRasterToLayer(layer);
+    return true;
+  }
   bumpLayerVersion(layer);
   for (const stroke of layer.strokes) {
     for (const p of stroke.points) { p.x += dx; p.y += dy; }
@@ -1427,6 +1649,7 @@ function moveLayerContents(layer: Layer, dx: number, dy: number) {
     text.x += dx;
     text.y += dy;
   }
+  return true;
 }
 
 function clippedDependentsFor(layer: Layer): Layer[] {
@@ -1451,7 +1674,12 @@ function layerMovePreviewOffset() {
   };
 }
 
+const _centroidMemo = new WeakMap<Layer, { v: number; centroid: Vec2 }>();
+
 function layerCentroid(layer: Layer): Vec2 {
+  const v = layerVersion(layer);
+  const memo = _centroidMemo.get(layer);
+  if (memo && memo.v === v) return memo.centroid;
   let cx = 0, cy = 0, count = 0;
   for (const s of layer.strokes) {
     for (const p of s.points) { cx += p.x; cy += p.y; count++; }
@@ -1462,8 +1690,11 @@ function layerCentroid(layer: Layer): Vec2 {
   for (const t of layer.texts ?? []) {
     cx += t.x; cy += t.y; count++;
   }
-  if (count === 0) return { x: project.width / 2, y: project.height / 2 };
-  return { x: cx / count, y: cy / count };
+  const centroid = count === 0
+    ? { x: project.width / 2, y: project.height / 2 }
+    : { x: cx / count, y: cy / count };
+  _centroidMemo.set(layer, { v, centroid });
+  return centroid;
 }
 
 function drawKeyframeOverlay(ctx: CanvasRenderingContext2D) {
@@ -1587,6 +1818,13 @@ function duplicateActiveLayer() {
 function clearActiveLayer() {
   const layer = activeLayer();
   if (!layer) return;
+  if (layer.kind === "raster") {
+    const rasterCanvas = getRasterCanvas(layer);
+    if (!rasterCanvas) { showToast("Layer still loading", "info"); return; }
+    rasterCanvas.getContext("2d")!.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+    markRasterEdited(layer);
+    syncRasterToLayer(layer);
+  }
   clearLayerContents(layer);
   selectedText = null;
   clearSelection();
@@ -1599,6 +1837,30 @@ function clearActiveLayer() {
 function mergeActiveLayerDown() {
   const cont = activeContainer();
   const index = cont.getActiveLayerIndex();
+  const active = cont.layers[index];
+  const below = cont.layers[index - 1];
+  if (active?.kind === "raster" && below?.kind === "raster") {
+    if (!canMergeLayerDown(cont.layers, index)) {
+      setStatus("Raster layers cannot merge with their current settings");
+      return;
+    }
+    const activeCanvas = getRasterCanvas(active);
+    const belowCanvas = getRasterCanvas(below);
+    if (!activeCanvas || !belowCanvas) { showToast("Layer still loading", "info"); return; }
+    belowCanvas.getContext("2d")!.drawImage(activeCanvas, 0, 0);
+    markRasterEdited(below);
+    syncRasterToLayer(below);
+    cont.layers.splice(index, 1);
+    cont.setActiveLayerIndex(index - 1);
+    selectedText = null;
+    selectedSubPanelId = null;
+    clearSelection();
+    commitHistory([below]);
+    buildLayers();
+    buildInspector();
+    setStatus("merged raster layer down");
+    return;
+  }
   const result = mergeLayerDown(cont.layers, index);
   if (!result.merged) {
     setStatus(result.reason === "no-below" ? "No layer below" : "Layer cannot merge down safely");
@@ -1613,6 +1875,84 @@ function mergeActiveLayerDown() {
   buildLayers();
   buildInspector();
   setStatus("merged layer down");
+}
+
+function confirmAction(title: string, copy: string, confirmLabel = "Continue"): Promise<boolean> {
+  const overlay = $("confirm-overlay");
+  const titleEl = $("confirm-title");
+  const copyEl = $("confirm-copy");
+  const ok = $("confirm-ok") as HTMLButtonElement;
+  const cancel = $("confirm-cancel") as HTMLButtonElement;
+  titleEl.textContent = title;
+  copyEl.textContent = copy;
+  ok.textContent = confirmLabel;
+  overlay.hidden = false;
+  overlay.classList.add("open");
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      ok.onclick = null;
+      cancel.onclick = null;
+      overlay.onclick = null;
+      window.removeEventListener("keydown", onKey);
+      overlay.classList.remove("open");
+      overlay.hidden = true;
+      resolve(value);
+    };
+    ok.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    overlay.onclick = (event) => { if (event.target === overlay) finish(false); };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); finish(false); }
+    };
+    window.addEventListener("keydown", onKey);
+    ok.focus();
+  });
+}
+
+async function rasterizeActiveLayer() {
+  const layer = activeLayer();
+  if (!layer || layer.kind !== "draw") {
+    setStatus("Only draw layers can be rasterized");
+    return;
+  }
+  if (!await confirmAction("Rasterize layer?", `“${layer.name}” will become pixels and vector editing will be lost.`, "Rasterize")) return;
+
+  const baked = document.createElement("canvas");
+  baked.width = project.width;
+  baked.height = project.height;
+  const bakedCtx = baked.getContext("2d")!;
+  const sourceLayer: Layer = {
+    ...layer,
+    opacity: 1,
+    blendMode: "normal",
+    mask: undefined,
+    clipToBelow: false,
+  };
+  const sourcePanel: Panel = { ...activePanel(), layers: [sourceLayer], subPanels: [] };
+  renderPanel(bakedCtx, sourcePanel, 0, project.width, project.height, {
+    skipBg: true,
+    skipJitter: true,
+    skipAnim: true,
+    skipFills: false,
+  });
+
+  const raster = newLayer(layer.name, "raster", { width: project.width, height: project.height });
+  raster.id = layer.id;
+  raster.visible = layer.visible;
+  raster.opacity = layer.opacity;
+  raster.blendMode = layer.blendMode;
+  raster.animation = layer.animation;
+  installRasterCanvas(raster, baked);
+  const cont = activeContainer();
+  const index = cont.getActiveLayerIndex();
+  cont.layers[index] = raster;
+  commitHistory([raster]);
+  buildLayers();
+  buildInspector();
+  setStatus(`rasterized ${raster.name}`);
 }
 
 function copyActiveLayerAnimation() {
@@ -1719,6 +2059,7 @@ function finishLiveStrokeSmoothing() {
 canvas.addEventListener("pointerdown", (e) => {
   if (playing) return;
   e.preventDefault();
+  requestLoopFrame();
   if (shouldStartViewportPan(e)) {
     beginViewportPan(e);
     return;
@@ -1775,6 +2116,10 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Marquee tool — region mask (clip draw/fill) or extracted object group.
   if (currentBrush === MARQUEE_KEY) {
+    if (activeLayer()?.kind === "raster") {
+      showToast("Selection tools don't work on raster layers yet", "info");
+      return;
+    }
     if (selectionState?.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
       if (handle) {
@@ -1823,6 +2168,10 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Scale tool — resize/rotate the active layer's content (or the current selection).
   if (currentBrush === SCALE_KEY) {
+    if (activeLayer()?.kind === "raster") {
+      showToast("Selection tools don't work on raster layers yet", "info");
+      return;
+    }
     const target = scaleToolItems();
     if (!target) return;
     const handle = hitTestTransformHandle(pos, target.bounds, viewport.scale);
@@ -1937,9 +2286,13 @@ canvas.addEventListener("pointerdown", (e) => {
   if (panel.kind === "timelapse") return;
   let layer = activeLayer();
   if (!layer || !layer.visible) return;
-  // Texture and text layers are output-only; send paint tools to a real draw
-  // layer so an accidental stroke cannot silently disappear on a tone layer.
-  if (layer.kind !== "draw" && layer.kind !== undefined) {
+  // Text layers, and tone layers still set to full-bleed coverage, are
+  // output-only; send paint tools to a real draw layer so an accidental
+  // stroke cannot silently disappear. Painted-coverage tone layers accept
+  // strokes directly (they commit through the normal liveStroke path — the
+  // tone pattern is revealed by the mask at render time).
+  const paintableTone = layer.kind === "tone" && layer.tone?.coverage === "painted";
+  if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone) {
     const c = activeContainer();
     const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible);
     if (idx < 0) return;
@@ -1958,6 +2311,26 @@ canvas.addEventListener("pointerdown", (e) => {
 
   if (currentBrush === BUCKET_KEY) {
     const layer2 = activeLayer()!;
+    if (layer2.kind === "raster") {
+      const rasterCanvas = getRasterCanvas(layer2);
+      if (!rasterCanvas) { showToast("Layer still loading", "info"); return; }
+      const rasterCtx = rasterCanvas.getContext("2d")!;
+      const image = rasterCtx.getImageData(0, 0, rasterCanvas.width, rasterCanvas.height);
+      if (floodFillImageData(image, pos.x, pos.y, currentColor, rasterCanvas.width, rasterCanvas.height, currentFillTolerance)) {
+        rasterCtx.putImageData(image, 0, 0);
+        markRasterEdited(layer2);
+        syncRasterToLayer(layer2);
+        commitHistory([layer2]);
+      }
+      return;
+    }
+    if (layer2.kind === "tone") {
+      showToast(
+        "Fills aren't supported on tone layers yet",
+        "info"
+      );
+      return;
+    }
     const clipShape = regionClip;
     const fill: Fill = {
       point: pos,
@@ -2236,8 +2609,9 @@ window.addEventListener("pointerup", (e) => {
     return;
   }
   if (selectDrag) {
+    const touched = selectDrag.kind === "text" ? [selectDrag.ref.layer] : [];
     selectDrag = null;
-    commitHistory();
+    commitHistory(touched);
     buildInspector();
     return;
   }
@@ -2266,6 +2640,9 @@ window.addEventListener("pointerup", (e) => {
     }
     if (selectionState.phase === "moving") {
       if (selectionState.mode === "object") {
+        const touchedLayers = [...new Set(
+          selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+        )];
         selectionState = {
           mode: "object",
           phase: "idle",
@@ -2273,7 +2650,7 @@ window.addEventListener("pointerup", (e) => {
           bounds: selectionState.bounds,
           items: selectionState.items,
         };
-        commitHistory();
+        commitHistory(touchedLayers);
       } else {
         selectionState = {
           mode: "region",
@@ -2287,6 +2664,9 @@ window.addEventListener("pointerup", (e) => {
       return;
     }
     if (selectionState.mode === "object" && selectionState.phase === "transforming") {
+      const touchedLayers = [...new Set(
+        selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+      )];
       transformSnapshots = null;
       selectionState = {
         mode: "object",
@@ -2295,15 +2675,18 @@ window.addEventListener("pointerup", (e) => {
         bounds: boundsFromItems(selectionState.items, measureText),
         items: selectionState.items,
       };
-      commitHistory();
+      commitHistory(touchedLayers);
       buildEditContext();
       updateCanvasCursor(lastCanvasPointerPos ?? undefined);
       return;
     }
   }
   if (currentBrush === SCALE_KEY && scaleToolDrag) {
+    const touchedLayers = [...new Set(
+      scaleToolDrag.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+    )];
     scaleToolDrag = null;
-    commitHistory();
+    commitHistory(touchedLayers);
     updateCanvasCursor(lastCanvasPointerPos ?? undefined);
     return;
   }
@@ -2312,14 +2695,17 @@ window.addEventListener("pointerup", (e) => {
     const moved = drag.moved;
     const wasKeyframe = !!drag.keyframe;
     if (moved && !wasKeyframe) {
-      moveLayerContents(drag.layer, drag.totalDx, drag.totalDy);
-      for (const dependent of drag.dependents) {
-        moveLayerContents(dependent, drag.totalDx, drag.totalDy);
+      const layersToMove = [drag.layer, ...drag.dependents];
+      if (layersToMove.some((layer) => layer.kind === "raster" && !getRasterCanvas(layer))) {
+        showToast("Layer still loading", "info");
+        layerMoveDrag = null;
+        return;
       }
+      for (const layer of layersToMove) moveLayerContents(layer, drag.totalDx, drag.totalDy);
     }
     layerMoveDrag = null;
     if (moved) {
-      commitHistory();
+      commitHistory(wasKeyframe ? [] : [drag.layer, ...drag.dependents]);
       if (wasKeyframe) keyframeArm = null;
       buildTimeline();
       buildLayers();
@@ -3165,7 +3551,39 @@ let lastPlaybackRenderPanelIndex = -1;
 let lastPlaybackRenderSeqTick = -1;
 let lastSyncedThumbIndex = -1;
 
+// The rAF loop used to re-arm itself unconditionally forever — a permanent
+// ~60Hz JS wakeup even with the app idle in the background. `requestLoopFrame`
+// is the single entry point that schedules the next `loop()` call; anything
+// that changes what's on screen (a commit, a drag, playback, a viewport
+// change, the wiggle clock ticking) must call it. `loop()` itself re-arms
+// only while something needs continuous frames (playback, a live drag,
+// pending thumbnail work, marching ants on a selection) — see the bottom of
+// the function.
+let loopArmed = false;
+function requestLoopFrame() {
+  if (loopArmed) return;
+  loopArmed = true;
+  requestAnimationFrame(loop);
+}
+
+// The wiggle clock used to advance purely by the rAF loop polling elapsed
+// time every frame, ~60x/s even between ticks. Instead, a setInterval at the
+// project's wiggle rate wakes the loop only when a tick is actually due;
+// `loop()`'s own elapsed-time check (below) still derives the tick from
+// `now`, so playback/determinism math is untouched — this only changes how
+// often the loop is woken, not how it computes time.
+let wiggleIntervalId: ReturnType<typeof setInterval> | null = null;
+let wiggleIntervalFps = -1;
+function ensureWiggleInterval() {
+  if (wiggleIntervalFps === project.wiggleFps) return;
+  if (wiggleIntervalId !== null) clearInterval(wiggleIntervalId);
+  wiggleIntervalFps = project.wiggleFps;
+  wiggleIntervalId = setInterval(() => requestLoopFrame(), 1000 / project.wiggleFps);
+}
+
 function loop(now: number) {
+  loopArmed = false;
+  ensureWiggleInterval();
   if (perfEnabled) perfState.frames++;
   let tickChanged = false;
   if (now - lastWiggle >= 1000 / project.wiggleFps) {
@@ -3333,9 +3751,20 @@ function loop(now: number) {
   if (dirtyThumbnailPanelIds.size > 0) refreshThumbnails();
 
   trimFramePool();
-  requestAnimationFrame(loop);
+
+  // Re-arm only while something needs continuous frames. Wiggle ticking is
+  // covered separately by `ensureWiggleInterval`'s setInterval, which calls
+  // `requestLoopFrame` when the next tick is due — it doesn't need this loop
+  // to keep spinning between ticks.
+  const needsContinuousFrames =
+    playing ||
+    liveInteraction ||
+    drawing ||
+    dirtyThumbnailPanelIds.size > 0 ||
+    !!selectionState; // marching ants animate on every idle repaint
+  if (needsContinuousFrames) requestLoopFrame();
 }
-requestAnimationFrame(loop);
+requestLoopFrame();
 
 // ---- UI: brushes / palette / layers / timeline / inspector / breadcrumb ---
 
@@ -3351,7 +3780,18 @@ function buildBrushBar() {
   editTools.innerHTML = "";
   insertTools.innerHTML = "";
   brushBar.innerHTML = "";
+  const exitToneTool = () => {
+    if (!toneToolActive) return;
+    const cont = activeContainer();
+    if (toneToolPrevLayerIndex !== null && toneToolPrevLayerIndex < cont.layers.length) {
+      cont.setActiveLayerIndex(toneToolPrevLayerIndex);
+    }
+    toneToolActive = false;
+    toneToolPrevLayerIndex = null;
+  };
   const switchTo = (k: string) => {
+    const hadTone = toneToolActive;
+    exitToneTool();
     currentBrush = k;
     if (!TOOL_KEYS.has(k)) lastBrushByTool[brushToolForKey(k)] = k;
     selectDrag = null;
@@ -3361,12 +3801,23 @@ function buildBrushBar() {
       bumpMarqueeItemLayers(scaleToolDrag.items);
       scaleToolDrag = null;
     }
+    if (hadTone) { buildLayers(); buildInspector(); }
     buildBrushBar();
     buildEditContext();
     updateCanvasCursor(lastCanvasPointerPos ?? undefined);
     if (selectionState?.mode === "region" && selectionState.phase === "idle") {
       setStatus("Painting inside selection · Esc to clear");
     }
+  };
+  const engageToneTool = () => {
+    if (toneToolActive) return;
+    const cont = activeContainer();
+    toneToolPrevLayerIndex = cont.getActiveLayerIndex();
+    cont.setActiveLayerIndex(ensurePaintedToneLayer(cont));
+    toneToolActive = true;
+    buildLayers();
+    buildInspector();
+    buildBrushBar();
   };
   const addTool = (host: HTMLElement, key: string, label: string, icon: IconNode) => {
     const btn = document.createElement("button");
@@ -3401,6 +3852,15 @@ function buildBrushBar() {
     addBrushTool(tool.key, tool.label, brushToolIcons[tool.key]);
   }
   addTool(drawTools, BUCKET_KEY, "Bucket", StudioIcons.Bucket);
+  {
+    const toneBtn = document.createElement("button");
+    toneBtn.className = "chip tool" + (toneToolActive ? " active" : "");
+    toneBtn.title = "Tone — paint the active manga tone layer with the current brush";
+    toneBtn.setAttribute("aria-label", "Tone");
+    toneBtn.appendChild(svgIcon(StudioIcons.Tone, 16));
+    toneBtn.onclick = () => engageToneTool();
+    drawTools.appendChild(toneBtn);
+  }
   addTool(editTools, SELECT_KEY, "Select", StudioIcons.Pointer);
   addTool(editTools, MARQUEE_KEY, "Marquee", StudioIcons.Selection);
   addTool(editTools, MOVE_LAYER_KEY, "Move active layer", StudioIcons.Move);
@@ -3903,16 +4363,41 @@ function renderThumb(c: HTMLCanvasElement, p: Panel) {
   tctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
+// Budget thumbnail re-renders per frame so undo/redo on a big project (every
+// panel marked dirty at once) doesn't re-render 50 thumbs in a single frame
+// and visibly hitch. Leftover dirty ids stay in `dirtyThumbnailPanelIds` and
+// get picked up on subsequent frames until the set drains.
+const THUMBNAIL_REFRESH_BUDGET_MS = 4;
+
 function refreshThumbnails() {
   const panelById = new Map(project.panels.map(p => [p.id, p]));
-  for (const [id, c] of thumbCanvases) {
-    const p = panelById.get(id);
-    if (!p) continue;
-    if (shouldRefreshThumbnail(id, dirtyThumbnailPanelIds)) {
-      renderThumb(c, p);
-    }
+  const start = performance.now();
+
+  // Drop dirty ids for thumbs that no longer exist (e.g. a deleted panel) —
+  // nothing to refresh, and leaving them behind would keep this set
+  // permanently non-empty, blocking the idle render loop from ever sleeping.
+  for (const id of dirtyThumbnailPanelIds) {
+    if (!thumbCanvases.has(id)) dirtyThumbnailPanelIds.delete(id);
   }
-  dirtyThumbnailPanelIds.clear();
+
+  // Always refresh the active panel's thumb first — it's the one the user
+  // is most likely looking at (e.g. right after switching panels on undo).
+  const activeId = activePanel().id;
+  if (shouldRefreshThumbnail(activeId, dirtyThumbnailPanelIds)) {
+    const c = thumbCanvases.get(activeId);
+    const p = panelById.get(activeId);
+    if (c && p) renderThumb(c, p);
+    dirtyThumbnailPanelIds.delete(activeId);
+  }
+
+  for (const [id, c] of thumbCanvases) {
+    if (!shouldRefreshThumbnail(id, dirtyThumbnailPanelIds)) continue;
+    if (performance.now() - start > THUMBNAIL_REFRESH_BUDGET_MS) break;
+    const p = panelById.get(id);
+    if (!p) { dirtyThumbnailPanelIds.delete(id); continue; }
+    renderThumb(c, p);
+    dirtyThumbnailPanelIds.delete(id);
+  }
 }
 
 function selectedPanelRange(): [number, number] | null {
@@ -5523,6 +6008,16 @@ function buildLayers() {
       actions.appendChild(iconButton(StudioIcons.Copy, "Copy layer", (e) => {
         e.stopPropagation(); activateRow(); copyActiveLayer();
       }));
+      if (layer.kind === "draw") {
+        const rasterize = document.createElement("button");
+        rasterize.type = "button";
+        rasterize.className = "cellbtn iconbtn";
+        rasterize.textContent = "PX";
+        rasterize.title = "Rasterize layer (destructive)";
+        rasterize.setAttribute("aria-label", rasterize.title);
+        rasterize.onclick = (e) => { e.stopPropagation(); activateRow(); rasterizeActiveLayer(); };
+        actions.appendChild(rasterize);
+      }
       const paste = iconButton(StudioIcons.ClipboardPaste, "Paste above", (e) => {
         e.stopPropagation(); activateRow(); pasteLayerAboveActive();
       });
@@ -5568,9 +6063,13 @@ function buildLayers() {
     row.onclick = (e) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.classList.contains("drag-handle")) return;
+      // Manual layer picks supersede the Tone tool's "return to this layer" memory.
+      toneToolActive = false;
+      toneToolPrevLayerIndex = null;
       cont.setActiveLayerIndex(li);
       buildLayers();
       buildInspector();
+      buildBrushBar();
     };
     if (layer.kind === "text") {
       const tag = document.createElement("span");
@@ -5581,7 +6080,15 @@ function buildLayers() {
     } else if (layer.kind === "tone") {
       const tag = document.createElement("span");
       tag.textContent = "TONE";
-      tag.title = "Static raster texture layer";
+      tag.title = layer.tone?.coverage === "painted"
+        ? "Manga tone layer — paint to reveal the pattern, static (never wiggles)"
+        : "Manga tone layer — full-bleed pattern, static (never wiggles)";
+      tag.className = "layer-tag";
+      row.appendChild(tag);
+    } else if (layer.kind === "raster") {
+      const tag = document.createElement("span");
+      tag.textContent = "PX";
+      tag.title = "Raster layer — paints real pixels, never wiggles";
       tag.className = "layer-tag";
       row.appendChild(tag);
     }
@@ -5611,6 +6118,21 @@ function buildLayers() {
     buildInspector();
   };
   host.appendChild(addTone);
+
+  const addRaster = document.createElement("button");
+  addRaster.textContent = "+ Raster layer"; addRaster.className = "ghost";
+  addRaster.style.marginTop = "4px";
+  addRaster.title = "Add a pixel layer — paints real pixels and never wiggles";
+  addRaster.onclick = () => {
+    const raster = newLayer("Raster", "raster", { width: project.width, height: project.height });
+    cont.layers.push(raster);
+    cont.setActiveLayerIndex(cont.layers.length - 1);
+    getRasterCanvas(raster); // start decoding the seeded transparent bitmap
+    commitHistory();
+    buildLayers();
+    buildInspector();
+  };
+  host.appendChild(addRaster);
 
   // Rulers are layer-bound: switching layers can swap which ruler applies,
   // so keep the perspective inspector in sync.
@@ -6033,6 +6555,17 @@ function appendLayerInspector(host: HTMLElement, layer: Layer) {
     toneRange("Spacing", "spacing", 4, 80, 1);
     toneRange("Dot / line", "size", 1, 48, 0.5);
     toneRange("Angle", "angle", 0, 180, 1);
+
+    const coverAll = document.createElement("input");
+    coverAll.type = "checkbox";
+    coverAll.checked = tone.coverage === "full";
+    coverAll.title = "Off: strokes reveal the tone pattern. On: the pattern fills the whole layer.";
+    coverAll.onchange = () => {
+      tone.coverage = coverAll.checked ? "full" : "painted";
+      commitHistory([layer]);
+      buildLayers();
+    };
+    row("Cover entire layer", coverAll);
   }
 
   const clip = document.createElement("input");
@@ -6499,6 +7032,7 @@ async function startPlayback(fromMs = playheadMs) {
   playStart = performance.now();
   const playEl = document.getElementById("play") as HTMLButtonElement | null;
   if (playEl) playEl.textContent = "Stop";
+  requestLoopFrame();
   await startAudioPreview(playheadStartMs);
   updatePlayheadChrome();
 }
@@ -6520,6 +7054,7 @@ function setPlayhead(ms: number) {
   playheadStartMs = playheadMs;
   playStart = performance.now();
   updatePlayheadChrome();
+  requestLoopFrame();
   if (playing) void startAudioPreview(playheadMs);
 }
 
@@ -6578,18 +7113,27 @@ function updatePlayheadChrome() {
 };
 ($("stroke-smoothing-mode") as HTMLSelectElement).onchange = (e) => {
   setStrokeSmoothingSettings({ mode: (e.target as HTMLSelectElement).value as Project["drawingSettings"]["smoothing"]["mode"] });
+  commitHistory([]);
 };
 ($("stroke-smoothing-distance") as HTMLInputElement).oninput = (e) => {
   setStrokeSmoothingSettings({ distance: +(e.target as HTMLInputElement).value });
 };
+($("stroke-smoothing-distance") as HTMLInputElement).onchange = () => {
+  commitHistory([]);
+};
 ($("stroke-smoothing-delay") as HTMLInputElement).oninput = (e) => {
   setStrokeSmoothingSettings({ delayDistance: +(e.target as HTMLInputElement).value });
 };
+($("stroke-smoothing-delay") as HTMLInputElement).onchange = () => {
+  commitHistory([]);
+};
 ($("stroke-smoothing-finish") as HTMLInputElement).onchange = (e) => {
   setStrokeSmoothingSettings({ finishStabilizedStroke: (e.target as HTMLInputElement).checked });
+  commitHistory([]);
 };
 ($("stroke-smoothing-pressure") as HTMLInputElement).onchange = (e) => {
   setStrokeSmoothingSettings({ smoothPressure: (e.target as HTMLInputElement).checked });
+  commitHistory([]);
 };
 
 // ---- text controls --------------------------------------------------------
@@ -6785,6 +7329,7 @@ async function runExport(format: "webm" | "mp4" | "panel-mp4") {
   const onProgressEvent = (progress: Parameters<typeof exportProgressStatus>[0]) => {
     updateExportProgress(exportProgressStatus(progress), progress.progress);
   };
+  const skipJitter = !($("export-jitter") as HTMLInputElement).checked;
 
   try {
     if (format === "webm") {
@@ -6792,6 +7337,7 @@ async function runExport(format: "webm" | "mp4" | "panel-mp4") {
         contentVersion: renderContentVersion,
         onProgressEvent,
         shouldCancel,
+        skipJitter,
       });
       downloadBlob(blob, "wiggle.webm");
       setStatus("WebM done");
@@ -6801,6 +7347,7 @@ async function runExport(format: "webm" | "mp4" | "panel-mp4") {
         contentVersion: renderContentVersion,
         onProgressEvent,
         shouldCancel,
+        skipJitter,
       });
       downloadBlob(blob, "wiggle.mp4");
       setStatus("MP4 done");
@@ -6810,6 +7357,7 @@ async function runExport(format: "webm" | "mp4" | "panel-mp4") {
         contentVersion: renderContentVersion,
         onProgressEvent,
         shouldCancel,
+        skipJitter,
       });
       downloadBlob(blob, `wiggle-panel-${String(activePanelIndex + 1).padStart(3, "0")}.mp4`);
       setStatus("Current panel MP4 done");
@@ -6923,6 +7471,8 @@ function commandList(): Command[] {
     { id: "file-save", label: "Save", group: "File", shortcut: "⌘S", run: () => void saveProject() },
     { id: "file-save-as", label: "Save As", group: "File", shortcut: "⇧⌘S", run: () => void saveProjectAs() },
     { id: "file-open", label: "Open", group: "File", run: openProject },
+    { id: "edit-undo", label: "Undo", group: "Edit", shortcut: "⌘Z", enabled: () => history.canUndo(), run: () => performUndoRedo(false) },
+    { id: "edit-redo", label: "Redo", group: "Edit", shortcut: "⇧⌘Z", enabled: () => history.canRedo(), run: () => performUndoRedo(true) },
     { id: "view-draw", label: "Switch to Draw", group: "View", run: () => setWorkspaceMode("draw") },
     { id: "view-edit", label: "Switch to Edit", group: "View", run: () => setWorkspaceMode("edit") },
     { id: "view-fit", label: "Fit Canvas", group: "View", run: fitViewport },
@@ -6979,6 +7529,10 @@ function commandList(): Command[] {
     { id: "layer-duplicate", label: "Duplicate Layer", group: "Layer",
       enabled: () => !!activeLayer(),
       run: () => duplicateActiveLayer(),
+    },
+    { id: "layer-rasterize", label: "Rasterize Layer", group: "Layer",
+      enabled: () => activeLayer()?.kind === "draw",
+      run: () => rasterizeActiveLayer(),
     },
     { id: "layer-clear", label: "Clear Layer", group: "Layer",
       enabled: () => !!activeLayer(),
@@ -7118,7 +7672,9 @@ function updateFileChrome() {
 function resetProjectSession(next: Project, fileStatus: string) {
   applySanitizedGroups(next);
   project = next;
-  history.init(project);
+  pruneRasterStoreForProject(project);
+  history.init(project, { activePanelIndex: 0 });
+  updateUndoRedoButtons();
   markClean();
   resizeCanvasForProject();
   activePanelIndex = 0;
@@ -7325,6 +7881,8 @@ function buildFileMenu() {
   e.stopPropagation();
   closeFileMenu();
   closeHelpMenu();
+  const opening = !$("export-menu").classList.contains("open");
+  if (opening) ($("export-jitter") as HTMLInputElement).checked = jitterEnabled;
   $("export-menu").classList.toggle("open");
   $("export-menu-button").classList.toggle("open");
 };
@@ -7344,6 +7902,26 @@ for (const [id, mode] of [
 ] as const) {
   ($(id) as HTMLButtonElement).onclick = () => setWorkspaceMode(mode);
 }
+
+($("undo-btn") as HTMLButtonElement).onclick = () => performUndoRedo(false);
+($("redo-btn") as HTMLButtonElement).onclick = () => performUndoRedo(true);
+updateUndoRedoButtons();
+
+// Electron's Edit menu sends these instead of dispatching a native keydown —
+// mirror the keyboard handler's editable-field carve-out so text-field undo
+// (e.g. in a renamed-panel input) still goes through execCommand.
+menuBridge()?.onMenuUndo(() => {
+  const active = document.activeElement as HTMLElement | null;
+  const inEditable = active?.tagName === "INPUT" || active?.tagName === "TEXTAREA" || active?.isContentEditable;
+  if (inEditable) document.execCommand("undo");
+  else performUndoRedo(false);
+});
+menuBridge()?.onMenuRedo(() => {
+  const active = document.activeElement as HTMLElement | null;
+  const inEditable = active?.tagName === "INPUT" || active?.tagName === "TEXTAREA" || active?.isContentEditable;
+  if (inEditable) document.execCommand("redo");
+  else performUndoRedo(true);
+});
 
 ($("command-input") as HTMLInputElement).oninput = (e) => {
   buildCommandList((e.target as HTMLInputElement).value);
@@ -7387,13 +7965,18 @@ async function autosaveTick() {
   if (!persistenceState.currentFileHandle && _recoveryClean) { updateFileChrome(); return; }
   // Deferred clean-check: undo/redo only calls markDirty() (O(1)); the hash
   // comparison runs here at most once every 5 seconds instead of every keystroke.
-  const currentHash = projectHash(project);
+  // Serialize exactly once and reuse the string for both the hash comparison
+  // and the actual write (save or recovery snapshot) — `projectHash` and
+  // `writeHandle`/`writeRecoverySnapshot` use this same canonical format, so
+  // this can't disagree with a hash set elsewhere (manual save, project load).
+  const json = serializeProject(project);
+  const currentHash = projectHashFromString(json);
   if (currentHash === persistenceState.lastSavedHash) { markClean(); updateFileChrome(); return; }
   _autosaveInFlight = true;
   try {
     if (persistenceState.currentFileHandle) {
       try {
-        await writeHandle(persistenceState.currentFileHandle, project);
+        await writeHandleString(persistenceState.currentFileHandle, json);
         persistenceState.lastSavedHash = currentHash;
         markClean();
         clearRecoverySnapshot();
@@ -7402,7 +7985,8 @@ async function autosaveTick() {
         setStatus("auto-save failed: " + (err as Error).message);
       }
     } else {
-      writeRecoverySnapshot(project);
+      const snapshot = writeRecoverySnapshotString(json);
+      if (!snapshot) setStatus("recovery unavailable — project is too large for browser storage");
       _recoveryClean = true;
     }
   } finally {
@@ -7507,30 +8091,14 @@ window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
     if (inEditable) return;
     e.preventDefault();
-    const isRedo = e.shiftKey;
-    const snap = isRedo ? history.redo() : history.undo();
-    if (!snap) { setStatus(isRedo ? "Nothing to redo" : "Nothing to undo"); return; }
-    project = snap;
-    markDirty();
-    // Any panel could have changed after undo/redo — mark all thumbnails stale.
-    for (const id of thumbCanvases.keys()) dirtyThumbnailPanelIds.add(id);
-    renderContentVersion++;
-    // Undo/redo rebuilds every Layer object — drop dead raw-layer entries.
-    clearRenderCache(displayRenderCache);
-    resizeCanvasForProject();
-    activePanelIndex = Math.min(activePanelIndex, project.panels.length - 1);
-    activeSubPanelId = null;
-    selectedSubPanelId = null;
-    selectedText = null;
-    clearSelection();
-    scaleToolDrag = null; // snapshots reference replaced Layer objects
-    setStatus(isRedo ? "Redo" : "Undo");
-    updateSmoothingControls();
-    buildTimeline();
-    buildLayers();
-    buildBreadcrumb();
-    buildInspector();
-    buildEditContext();
+    performUndoRedo(e.shiftKey);
+    return;
+  }
+
+  if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "y") {
+    if (inEditable) return;
+    e.preventDefault();
+    performUndoRedo(true);
     return;
   }
 
@@ -7801,6 +8369,7 @@ function initWorkspacePanels() {
       moveWorkspacePanel(panel, rect.left, rect.top);
     }
     layoutDockedPanels();
+    requestLoopFrame();
   });
 
   const dockResizeObserver = new ResizeObserver(() => layoutDockedPanels());

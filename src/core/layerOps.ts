@@ -45,6 +45,13 @@ export function canMergeLayerDown(layers: Layer[], activeIndex: number): boolean
   const active = layers[activeIndex];
   const below = layers[activeIndex - 1];
   if (!active || !below) return false;
+  if ((active.kind ?? "draw") === "raster" || (below.kind ?? "draw") === "raster") {
+    return active.kind === "raster" && below.kind === "raster" &&
+      (active.blendMode ?? "normal") === "normal" && active.opacity === 1 &&
+      !active.mask && !active.animation && !active.clipToBelow &&
+      (below.blendMode ?? "normal") === "normal" && below.opacity === 1 &&
+      !below.mask && !below.animation && !below.clipToBelow;
+  }
   if (!isDrawLayer(active) || !isDrawLayer(below)) return false;
   if ((active.blendMode ?? "normal") !== "normal") return false;
   if (active.opacity !== 1) return false;

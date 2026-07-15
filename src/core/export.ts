@@ -24,6 +24,7 @@ export type ExportRenderOpts = {
   contentVersion?: number;
   onProgressEvent?: ExportProgressCallback;
   shouldCancel?: () => boolean;
+  skipJitter?: boolean;
 };
 
 export type MP4ExportOptions = {
@@ -33,6 +34,7 @@ export type MP4ExportOptions = {
   contentVersion?: number;
   onProgressEvent?: ExportProgressCallback;
   shouldCancel?: () => boolean;
+  skipJitter?: boolean;
 };
 
 /** Offscreen canvas at full TikTok resolution. */
@@ -94,6 +96,7 @@ export async function exportWebM(
           localMs,
           wiggleFps: project.wiggleFps,
           contentVersion,
+          skipJitter: renderOpts?.skipJitter ?? false,
         });
         progress.render(elapsed / totalMs);
         requestAnimationFrame(frame);
@@ -155,6 +158,7 @@ export async function exportMP4(
         localMs,
         wiggleFps: project.wiggleFps,
         contentVersion,
+        skipJitter: opts?.skipJitter ?? false,
       });
 
       const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/png"));

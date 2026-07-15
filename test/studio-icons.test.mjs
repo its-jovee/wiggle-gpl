@@ -47,6 +47,7 @@ const expectedIcons = [
   "Selection",
   "SubPanel",
   "Text",
+  "Tone",
   "Timer",
   "Timelapse",
   "Trash",

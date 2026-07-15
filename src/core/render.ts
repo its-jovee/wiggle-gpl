@@ -38,6 +38,7 @@ import {
   effectiveBrushSettings,
 } from "./brushSettings";
 import { renderTone } from "./tone";
+import { getRasterCanvas, rasterPixelVersion } from "./rasterStore";
 
 const WIGGLE_AMPLITUDE = 2.5;
 /** Float tolerance when comparing stroke-length budgets (accumulated segment lengths). */
@@ -232,6 +233,10 @@ function timelapseLayerNeedsFallback(layer: Layer): boolean {
   if ((layer.fills?.length ?? 0) > 0) return true;
   if ((layer.texts?.length ?? 0) > 0) return true;
   if (layer.animation?.enabled) return true;
+  // A half-revealed mask under a full tone pattern looks broken — render whole.
+  if (layer.kind === "tone") return true;
+  // Raster layers have no stroke-budget concept — always render whole.
+  if (layer.kind === "raster") return true;
   for (const stroke of layer.strokes) {
     if (brushByKey(stroke.brush).erase) return true;
   }
@@ -519,6 +524,8 @@ let _layerOff: HTMLCanvasElement | null = null;
 let _layerOffCtx: CanvasRenderingContext2D | null = null;
 let _layerXform: HTMLCanvasElement | null = null;
 let _layerXformCtx: CanvasRenderingContext2D | null = null;
+let _toneScratch: HTMLCanvasElement | null = null;
+let _toneScratchCtx: CanvasRenderingContext2D | null = null;
 
 // Frame-scoped canvas pool: lazily grown, index reset at the start of each
 // renderPanel call. Eliminates per-frame HTMLCanvasElement allocation that
@@ -550,6 +557,21 @@ function getLayerOffscreen(width: number, height: number) {
     _layerOffCtx = _layerOff.getContext("2d");
   }
   return { off: _layerOff!, oc: _layerOffCtx! };
+}
+
+/** Scratch canvas for painting a tone pattern before compositing it onto a
+ *  layer with a single source-in draw. `renderTone` issues many separate
+ *  fill/stroke calls; running those directly under source-in would intersect
+ *  each dot/line against whatever the previous call left behind instead of
+ *  masking the whole pattern against the ink in one shot. */
+function getToneScratchOffscreen(width: number, height: number) {
+  if (!_toneScratch || _toneScratch.width !== width || _toneScratch.height !== height) {
+    _toneScratch = document.createElement("canvas");
+    _toneScratch.width = width;
+    _toneScratch.height = height;
+    _toneScratchCtx = _toneScratch.getContext("2d");
+  }
+  return { off: _toneScratch!, oc: _toneScratchCtx! };
 }
 
 function getLayerTransformOffscreen(width: number, height: number) {
@@ -664,6 +686,11 @@ function drawLayerRaw(
   const skipAnimFlag = skipAnim;
   const cacheLocalMs = canonicalRawLayerLocalMs(layer, skipAnimFlag, localMs);
   const cacheContainerDurMs = canonicalRawLayerContainerDurMs(layer, skipAnimFlag, containerDurMs);
+  // Prime raster invalidation before computing the raw-layer cache key. A
+  // load/undo can replace the persisted PNG while keeping the same layer id;
+  // getRasterCanvas bumps the pixel version so an old cached bitmap cannot be
+  // reused during the async decode.
+  if (layer.kind === "raster") getRasterCanvas(layer);
   const rawCacheKey = rawLayerRenderableFromCache(budget)
     ? rawLayerCacheKey({
       layerSig: layerSig(layer, bg, clipLayer, width, height, opts?.overscan),
@@ -699,16 +726,46 @@ function drawLayerRaw(
   if (ox > 0 || oy > 0) oc.translate(ox, oy);
 
   const wiggleAmp = opts?.skipJitter ? 0 : WIGGLE_AMPLITUDE;
-  const drawn = layer.kind === "tone"
-    ? []
-    : walkLayerStrokes(oc, layer.strokes, layerIndex, tick, budget, bg, wiggleAmp);
-
-  // Texture layers are intentionally static: their raster does not receive
+  // Tone layers are intentionally static: their raster never receives
   // animated stroke jitter and is therefore identical on every wiggle tick.
-  if (layer.kind === "tone" && layer.tone) renderTone(oc, layer.tone, width, height);
+  // Raster layers are real pixels — never jittered by nature, and painted
+  // outside this function (paint/erase mutate the runtime canvas directly).
+  // renderPanel is otherwise pure-of-(panel, tick): raster pixels only change
+  // via commits (getRasterCanvas / rasterPixelVersion reads), never per tick.
+  let drawn: boolean[];
+  if (layer.kind === "raster") {
+    drawn = [];
+    const rc = layer.raster ? getRasterCanvas(layer) : null;
+    if (rc) oc.drawImage(rc, 0, 0);
+  } else if (layer.kind === "tone" && layer.tone) {
+    if (layer.tone.coverage === "painted") {
+      // Strokes act as a reveal mask (amplitude 0 — static ink); the pattern
+      // is painted into a scratch canvas first, then clipped onto the ink
+      // with a single source-in draw — renderTone issues many separate
+      // fill/stroke calls, and running those directly under source-in would
+      // intersect each dot/line against the previous call's leftovers instead
+      // of masking the whole pattern against the ink in one shot.
+      drawn = walkLayerStrokes(oc, layer.strokes, layerIndex, tick, budget, bg, 0);
+      const { off: toneOff, oc: toneCtx } = getToneScratchOffscreen(width, height);
+      toneCtx.setTransform(1, 0, 0, 1, 0, 0);
+      toneCtx.globalCompositeOperation = "source-over";
+      toneCtx.globalAlpha = 1;
+      toneCtx.clearRect(0, 0, width, height);
+      renderTone(toneCtx, layer.tone, width, height);
+      oc.save();
+      oc.globalCompositeOperation = "source-in";
+      oc.drawImage(toneOff, 0, 0);
+      oc.restore();
+    } else {
+      drawn = [];
+      renderTone(oc, layer.tone, width, height);
+    }
+  } else {
+    drawn = walkLayerStrokes(oc, layer.strokes, layerIndex, tick, budget, bg, wiggleAmp);
+  }
 
   let usedStaleFillMask = false;
-  if (!opts?.skipFills && layer.fills.length > 0) {
+  if (layer.kind !== "tone" && layer.kind !== "raster" && !opts?.skipFills && layer.fills.length > 0) {
     const allGatedDrawn = layer.fills.every(
       (f) => f.afterStrokeIndex < 0 || drawn[f.afterStrokeIndex]
     );
@@ -1022,6 +1079,7 @@ function scheduleFillMaskRecompute(
 
 type LayerSigMemo = {
   layerVersion: number;
+  rasterPixelVersion: number;
   clipLayerVersion: number;
   bg: string;
   cw: number;
@@ -1132,6 +1190,20 @@ function mixLayerMaskState(h: number, layer: Layer): number {
       h = mixHash(h, 0);
     }
   }
+  if (layer.tone) {
+    h = mixString(h, layer.tone.style);
+    h = mixString(h, layer.tone.color);
+    h = mixFloat(h, layer.tone.spacing);
+    h = mixFloat(h, layer.tone.size);
+    h = mixFloat(h, layer.tone.angle);
+    h = mixString(h, layer.tone.coverage);
+  }
+  if (layer.kind === "raster" && layer.raster) {
+    h = mixString(h, layer.id);
+    h = mixHash(h, rasterPixelVersion(layer));
+    h = mixFloat(h, layer.raster.width);
+    h = mixFloat(h, layer.raster.height);
+  }
   return h;
 }
 
@@ -1168,11 +1240,13 @@ function layerSig(
   const ox = overscan?.x ?? 0;
   const oy = overscan?.y ?? 0;
   const lv = layerVersion(layer);
+  const rp = layer.kind === "raster" ? rasterPixelVersion(layer) : 0;
   const clv = clipLayer ? layerVersion(clipLayer) : 0;
   const memo = _layerSigMemo.get(layer);
   if (
     memo &&
     memo.layerVersion === lv &&
+    memo.rasterPixelVersion === rp &&
     memo.clipLayerVersion === clv &&
     memo.bg === bg &&
     memo.cw === cw &&
@@ -1198,7 +1272,7 @@ function layerSig(
     h = mixHash(h, 0);
   }
   const sig = (h >>> 0).toString(36);
-  _layerSigMemo.set(layer, { layerVersion: lv, clipLayerVersion: clv, bg, cw, ch, ox, oy, clipLayer, sig });
+  _layerSigMemo.set(layer, { layerVersion: lv, rasterPixelVersion: rp, clipLayerVersion: clv, bg, cw, ch, ox, oy, clipLayer, sig });
   return sig;
 }
 
@@ -1622,7 +1696,7 @@ function walkLayerStrokes(
         brush.stamp({
           ctx, pos: jittered[0], delta: { x: 1, y: 0 },
           color: stroke.color, size: effectiveSettings.stampSize(stroke.size, pAt(0)), tick: stampTick,
-          seed: si + layerSeed, bg,
+          seed: strokeSeed, bg,
           pressure: pAt(0), flow: effectiveSettings.stampFlow(pAt(0)), dist: 0,
         });
         budget.remaining -= pointLen;
@@ -1678,7 +1752,7 @@ function walkLayerStrokes(
             color: stroke.color,
             size: effectiveSettings.stampSize(stroke.size, p),
             tick: stampTick,
-            seed: (si + layerSeed) * 100 + k,
+            seed: strokeSeed * 100 + k,
             bg,
             pressure: p,
             flow: effectiveSettings.stampFlow(p),
@@ -1699,6 +1773,28 @@ function walkLayerStrokes(
   return drawn;
 }
 
+/** Bake one raw vector stroke into a raster layer's pixel canvas. The zero
+ * amplitude keeps stored points untouched and pins brush variation to the
+ * stroke index, so raster edits do not depend on the wiggle clock. */
+export function stampStrokeToCanvas(
+  ctx: CanvasRenderingContext2D,
+  stroke: Stroke,
+  layerIndex: number,
+  strokeIndex: number,
+  bg: string
+): void {
+  walkLayerStrokes(
+    ctx,
+    [stroke],
+    layerIndex,
+    0,
+    { remaining: Infinity },
+    bg,
+    0,
+    strokeIndex
+  );
+}
+
 export function computeStrokeLength(stroke: Stroke): number {
   const pts = stroke.points;
   if (pts.length <= 1) return pts.length === 1 ? 1 : 0;
@@ -1709,11 +1805,17 @@ export function computeStrokeLength(stroke: Stroke): number {
   return total;
 }
 
+const _lengthMemo = new WeakMap<Layer, { v: number; len: number }>();
+
 export function computeLayerStrokeLength(layer: Layer): number {
+  const v = layerVersion(layer);
+  const memo = _lengthMemo.get(layer);
+  if (memo && memo.v === v) return memo.len;
   let total = 0;
   for (const stroke of layer.strokes) {
     total += computeStrokeLength(stroke);
   }
+  _lengthMemo.set(layer, { v, len: total });
   return total;
 }
 

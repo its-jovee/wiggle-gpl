@@ -9,3 +9,8 @@ contextBridge.exposeInMainWorld("wiggleAudio", {
   saveRecording: (payload) => ipcRenderer.invoke("audio:save-recording", payload),
   getDefaultRecordingDir: () => ipcRenderer.invoke("audio:get-default-recording-dir"),
 });
+
+contextBridge.exposeInMainWorld("wiggleMenu", {
+  onMenuUndo: (cb) => ipcRenderer.on("menu:undo", () => cb()),
+  onMenuRedo: (cb) => ipcRenderer.on("menu:redo", () => cb()),
+});

@@ -40,7 +40,7 @@ test("v7 project migrates to current version with empty project brush presets", 
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
 
-  assert.equal(migrated.version, 9);
+  assert.equal(migrated.version, 10);
   assert.deepEqual(migrated.brushPresets, []);
 });
 

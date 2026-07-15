@@ -164,9 +164,16 @@ export type ToneSettings = {
   spacing: number;
   size: number;
   angle: number;
+  /** "full": legacy whole-canvas texture. "painted": strokes reveal the
+   *  pattern as a mask (source-in composite) — the manga-correct paintable tone. */
+  coverage: "full" | "painted";
 };
 
-export type LayerKind = "draw" | "text" | "tone";
+export type LayerKind = "draw" | "text" | "tone" | "raster";
+
+/** A 1x1 fully-transparent PNG, used to seed a brand-new raster layer. */
+export const EMPTY_RASTER_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 export type Layer = {
   id: string;
@@ -178,6 +185,9 @@ export type Layer = {
   kind?: LayerKind;
   /** Present on dedicated tone layers. It is rasterized during render, never wiggled. */
   tone?: ToneSettings;
+  /** Present on raster layers. `data` is a PNG data URL persisted in project JSON;
+   *  the live pixels are held in `core/rasterStore.ts`, keyed by layer.id. */
+  raster?: { data: string; width: number; height: number };
   clipToBelow?: boolean;
   animation?: LayerAnimation;
   strokes: Stroke[];
@@ -291,7 +301,7 @@ export type FrameGroup = {
 };
 
 export type Project = {
-  version: 9;
+  version: 10;
   width: number;
   height: number;
   wiggleFps: number;
@@ -309,7 +319,7 @@ export const TIKTOK_HEIGHT = 1920;
 
 export function newProject(width = TIKTOK_WIDTH, height = TIKTOK_HEIGHT): Project {
   return {
-    version: 9,
+    version: 10,
     width,
     height,
     wiggleFps: 8,
@@ -339,7 +349,11 @@ export function newPanel(): Panel {
   };
 }
 
-export function newLayer(name = "Layer", kind: LayerKind = "draw"): Layer {
+export function newLayer(
+  name = "Layer",
+  kind: LayerKind = "draw",
+  dims?: { width: number; height: number }
+): Layer {
   return {
     id: crypto.randomUUID(),
     name,
@@ -349,6 +363,12 @@ export function newLayer(name = "Layer", kind: LayerKind = "draw"): Layer {
     kind,
     tone: kind === "tone" ? {
       style: "halftone", color: "#202020", spacing: 18, size: 5, angle: 45,
+      coverage: "painted",
+    } : undefined,
+    raster: kind === "raster" ? {
+      data: EMPTY_RASTER_DATA_URL,
+      width: dims?.width ?? TIKTOK_WIDTH,
+      height: dims?.height ?? TIKTOK_HEIGHT,
     } : undefined,
     strokes: [],
     fills: [],
@@ -373,13 +393,15 @@ export function newSubPanel(
 
 // ---- Migration -------------------------------------------------------------
 
-/** Loads any prior version (v1-v8) and returns a v9 project. */
+/** Loads any prior version (v1-v9) and returns a v10 project. */
 export function migrateProject(raw: unknown): Project {
   if (!raw || typeof raw !== "object") throw new Error("not a project");
   const p = raw as Record<string, unknown>;
-  const project = p.version === 9
-    ? normalizeV9(raw as Project)
-    : migrateV8toV9(migrateLegacyToV8(p));
+  const project = p.version === 10
+    ? normalizeV10(raw as Project)
+    : p.version === 9
+      ? migrateV9toV10(normalizeV9(raw as V9Project))
+      : migrateV9toV10(migrateV8toV9(migrateLegacyToV8(p)));
   capProjectFillLimits(project);
   capProjectBrushSettings(project);
   capProjectDrawingSettings(project);
@@ -420,6 +442,7 @@ type V5Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> &
 type V6Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 6 };
 type V7Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 7; brushPresets?: BrushPreset[] };
 type V8Project = Omit<Project, "version"> & { version: 8 };
+type V9Project = Omit<Project, "version"> & { version: 9 };
 
 function migrateLegacyToV8(p: Record<string, unknown>): V8Project {
   if (p.version === 8) return p as V8Project;
@@ -541,7 +564,7 @@ function migrateV6toV7(p: V6Project): V7Project {
   return normalizeV7({ ...p, version: 7 });
 }
 
-function normalizeV9(p: Project): Project {
+function normalizeV9(p: V9Project): V9Project {
   return {
     ...p,
     version: 9,
@@ -594,6 +617,50 @@ function migrateV7toV8(p: V7Project): V8Project {
   });
 }
 
-function migrateV8toV9(p: V8Project): Project {
-  return normalizeV9({ ...p, version: 9 } as Project);
+function migrateV8toV9(p: V8Project): V9Project {
+  return normalizeV9({ ...p, version: 9 } as V9Project);
+}
+
+function tonizeLayerV10(layer: Layer): Layer {
+  if (layer.kind !== "tone" || !layer.tone) return layer;
+  if (layer.tone.coverage === "full" || layer.tone.coverage === "painted") return layer;
+  return { ...layer, tone: { ...layer.tone, coverage: "full" } };
+}
+
+/** v9 tone layers were always full-bleed; existing ones keep that look. */
+function migrateV9toV10(p: V9Project): Project {
+  return normalizeV10({
+    ...p,
+    version: 10,
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      layers: panel.layers.map(tonizeLayerV10),
+      subPanels: (panel.subPanels ?? []).map((sp) => ({
+        ...sp,
+        layers: sp.layers.map(tonizeLayerV10),
+      })),
+    })),
+  });
+}
+
+function normalizeV10(p: Project): Project {
+  return {
+    ...p,
+    version: 10,
+    audio: p.audio ?? newAudioProject(),
+    brushPresets: p.brushPresets ?? [],
+    drawingSettings: {
+      ...newDrawingSettings(),
+      ...(p.drawingSettings ?? {}),
+      smoothing: normalizeStrokeSmoothingSettings(p.drawingSettings?.smoothing),
+    },
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      layers: panel.layers.map(normalizeLayerV7).map(tonizeLayerV10),
+      subPanels: (panel.subPanels ?? []).map((sp) => ({
+        ...sp,
+        layers: sp.layers.map(normalizeLayerV7).map(tonizeLayerV10),
+      })),
+    })),
+  };
 }

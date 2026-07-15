@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://lospec.com; worker-src 'self' blob:;" />
   <title>Wiggle Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -119,6 +120,10 @@
     #dirty-dot.dirty { visibility: visible; }
     .menu-wrap { position: relative; justify-self: start; }
     .topbar-menus { display: flex; align-items: center; gap: 4px; }
+    .undo-redo-group { display: inline-flex; align-items: center; gap: 2px; }
+    .undo-redo-group button { width: 28px; height: 28px; padding: 0; font-size: 15px;
+      line-height: 1; border-radius: 6px; }
+    .undo-redo-group button:disabled { opacity: 0.35; cursor: default; }
     .mode-switcher { display: inline-flex; align-items: center; gap: 2px; padding: 3px;
       background: var(--panel-bg); border: 1px solid var(--border-subtle);
       border-radius: var(--radius-md); }
@@ -157,6 +162,7 @@
     .menu-item:disabled { color: var(--text-disabled); cursor: default; }
     .menu-item small { color: var(--text-muted); font-size: 11px; font-family: var(--font-mono); }
     .menu-divider { height: 1px; background: var(--line); margin: 5px 3px; }
+    .menu-item-check { padding: 5px 8px; margin: 0 0 2px; font-size: 12px; border-bottom: 1px solid var(--line); }
     .recent-label { padding: 4px 7px; color: var(--dim); font-size: 10px; text-transform: uppercase;
       letter-spacing: .08em; }
     .app-grid {
@@ -658,6 +664,8 @@
       border-color: var(--border-subtle); }
     .command-item.active { background: var(--accent-soft); border-color: rgba(251,122,60,.25); }
     .command-item:disabled { color: var(--text-disabled); cursor: default; opacity: .5; }
+    .confirm-copy { padding: 14px 16px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px 14px; }
     .command-footer {
       padding: 8px 14px 10px; border-top: 1px solid var(--border-subtle);
       font-size: 11px; color: var(--text-muted); line-height: 1.4;
@@ -1385,6 +1393,10 @@
       <div id="file-menu" class="file-menu"></div>
     </div>
     <div class="topbar-menus">
+      <div class="undo-redo-group">
+        <button id="undo-btn" class="ghost" type="button" title="Undo (⌘Z)" aria-label="Undo">↶</button>
+        <button id="redo-btn" class="ghost" type="button" title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
+      </div>
       <div class="mode-switcher" role="tablist" aria-label="Workspace">
         <button id="mode-draw" class="mode-button active" type="button" role="tab"
           aria-selected="true" aria-controls="workspace-main">Draw</button>
@@ -1394,6 +1406,9 @@
       <div class="menu-wrap">
         <button id="export-menu-button" class="menu-button" type="button">Export ▾</button>
         <div id="export-menu" class="file-menu">
+          <label class="control-check menu-item-check">
+            <input id="export-jitter" type="checkbox" checked /> Stroke wiggle
+          </label>
           <button id="export-panel-mp4" class="menu-item" type="button"><span>Current panel MP4</span><small id="export-panel-mp4-dims">.mp4</small></button>
           <button id="export-mp4" class="menu-item" type="button"><span>Full sequence MP4</span><small id="export-mp4-dims">.mp4</small></button>
           <button id="export-webm" class="menu-item" type="button"><span>WebM quick</span><small id="export-webm-dims">.webm</small></button>
@@ -1420,6 +1435,16 @@
       <div id="command-list"></div>
       <div id="command-footer" class="command-footer">
         <kbd>↑↓</kbd> navigate · <kbd>↵</kbd> run · <kbd>esc</kbd> close · <kbd>⌘K</kbd> anytime
+      </div>
+    </div>
+  </div>
+  <div id="confirm-overlay" class="command-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="command-palette">
+      <div id="confirm-title" class="preset-picker-title">Confirm action</div>
+      <div id="confirm-copy" class="confirm-copy"></div>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="ghost" type="button">Cancel</button>
+        <button id="confirm-ok" class="act" type="button">Continue</button>
       </div>
     </div>
   </div>

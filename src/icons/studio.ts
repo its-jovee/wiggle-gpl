@@ -133,6 +133,17 @@ export const StudioIcons = {
     ["path", { d: "M6 6v3" }],
     ["path", { d: "M18 6v3" }],
   ],
+  Tone: [
+    ["circle", { cx: 6, cy: 6, r: 1.4 }],
+    ["circle", { cx: 12, cy: 6, r: 1.4 }],
+    ["circle", { cx: 18, cy: 6, r: 1.4 }],
+    ["circle", { cx: 6, cy: 12, r: 1.4 }],
+    ["circle", { cx: 12, cy: 12, r: 1.4 }],
+    ["circle", { cx: 18, cy: 12, r: 1.4 }],
+    ["circle", { cx: 6, cy: 18, r: 1.4 }],
+    ["circle", { cx: 12, cy: 18, r: 1.4 }],
+    ["circle", { cx: 18, cy: 18, r: 1.4 }],
+  ],
   Timer: [
     ["circle", { cx: 12, cy: 13, r: 7 }],
     ["path", { d: "M9 2h6" }],

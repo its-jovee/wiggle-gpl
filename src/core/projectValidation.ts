@@ -12,10 +12,15 @@ import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 export const MAX_PROJECT_DIMENSION = 4096;
 export const MIN_PROJECT_DIMENSION = 1;
 export const MAX_PANELS = 200;
+export const MAX_LAYERS_PER_PANEL = 256;
+export const MAX_SUBPANELS_PER_PANEL = 64;
+export const MAX_TEXTS_PER_LAYER = 10_000;
 export const MAX_STROKES_PER_LAYER = 50_000;
-export const MAX_POINTS_PER_STROKE = 500_000;
+export const MAX_POINTS_PER_STROKE = 20_000;
 export const MAX_FILL_TOLERANCE = 64;
 export const MAX_FILL_GAP_CLOSE = 64;
+/** ~12MB decoded — generous but bounded; guards against corrupt/hostile files. */
+export const MAX_RASTER_DATA_CHARS = 16_000_000;
 
 export type ProjectValidationResult =
   | { ok: true }
@@ -104,6 +109,8 @@ export function capProjectDrawingSettings(project: Project): void {
   };
 }
 
+const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
   if (layer.strokes.length > MAX_STROKES_PER_LAYER) {
     errors.push(`${path}: ${layer.strokes.length} strokes exceeds max ${MAX_STROKES_PER_LAYER}`);
@@ -112,6 +119,27 @@ function validateLayer(layer: Layer, path: string, errors: string[]): void {
     const count = layer.strokes[i].points.length;
     if (count > MAX_POINTS_PER_STROKE) {
       errors.push(`${path} stroke ${i + 1}: ${count} points exceeds max ${MAX_POINTS_PER_STROKE}`);
+    }
+  }
+  if ((layer.texts?.length ?? 0) > MAX_TEXTS_PER_LAYER) {
+    errors.push(`${path}: ${layer.texts?.length ?? 0} texts exceeds max ${MAX_TEXTS_PER_LAYER}`);
+  }
+  if (layer.kind === "raster" && !layer.raster) {
+    errors.push(`${path}: raster layer is missing pixel data`);
+    return;
+  }
+  if (layer.kind === "raster" && layer.raster) {
+    const { data, width, height } = layer.raster;
+    if (typeof data !== "string" || !data.startsWith(PNG_DATA_URL_PREFIX)) {
+      errors.push(`${path}: raster data must be a PNG data URL`);
+    }
+    if (typeof data === "string" && data.length > MAX_RASTER_DATA_CHARS) {
+      errors.push(`${path}: raster data ${data.length} chars exceeds max ${MAX_RASTER_DATA_CHARS}`);
+    }
+    if (!Number.isFinite(width) || !Number.isFinite(height) ||
+      width < MIN_PROJECT_DIMENSION || width > MAX_PROJECT_DIMENSION ||
+      height < MIN_PROJECT_DIMENSION || height > MAX_PROJECT_DIMENSION) {
+      errors.push(`${path}: raster dimensions ${width}x${height} out of bounds`);
     }
   }
 }
@@ -136,12 +164,34 @@ export function validateProject(project: Project): ProjectValidationResult {
 
   for (let pi = 0; pi < project.panels.length; pi++) {
     const panel = project.panels[pi];
+    if (!Number.isFinite(panel.durationMs) || panel.durationMs < 1) {
+      errors.push(`panel ${pi + 1}: durationMs must be a positive finite number`);
+    }
+    if (panel.layers.length > MAX_LAYERS_PER_PANEL) {
+      errors.push(`panel ${pi + 1}: ${panel.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);
+    }
+    if ((panel.subPanels?.length ?? 0) > MAX_SUBPANELS_PER_PANEL) {
+      errors.push(`panel ${pi + 1}: ${panel.subPanels?.length ?? 0} sub-panels exceeds max ${MAX_SUBPANELS_PER_PANEL}`);
+    }
     for (let li = 0; li < panel.layers.length; li++) {
+      if (!Number.isFinite(panel.layers[li].opacity) || panel.layers[li].opacity < 0 || panel.layers[li].opacity > 1) {
+        errors.push(`panel ${pi + 1} layer ${li + 1}: opacity must be between 0 and 1`);
+      }
       validateLayer(panel.layers[li], `panel ${pi + 1} layer ${li + 1}`, errors);
     }
     for (let si = 0; si < (panel.subPanels ?? []).length; si++) {
       const sub = panel.subPanels![si];
+      if (!Number.isFinite(sub.bounds.x) || !Number.isFinite(sub.bounds.y) ||
+          !Number.isFinite(sub.bounds.w) || !Number.isFinite(sub.bounds.h)) {
+        errors.push(`panel ${pi + 1} sub-panel ${si + 1}: bounds must be finite numbers`);
+      }
+      if (sub.layers.length > MAX_LAYERS_PER_PANEL) {
+        errors.push(`panel ${pi + 1} sub-panel ${si + 1}: ${sub.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);
+      }
       for (let li = 0; li < sub.layers.length; li++) {
+        if (!Number.isFinite(sub.layers[li].opacity) || sub.layers[li].opacity < 0 || sub.layers[li].opacity > 1) {
+          errors.push(`panel ${pi + 1} sub-panel ${si + 1} layer ${li + 1}: opacity must be between 0 and 1`);
+        }
         validateLayer(sub.layers[li], `panel ${pi + 1} sub-panel ${si + 1} layer ${li + 1}`, errors);
       }
     }

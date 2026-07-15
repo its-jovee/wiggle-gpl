@@ -26,6 +26,14 @@ function serialize(project: Project, indent?: number): string {
   return JSON.stringify(project, roundCoords, indent);
 }
 
+/** Canonical project serialization — used for saved files, the fingerprint
+ *  hash, and recovery snapshots, so callers that already have the string can
+ *  reuse it instead of re-stringifying (see `projectHashFromString`,
+ *  `writeHandleString`, `writeRecoverySnapshotString`). */
+export function serializeProject(project: Project, indent = 2): string {
+  return serialize(project, indent);
+}
+
 type PickerAccept = { description: string; accept: Record<string, string[]> };
 type SavePickerOptions = { suggestedName?: string; types?: PickerAccept[] };
 type OpenPickerOptions = { types?: PickerAccept[]; multiple?: boolean };
@@ -60,8 +68,7 @@ export function canUseFileSystemAccess(): boolean {
   return typeof w.showSaveFilePicker === "function" && typeof w.showOpenFilePicker === "function";
 }
 
-export function projectHash(project: Project): string {
-  const json = serialize(project);
+export function projectHashFromString(json: string): string {
   let hash = 2166136261;
   for (let i = 0; i < json.length; i++) {
     hash ^= json.charCodeAt(i);
@@ -70,10 +77,18 @@ export function projectHash(project: Project): string {
   return `${json.length}:${hash >>> 0}`;
 }
 
-export async function writeHandle(handle: FileSystemFileHandle, project: Project) {
+export function projectHash(project: Project): string {
+  return projectHashFromString(serializeProject(project));
+}
+
+export async function writeHandleString(handle: FileSystemFileHandle, json: string) {
   const writable = await handle.createWritable();
-  await writable.write(serialize(project, 2));
+  await writable.write(json);
   await writable.close();
+}
+
+export async function writeHandle(handle: FileSystemFileHandle, project: Project) {
+  await writeHandleString(handle, serializeProject(project));
 }
 
 export async function saveAsProject(project: Project, suggestedName = "wigglestudio-project.wiggle.json") {
@@ -140,7 +155,7 @@ export function resetCurrentFile(project: Project) {
 }
 
 export function downloadProject(project: Project, filename: string) {
-  const blob = new Blob([serialize(project, 2)], { type: "application/json" });
+  const blob = new Blob([serializeProject(project)], { type: "application/json" });
   downloadBlob(blob, filename);
 }
 
@@ -158,10 +173,20 @@ export function pushRecent(name: string) {
   localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
 }
 
+export function writeRecoverySnapshotString(json: string): RecoverySnapshot | null {
+  const snapshot: RecoverySnapshot = { savedAt: Date.now(), json };
+  try {
+    localStorage.setItem(RECOVERY_KEY, JSON.stringify(snapshot));
+    return snapshot;
+  } catch {
+    // Quota errors are expected for large raster-heavy projects. The caller
+    // surfaces the condition, while save-to-file remains fully available.
+    return null;
+  }
+}
+
 export function writeRecoverySnapshot(project: Project) {
-  const snapshot: RecoverySnapshot = { savedAt: Date.now(), json: serialize(project) };
-  localStorage.setItem(RECOVERY_KEY, JSON.stringify(snapshot));
-  return snapshot;
+  return writeRecoverySnapshotString(serializeProject(project));
 }
 
 export function readRecoverySnapshot(): RecoverySnapshot | null {
