@@ -20,9 +20,19 @@
 import { Panel, Project } from "./types";
 
 export type HistoryCtx = { activePanelIndex: number };
-export type HistoryResult = { project: Project; ctx: HistoryCtx };
+export type HistoryChange = {
+  changedPanelIds: string[];
+  panelOrderChanged: boolean;
+  metaChanged: boolean;
+};
+export type HistoryResult = { project: Project; ctx: HistoryCtx; change: HistoryChange };
+export type PreparedHistory = {
+  result: HistoryResult;
+  fromPointer: number;
+  toPointer: number;
+};
 
-type Entry = { meta: string; panels: string[]; ctx: HistoryCtx };
+type Entry = { meta: string; panels: string[]; panelIds: string[]; ctx: HistoryCtx };
 
 const MAX = 50;
 let stack: Entry[] = [];
@@ -48,15 +58,69 @@ function serializePanels(project: Project, changedPanelIds?: Set<string>): strin
   });
 }
 
-function reconstruct(entry: Entry): Project {
-  const project = { ...JSON.parse(entry.meta), panels: entry.panels.map(s => JSON.parse(s) as Panel) } as Project;
-  panelJson = new Map(project.panels.map((p, i) => [p.id, entry.panels[i]]));
+function reconstruct(
+  entry: Entry,
+  refreshCache: boolean,
+  reuseProject?: Project,
+  reusablePanelIds?: Set<string>,
+): Project {
+  const reusablePanels = new Map(reuseProject?.panels.map(panel => [panel.id, panel]) ?? []);
+  const panels = entry.panelIds.map((id, i) => {
+    if (reusablePanelIds?.has(id)) {
+      const reusable = reusablePanels.get(id);
+      if (reusable) return reusable;
+    }
+    return JSON.parse(entry.panels[i]) as Panel;
+  });
+  const project = { ...JSON.parse(entry.meta), panels } as Project;
+  if (refreshCache) panelJson = new Map(project.panels.map((p, i) => [p.id, entry.panels[i]]));
   return project;
+}
+
+function changeBetween(from: Entry, to: Entry): HistoryChange {
+  const fromById = new Map(from.panelIds.map((id, i) => [id, from.panels[i]]));
+  const toById = new Map(to.panelIds.map((id, i) => [id, to.panels[i]]));
+  const changedPanelIds: string[] = [];
+  const ids = new Set([...from.panelIds, ...to.panelIds]);
+  for (const id of ids) {
+    if (fromById.get(id) !== toById.get(id)) changedPanelIds.push(id);
+  }
+  const panelOrderChanged = from.panelIds.length !== to.panelIds.length
+    || from.panelIds.some((id, i) => id !== to.panelIds[i]);
+  return {
+    changedPanelIds,
+    panelOrderChanged,
+    metaChanged: from.meta !== to.meta,
+  };
+}
+
+function prepare(direction: "undo" | "redo", reuseProject?: Project): PreparedHistory | null {
+  const toPointer = direction === "undo" ? pointer - 1 : pointer + 1;
+  if (toPointer < 0 || toPointer >= stack.length) return null;
+  const from = stack[pointer];
+  const to = stack[toPointer];
+  const change = changeBetween(from, to);
+  const changed = new Set(change.changedPanelIds);
+  const reusablePanelIds = new Set(to.panelIds.filter(id => !changed.has(id)));
+  return {
+    result: {
+      project: reconstruct(to, false, reuseProject, reusablePanelIds),
+      ctx: to.ctx,
+      change,
+    },
+    fromPointer: pointer,
+    toPointer,
+  };
 }
 
 export function init(project: Project, ctx: HistoryCtx = { activePanelIndex: 0 }) {
   panelJson = new Map();
-  const entry: Entry = { meta: serializeMeta(project), panels: serializePanels(project), ctx };
+  const entry: Entry = {
+    meta: serializeMeta(project),
+    panels: serializePanels(project),
+    panelIds: project.panels.map(p => p.id),
+    ctx,
+  };
   stack = [entry];
   pointer = 0;
 }
@@ -70,6 +134,7 @@ export function push(project: Project, ctx: HistoryCtx, changedPanelIds?: Set<st
   const entry: Entry = {
     meta: serializeMeta(project),
     panels: serializePanels(project, changedPanelIds),
+    panelIds: project.panels.map(p => p.id),
     ctx,
   };
   stack.push(entry);
@@ -78,17 +143,30 @@ export function push(project: Project, ctx: HistoryCtx, changedPanelIds?: Set<st
 }
 
 export function undo(): HistoryResult | null {
-  if (pointer <= 0) return null;
-  pointer--;
-  const entry = stack[pointer];
-  return { project: reconstruct(entry), ctx: entry.ctx };
+  const prepared = prepare("undo");
+  return prepared ? commitPrepared(prepared) : null;
 }
 
 export function redo(): HistoryResult | null {
-  if (pointer >= stack.length - 1) return null;
-  pointer++;
+  const prepared = prepare("redo");
+  return prepared ? commitPrepared(prepared) : null;
+}
+
+export function prepareUndo(reuseProject?: Project): PreparedHistory | null {
+  return prepare("undo", reuseProject);
+}
+export function prepareRedo(reuseProject?: Project): PreparedHistory | null {
+  return prepare("redo", reuseProject);
+}
+
+/** Commit a previously prepared transition after any async resources it needs
+ * have been made ready. Returning null means another transition won the race. */
+export function commitPrepared(prepared: PreparedHistory): HistoryResult | null {
+  if (pointer !== prepared.fromPointer) return null;
+  pointer = prepared.toPointer;
   const entry = stack[pointer];
-  return { project: reconstruct(entry), ctx: entry.ctx };
+  panelJson = new Map(entry.panelIds.map((id, i) => [id, entry.panels[i]]));
+  return prepared.result;
 }
 
 export function canUndo() { return pointer > 0; }
@@ -99,11 +177,11 @@ export function canRedo() { return pointer < stack.length - 1; }
  *  (see the `?historycheck` flag in main.ts). Idempotent — does not advance
  *  or rewind the stack. */
 export function debugCurrentReconstruction(): Project {
-  return reconstruct(stack[pointer]);
+  return reconstruct(stack[pointer], true);
 }
 
 /** Test-only: raw entry list, for asserting reference-sharing of unchanged
  *  panel strings between consecutive entries. */
-export function debugStack(): readonly { meta: string; panels: string[]; ctx: HistoryCtx }[] {
+export function debugStack(): readonly { meta: string; panels: string[]; panelIds: string[]; ctx: HistoryCtx }[] {
   return stack;
 }

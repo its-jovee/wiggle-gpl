@@ -164,3 +164,40 @@ test("undo/redo refreshes the panel cache so the next push diffs correctly", () 
   assert.equal(cur.project.panels[0].marker, 1);
   assert.equal(cur.project.panels[1].marker, 0);
 });
+
+test("prepared navigation reports only the panels that changed", () => {
+  history.init(makeMultiPanelProject([0, 0, 0]), { activePanelIndex: 0 });
+  history.push(makeMultiPanelProject([1, 0, 0]), { activePanelIndex: 0 }, new Set(["p0"]));
+
+  const prepared = history.prepareUndo();
+  assert.ok(prepared);
+  assert.equal(history.canUndo(), true, "preparing must not move the pointer");
+  assert.deepEqual(prepared.result.change.changedPanelIds, ["p0"]);
+  assert.equal(prepared.result.change.panelOrderChanged, false);
+  assert.equal(prepared.result.change.metaChanged, false);
+
+  const applied = history.commitPrepared(prepared);
+  assert.equal(applied.project.panels[0].marker, 0);
+  assert.equal(history.canUndo(), false);
+  assert.equal(history.canRedo(), true);
+});
+
+test("prepared navigation detects panel order changes", () => {
+  const first = makeMultiPanelProject([0, 1]);
+  const second = { ...first, panels: [first.panels[1], first.panels[0]] };
+  history.init(first, { activePanelIndex: 0 });
+  history.push(second, { activePanelIndex: 0 });
+  const prepared = history.prepareUndo();
+  assert.equal(prepared.result.change.panelOrderChanged, true);
+  assert.deepEqual(prepared.result.change.changedPanelIds, []);
+});
+
+test("prepared navigation reuses unchanged live panels", () => {
+  const current = makeMultiPanelProject([1, 2]);
+  const previous = makeMultiPanelProject([0, 2]);
+  history.init(previous, { activePanelIndex: 0 });
+  history.push(current, { activePanelIndex: 0 }, new Set(["p0"]));
+  const prepared = history.prepareUndo(current);
+  assert.equal(prepared.result.project.panels[1], current.panels[1]);
+  assert.notEqual(prepared.result.project.panels[0], current.panels[0]);
+});

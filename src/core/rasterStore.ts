@@ -14,7 +14,7 @@
 // snapshot always contains the latest pixels.
 // ============================================================================
 
-import type { Layer } from "./types";
+import type { Layer, Project } from "./types";
 
 export type DecodedImage = { width: number; height: number } & CanvasImageSource;
 export type ImageDecoder = (dataUrl: string) => Promise<DecodedImage>;
@@ -32,6 +32,16 @@ type RasterEntry = {
   decoding: boolean;
   nextStrokeIndex: number;
 };
+
+export type PreparedRaster = {
+  layerId: string;
+  sourceData: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  canvas: HTMLCanvasElement;
+};
+
+export type RasterPreparation = { entries: PreparedRaster[] };
 
 const store = new Map<string, RasterEntry>();
 let readyCallback: (() => void) | null = null;
@@ -124,6 +134,66 @@ export function getRasterCanvas(layer: Layer): HTMLCanvasElement | null {
     });
 
   return null;
+}
+
+function rasterLayersForProject(project: Project, panelIds?: Set<string>): Layer[] {
+  const layers: Layer[] = [];
+  for (const panel of project.panels) {
+    if (panelIds && !panelIds.has(panel.id)) continue;
+    layers.push(...panel.layers);
+    for (const subPanel of panel.subPanels ?? []) layers.push(...subPanel.layers);
+  }
+  return layers.filter(layer => layer.kind === "raster" && !!layer.raster);
+}
+
+/** Decode target raster data without touching the live store. Undo/redo uses
+ * this two-phase path so a delayed image decode cannot replace a complete
+ * visible frame with a blank raster layer. */
+export async function prepareRasterCanvases(
+  project: Project,
+  panelIds?: Iterable<string>
+): Promise<RasterPreparation> {
+  const ids = panelIds ? new Set(panelIds) : undefined;
+  const entries: PreparedRaster[] = [];
+  for (const layer of rasterLayersForProject(project, ids)) {
+    const raster = layer.raster!;
+    const existing = store.get(layer.id);
+    if (existing && existing.sourceData === raster.data &&
+        existing.sourceWidth === raster.width && existing.sourceHeight === raster.height &&
+        !existing.decoding) continue;
+
+    const image = await decodeImage(raster.data);
+    const canvas = makeCanvas(raster.width, raster.height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("raster decode produced no 2D context");
+    context.clearRect(0, 0, raster.width, raster.height);
+    context.drawImage(image, 0, 0);
+    entries.push({
+      layerId: layer.id,
+      sourceData: raster.data,
+      sourceWidth: raster.width,
+      sourceHeight: raster.height,
+      canvas,
+    });
+  }
+  return { entries };
+}
+
+/** Atomically install a successful raster preparation after its project has
+ * been selected. The existing stroke counter survives an undo swap. */
+export function commitRasterPreparation(preparation: RasterPreparation): void {
+  for (const prepared of preparation.entries) {
+    const previous = store.get(prepared.layerId);
+    store.set(prepared.layerId, {
+      canvas: prepared.canvas,
+      sourceData: prepared.sourceData,
+      sourceWidth: prepared.sourceWidth,
+      sourceHeight: prepared.sourceHeight,
+      pixelVersion: (previous?.pixelVersion ?? 0) + 1,
+      decoding: false,
+      nextStrokeIndex: previous?.nextStrokeIndex ?? 0,
+    });
+  }
 }
 
 /** Call after mutating a raster layer's runtime canvas directly. */

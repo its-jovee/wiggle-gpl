@@ -73,7 +73,7 @@ import {
 } from "./core/viewport";
 import {
   canUseFileSystemAccess, clearRecoverySnapshot, openProjectFromPicker,
-  persistenceState, projectHash, projectHashFromString, readFallbackFile, readRecents,
+  persistenceState, projectHash, projectHashFromString, readFallbackFile,
   readRecoverySnapshot, recoverProject, resetCurrentFile, saveAsProject,
   saveProject as persistSaveProject, serializeProject, writeHandleString,
   writeRecoverySnapshotString,
@@ -83,8 +83,8 @@ import {
 } from "./core/canvasPresets";
 import * as history from "./core/history";
 import {
-  getRasterCanvas, installRasterCanvas, markRasterEdited, nextRasterStrokeIndex, onRasterReady,
-  pruneRasterStore, syncRasterToLayer,
+  commitRasterPreparation, getRasterCanvas, installRasterCanvas, markRasterEdited,
+  nextRasterStrokeIndex, onRasterReady, prepareRasterCanvases, pruneRasterStore, syncRasterToLayer,
 } from "./core/rasterStore";
 import { drawBrushPreview } from "./brushes/preview";
 import { drawEraserTracePreview, isErasePreviewBrush } from "./core/eraserPreview";
@@ -493,12 +493,18 @@ function updateExportMenuLabels() {
 
 function resizeCanvasForProject() {
   const { x: ox, y: oy } = overscanPx(project.width, project.height);
+  const nextWidth = project.width + 2 * ox;
+  const nextHeight = project.height + 2 * oy;
+  const dimensionsChanged = canvas.width !== nextWidth || canvas.height !== nextHeight;
   overscanX = ox;
   overscanY = oy;
-  canvas.width = project.width + 2 * ox;
-  canvas.height = project.height + 2 * oy;
+  if (dimensionsChanged) {
+    canvas.width = nextWidth;
+    canvas.height = nextHeight;
+  }
   syncCanvasAspect();
-  invalidateBaseFrameCache();
+  if (dimensionsChanged) invalidateBaseFrameCache();
+  return dimensionsChanged;
 }
 
 resizeCanvasForProject();
@@ -762,25 +768,75 @@ function cancelLiveInteractionsForUndo() {
   scaleToolDrag = null; // snapshots reference replaced Layer objects
 }
 
+function panelTimelineSignature(panel: Panel): string {
+  return JSON.stringify({
+    kind: panel.kind,
+    durationMs: panel.durationMs,
+    enter: panel.enter,
+    exit: panel.exit,
+  });
+}
+
+function timelineNeedsRebuildAfterHistory(
+  previous: Project,
+  next: Project,
+  change: history.HistoryChange,
+): boolean {
+  if (workspaceMode === "edit" || timelineMode === "tracks") return true;
+  if (change.panelOrderChanged || previous.wiggleFps !== next.wiggleFps) return true;
+  if (JSON.stringify(previous.groups ?? []) !== JSON.stringify(next.groups ?? [])) return true;
+  const previousById = new Map(previous.panels.map(panel => [panel.id, panel]));
+  for (const id of change.changedPanelIds) {
+    const oldPanel = previousById.get(id);
+    const newPanel = next.panels.find(panel => panel.id === id);
+    if (oldPanel && newPanel && panelTimelineSignature(oldPanel) !== panelTimelineSignature(newPanel)) return true;
+  }
+  return false;
+}
+
+let undoRedoQueue = Promise.resolve();
+
 function performUndoRedo(isRedo: boolean) {
+  const run = undoRedoQueue.then(() => performUndoRedoNow(isRedo));
+  undoRedoQueue = run.catch(() => undefined);
+  return undoRedoQueue;
+}
+
+async function performUndoRedoNow(isRedo: boolean) {
   cancelLiveInteractionsForUndo();
-  const snap = isRedo ? history.redo() : history.undo();
-  if (!snap) { setStatus(isRedo ? "Nothing to redo" : "Nothing to undo"); return; }
+  const prepared = isRedo ? history.prepareRedo(project) : history.prepareUndo(project);
+  if (!prepared) { setStatus(isRedo ? "Nothing to redo" : "Nothing to undo"); return; }
+
+  let rasterPreparation;
+  try {
+    rasterPreparation = await prepareRasterCanvases(
+      prepared.result.project,
+      prepared.result.change.changedPanelIds,
+    );
+  } catch (error) {
+    console.error(`${isRedo ? "Redo" : "Undo"} raster preparation failed`, error);
+    setStatus(`${isRedo ? "Redo" : "Undo"} failed: raster layer could not be restored`);
+    return;
+  }
+
+  const snap = history.commitPrepared(prepared);
+  if (!snap) {
+    setStatus("Undo state changed before it could be applied");
+    return;
+  }
+  const previousProject = project;
+  const previousActivePanel = previousProject.panels[activePanelIndex];
+  const previousActiveSubPanelId = activeSubPanelId;
   project = snap.project;
+  commitRasterPreparation(rasterPreparation);
   pruneRasterStoreForProject(project);
   markDirty();
-  // Any panel could have changed after undo/redo — mark all thumbnails stale.
-  for (const id of thumbCanvases.keys()) dirtyThumbnailPanelIds.add(id);
+  for (const id of snap.change.changedPanelIds) {
+    if (project.panels.some(panel => panel.id === id)) dirtyThumbnailPanelIds.add(id);
+  }
   renderContentVersion++;
-  // NOTE: the raw-layer cache is intentionally NOT cleared here. Undo/redo
-  // rebuilds every Layer object, but the cache is keyed by content hash
-  // (layerSig) + tick, not object identity — a restored layer with
-  // identical content re-hashes to the same sig and keeps hitting its old
-  // cache entry. Wholesale clearing forced every layer to re-stamp after
-  // every undo/redo, the same cost invalidateBaseFrameCache's comment
-  // argues against for ordinary edits. If stale pixels ever show up after
-  // undo, suspect a sig collision or a layerVersion bump that isn't
-  // reflected in layerSig's inputs — not this omission.
+  // The raw-layer cache is intentionally preserved. Restored layers with
+  // identical render signatures can reuse their previous stamped pixels.
   resizeCanvasForProject();
   activePanelIndex = Math.max(0, Math.min(snap.ctx.activePanelIndex, project.panels.length - 1));
   activeSubPanelId = null;
@@ -789,8 +845,15 @@ function performUndoRedo(isRedo: boolean) {
   clearSelection();
   setStatus(isRedo ? "Redo" : "Undo");
   updateSmoothingControls();
-  buildTimeline();
-  buildLayers();
+  if (timelineNeedsRebuildAfterHistory(previousProject, project, snap.change)) {
+    buildTimeline();
+  } else {
+    lastSyncedThumbIndex = -1;
+    syncActiveThumb();
+  }
+  const activePanelWasReused = previousActivePanel === project.panels[activePanelIndex]
+    && previousActiveSubPanelId === null;
+  if (!activePanelWasReused) buildLayers();
   buildBreadcrumb();
   buildInspector();
   buildEditContext();
@@ -4614,22 +4677,29 @@ function buildOnionSkinBar(): HTMLElement {
   return bar;
 }
 
-function buildPanelCell(filmstrip: HTMLElement, i: number, p: Panel) {
+function buildPanelCell(
+  filmstrip: HTMLElement,
+  i: number,
+  p: Panel,
+  reusedThumb?: HTMLCanvasElement,
+) {
   const cell = document.createElement("div");
   cell.className = "panel-cell"
     + (i === activePanelIndex ? " active" : "")
     + (isPanelInSelectedRange(i) ? " range-selected" : "");
   cell.dataset.index = String(i);
+  cell.dataset.panelId = p.id;
   cell.draggable = true;
 
   const group = groupAtPanelIndex(project, i);
   if (group) cell.dataset.groupId = group.id;
 
-  const thumb = document.createElement("canvas");
-  thumb.width = 60; thumb.height = 107;
+  const thumb = reusedThumb ?? document.createElement("canvas");
+  if (thumb.width !== 60) thumb.width = 60;
+  if (thumb.height !== 107) thumb.height = 107;
   cell.appendChild(thumb);
   thumbCanvases.set(p.id, thumb);
-  renderThumb(thumb, p);
+  if (!reusedThumb) renderThumb(thumb, p);
 
   if (p.kind === "timelapse") {
     const tag = document.createElement("div");
@@ -4863,6 +4933,7 @@ function buildTimeline() {
   const previousFilmstrip = tl.querySelector(".timeline-filmstrip") as HTMLElement | null;
   const previousFilmstripScrollLeft = previousFilmstrip?.scrollLeft ?? 0;
   const previousFilmstripScrollTop = previousFilmstrip?.scrollTop ?? 0;
+  const reusableThumbs = new Map(thumbCanvases);
   tl.innerHTML = "";
   tl.classList.toggle("track-mode", timelineMode === "tracks" && workspaceMode === "draw");
   tl.classList.toggle("edit-mode", workspaceMode === "edit");
@@ -4892,12 +4963,14 @@ function buildTimeline() {
       for (const panelId of group.panelIds) {
         const idx = project.panels.findIndex((p) => p.id === panelId);
         if (idx < 0) continue;
-        buildPanelCell(cellsHost, idx, project.panels[idx]);
+        const panel = project.panels[idx];
+        buildPanelCell(cellsHost, idx, panel, reusableThumbs.get(panel.id));
       }
       filmstrip.appendChild(bracket);
       panelIdx += group.panelIds.length;
     } else {
-      buildPanelCell(filmstrip, panelIdx, project.panels[panelIdx]);
+      const panel = project.panels[panelIdx];
+      buildPanelCell(filmstrip, panelIdx, panel, reusableThumbs.get(panel.id));
       panelIdx++;
     }
   }
@@ -7853,18 +7926,6 @@ function buildFileMenu() {
   menu.appendChild(menuButton("Save As…", "⇧⌘S", saveProjectAs));
   menu.appendChild(divider());
 
-  const recentLabel = document.createElement("div");
-  recentLabel.className = "recent-label";
-  recentLabel.textContent = "Recent";
-  menu.appendChild(recentLabel);
-  const recents = readRecents();
-  if (recents.length === 0) {
-    menu.appendChild(menuButton("No recent files", "", () => {}, true));
-  } else {
-    for (const recent of recents) {
-      menu.appendChild(menuButton(recent.name, "Open file…", openProject));
-    }
-  }
   menu.appendChild(divider());
   menu.appendChild(menuButton("Revert", "", revertProject, !persistenceState.currentFileHandle));
 }
@@ -8046,7 +8107,9 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (!inEditable && (e.key === " " || e.key === "Spacebar" || e.code === "Space")) {
+  const canvasOwnsKeyboard = target === canvas || target === stageArea || target === document.body;
+  if (!inEditable && canvasOwnsKeyboard &&
+      (e.key === " " || e.key === "Spacebar" || e.code === "Space")) {
     e.preventDefault();
     spacePanDown = true;
     stageArea.classList.add("space-pan");

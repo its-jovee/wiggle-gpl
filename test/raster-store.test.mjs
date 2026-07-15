@@ -137,3 +137,22 @@ test("pruneRasterStore drops entries for layers that no longer exist", async () 
   assert.equal(afterPrune, null, "pruned entry should re-decode from scratch");
   assert.equal(decodeCalls.length, 2);
 });
+
+test("raster preparation decodes a target without replacing the live canvas", async () => {
+  const decodeCalls = [];
+  store.setRasterTestBackends({ decodeImage: stubDecoder(decodeCalls), makeCanvas: fakeCanvas });
+  const currentLayer = rasterLayer("layer-prepare-1", "data:image/png;base64,CURRENT");
+  store.getRasterCanvas(currentLayer);
+  await Promise.resolve().then(() => Promise.resolve());
+  const currentCanvas = store.getRasterCanvas(currentLayer);
+
+  const targetLayer = rasterLayer("layer-prepare-1", "data:image/png;base64,TARGET");
+  const targetProject = { panels: [{ id: "panel", layers: [targetLayer], subPanels: [] }] };
+  const preparation = await store.prepareRasterCanvases(targetProject, ["panel"]);
+  assert.equal(preparation.entries.length, 1);
+  assert.equal(store.getRasterCanvas(currentLayer), currentCanvas, "live pixels stay visible while target decodes");
+
+  store.commitRasterPreparation(preparation);
+  assert.equal(store.getRasterCanvas(targetLayer), preparation.entries[0].canvas);
+  assert.deepEqual(decodeCalls, ["data:image/png;base64,CURRENT", "data:image/png;base64,TARGET"]);
+});
