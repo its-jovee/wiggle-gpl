@@ -59,3 +59,9 @@ test("export progress status text names render, encode, done, and failed phases"
     "MP4 failed: no core"
   );
 });
+
+test("export errors retain ffmpeg worker messages instead of rendering undefined", () => {
+  assert.equal(progress.exportErrorMessage("failed to import ffmpeg-core.js"), "failed to import ffmpeg-core.js");
+  assert.equal(progress.exportErrorMessage(new Error("core failed")), "core failed");
+  assert.equal(progress.exportErrorMessage(undefined), "The encoder could not start. Please try again.");
+});

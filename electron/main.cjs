@@ -22,7 +22,9 @@ const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
 const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
-  "Content-Security-Policy": "default-src 'self'; script-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://lospec.com; worker-src 'self' blob:;",
+  // ffmpeg.wasm loads the bundled core through a blob URL and compiles its
+  // local WASM binary inside a worker. Both are required for MP4 export.
+  "Content-Security-Policy": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://lospec.com; worker-src 'self' blob:;",
 };
 let productionAppUrl = null;
 let assetServer = null;

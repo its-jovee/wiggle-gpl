@@ -71,3 +71,14 @@ export function exportProgressStatus(progress: ExportProgress): string {
   if (progress.phase === "done") return `${progress.format} done`;
   return `${progress.format} failed: ${progress.error ?? "unknown error"}`;
 }
+
+/** ffmpeg's worker reports some failures as plain strings, not Error objects. */
+export function exportErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+  }
+  return "The encoder could not start. Please try again.";
+}

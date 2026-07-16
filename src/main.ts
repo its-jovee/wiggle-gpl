@@ -33,7 +33,7 @@ import { StudioIcons, type IconNode } from "./icons/studio";
 import { BRUSHES, brushByKey } from "./brushes/registry";
 import { BUILTIN_PALETTES, loadLospecPalette, Palette } from "./core/palette";
 import { exportWebM, exportMP4, downloadBlob } from "./core/export";
-import { exportProgressStatus } from "./core/exportProgress";
+import { exportErrorMessage, exportProgressStatus } from "./core/exportProgress";
 import {
   AudioAsset, AudioClip, AudioTrack, ensureAudioProject,
   newAudioAsset, newAudioClip, newAudioTrack,
@@ -7444,7 +7444,7 @@ async function runExport(format: "webm" | "mp4" | "panel-mp4") {
     if (isAbortError(err) || exportCancelled) {
       setStatus("Export cancelled");
     } else {
-      showError(`${exportLabel} failed: ${(err as Error).message}`);
+      showError(`${exportLabel} failed: ${exportErrorMessage(err)}`);
     }
   } finally {
     closeExportOverlay();
