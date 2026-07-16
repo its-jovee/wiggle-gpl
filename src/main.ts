@@ -59,7 +59,7 @@ import { easeProgress } from "./core/anim";
 import { timelineScrollAfterRebuild } from "./core/timelineScroll";
 import { backfillSyntheticStartupPressures, readPointerPressure, simplifyStroke } from "./core/input";
 import { bumpLayerVersion, layerVersion } from "./core/layerVersion";
-import { canMergeLayerDown, clearLayerContents, duplicateLayer, mergeLayerDown } from "./core/layerOps";
+import { canMergeLayerDown, clearLayerContents, duplicateLayer, mergeLayerDown, pasteLayerAbove } from "./core/layerOps";
 import {
   deleteMask as deleteMaskState,
   invertMask as invertMaskState,
@@ -176,6 +176,7 @@ let jitterEnabled = true;
 let layerClipboard: Layer | null = null;
 let animationClipboard: LayerAnimation | null = null;
 let selectionClipboard: { strokes: Stroke[]; fills: Fill[]; texts: TextElement[] } | null = null;
+let lastEditClipboardKind: "selection" | "layer" | null = null;
 let maskOverlayLayerId: string | null = null;
 
 // Dirty flag: set by commitHistory(), cleared on save. Replaces the expensive
@@ -898,6 +899,7 @@ function copySelection() {
     else if (ref.kind === "text") texts.push(JSON.parse(JSON.stringify(ref.text)));
   }
   selectionClipboard = { strokes, fills, texts };
+  lastEditClipboardKind = "selection";
   const count = strokes.length + fills.length + texts.length;
   buildEditContext();
   setStatus(`${count} item(s) copied · navigate to a frame and paste`);
@@ -1832,20 +1834,11 @@ function drawKeyframeOverlay(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-function cloneLayerForPaste(src: Layer): Layer {
-  const copy = JSON.parse(JSON.stringify(src)) as Layer;
-  copy.id = crypto.randomUUID();
-  copy.name = `${copy.name} copy`;
-  if (copy.texts) {
-    copy.texts = copy.texts.map((t) => ({ ...t, id: crypto.randomUUID() }));
-  }
-  return copy;
-}
-
 function copyActiveLayer() {
   const layer = activeLayer();
   if (!layer) return;
   layerClipboard = JSON.parse(JSON.stringify(layer)) as Layer;
+  lastEditClipboardKind = "layer";
   buildLayers();
   buildInspector();
   setStatus(`copied ${layer.name}`);
@@ -1853,11 +1846,18 @@ function copyActiveLayer() {
 
 function pasteLayerAboveActive() {
   if (!layerClipboard) return;
+  if (activePanel().kind === "timelapse" && !activeSubPanelId) {
+    setStatus("Cannot paste a layer onto a timelapse panel");
+    return;
+  }
   const cont = activeContainer();
   const index = cont.getActiveLayerIndex();
-  const pasted = cloneLayerForPaste(layerClipboard);
-  cont.layers.splice(index + 1, 0, pasted);
-  cont.setActiveLayerIndex(index + 1);
+  const nextIndex = pasteLayerAbove(cont.layers, index, layerClipboard, () => crypto.randomUUID());
+  const pasted = cont.layers[nextIndex];
+  cont.setActiveLayerIndex(nextIndex);
+  selectedText = null;
+  selectedSubPanelId = null;
+  clearSelection();
   commitHistory();
   buildLayers();
   buildInspector();
@@ -7603,6 +7603,14 @@ function commandList(): Command[] {
       enabled: () => !!activeLayer(),
       run: () => duplicateActiveLayer(),
     },
+    { id: "layer-copy", label: "Copy Layer", group: "Layer", shortcut: "⌘C",
+      enabled: () => !!activeLayer(),
+      run: () => copyActiveLayer(),
+    },
+    { id: "layer-paste", label: "Paste Layer Above", group: "Layer", shortcut: "⌘V",
+      enabled: () => !!layerClipboard && activePanel().kind !== "timelapse",
+      run: () => pasteLayerAboveActive(),
+    },
     { id: "layer-rasterize", label: "Rasterize Layer", group: "Layer",
       enabled: () => activeLayer()?.kind === "draw",
       run: () => rasterizeActiveLayer(),
@@ -8145,9 +8153,15 @@ window.addEventListener("keydown", (e) => {
     }
     if (key === "c") {
       if (selectionState?.mode === "object") { e.preventDefault(); copySelection(); return; }
+      if (activeLayer()) { e.preventDefault(); copyActiveLayer(); return; }
     }
     if (key === "v") {
-      if (selectionClipboard) { e.preventDefault(); pasteSelection(); return; }
+      if (lastEditClipboardKind === "selection" && selectionClipboard) {
+        e.preventDefault(); pasteSelection(); return;
+      }
+      if (lastEditClipboardKind === "layer" && layerClipboard) {
+        e.preventDefault(); pasteLayerAboveActive(); return;
+      }
     }
   }
 

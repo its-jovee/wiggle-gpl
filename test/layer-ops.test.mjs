@@ -58,6 +58,32 @@ test("duplicateLayer inserts a renamed copy above the active layer", () => {
   assert.equal(layers[2].texts[0].id, "new-id");
 });
 
+test("pasteLayerAbove inserts a deep copy and regenerates nested ids", () => {
+  const layers = [layer("target")];
+  const source = layer("source", {
+    strokes: [{ brush: "round", color: "#fff", size: 2, points: [{ x: 1, y: 2 }] }],
+    texts: [{ id: "text-source", x: 1, y: 2, content: "hi", fontFamily: "sans", fontSize: 12, color: "#fff", wiggleAmplitude: 0 }],
+  });
+  const generated = ["layer-copy", "text-copy"];
+
+  const nextIndex = ops.pasteLayerAbove(layers, 0, source, () => generated.shift());
+
+  assert.equal(nextIndex, 1);
+  assert.equal(layers[1].id, "layer-copy");
+  assert.equal(layers[1].name, "source copy");
+  assert.equal(layers[1].texts[0].id, "text-copy");
+  assert.notEqual(layers[1].strokes[0], source.strokes[0]);
+});
+
+test("pasteLayerAbove can seed an empty layer stack", () => {
+  const layers = [];
+
+  const nextIndex = ops.pasteLayerAbove(layers, 0, layer("source"), () => "layer-copy");
+
+  assert.equal(nextIndex, 0);
+  assert.equal(layers[0].id, "layer-copy");
+});
+
 test("clearLayerContents removes drawable items but preserves layer settings", () => {
   const l = layer("active", {
     opacity: 0.5,

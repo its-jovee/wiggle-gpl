@@ -35,6 +35,23 @@ export function duplicateLayer(
   return activeIndex + 1;
 }
 
+export function pasteLayerAbove(
+  layers: Layer[],
+  activeIndex: number,
+  source: Layer,
+  idFactory: IdFactory
+): number {
+  const copy = clone(source);
+  copy.id = idFactory();
+  copy.name = `${copy.name} copy`;
+  if (copy.texts) {
+    copy.texts = copy.texts.map((text) => ({ ...text, id: idFactory() }));
+  }
+  const insertionIndex = Math.min(Math.max(activeIndex + 1, 0), layers.length);
+  layers.splice(insertionIndex, 0, copy);
+  return insertionIndex;
+}
+
 export function clearLayerContents(layer: Layer): void {
   layer.strokes = [];
   layer.fills = [];
