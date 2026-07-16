@@ -49,3 +49,15 @@ test("timeline rebuild reveals active panel instead of jumping to the start", ()
 
   assert.equal(next, 830);
 });
+
+test("timeline rebuild preserves vertical scroll when the active panel remains visible", () => {
+  const next = timelineScrollAfterRebuild({
+    previousScrollLeft: 640,
+    viewportWidth: 360,
+    contentWidth: 1600,
+    activeLeft: 720,
+    activeRight: 840,
+  });
+
+  assert.equal(next, 640);
+});

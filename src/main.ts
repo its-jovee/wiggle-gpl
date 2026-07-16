@@ -4822,7 +4822,8 @@ function buildPanelCell(
     if (!e.dataTransfer?.types.includes("text/plain")) return;
     e.preventDefault();
     const rect = cell.getBoundingClientRect();
-    const vertical = !!cell.closest(".timeline-panel");
+    const filmstrip = cell.closest<HTMLElement>(".timeline-filmstrip");
+    const vertical = filmstrip ? filmstripFlowsVertically(filmstrip) : false;
     const isBefore = vertical
       ? e.clientY < rect.top + rect.height / 2
       : e.clientX < rect.left + rect.width / 2;
@@ -4835,7 +4836,8 @@ function buildPanelCell(
     cell.classList.remove("drop-before", "drop-after");
     const raw = e.dataTransfer!.getData("text/plain");
     const rect = cell.getBoundingClientRect();
-    const vertical = !!cell.closest(".timeline-panel");
+    const filmstrip = cell.closest<HTMLElement>(".timeline-filmstrip");
+    const vertical = filmstrip ? filmstripFlowsVertically(filmstrip) : false;
     const isBefore = vertical
       ? e.clientY < rect.top + rect.height / 2
       : e.clientX < rect.left + rect.width / 2;
@@ -4927,6 +4929,10 @@ function buildGroupBracket(group: FrameGroup): HTMLElement {
   return bracket;
 }
 
+function filmstripFlowsVertically(filmstrip: HTMLElement): boolean {
+  return getComputedStyle(filmstrip).flexDirection === "column";
+}
+
 function buildTimeline() {
   lastSyncedThumbIndex = -1;
   const tl = $("timeline");
@@ -4997,15 +5003,14 @@ function buildTimeline() {
 
   const activeCell = filmstrip.querySelector<HTMLElement>(".panel-cell.active");
   if (activeCell) {
-    if (filmstrip.closest(".timeline-panel")) {
-      const activeTop = activeCell.offsetTop;
-      const activeBottom = activeTop + activeCell.offsetHeight;
-      const viewportBottom = previousFilmstripScrollTop + filmstrip.clientHeight;
-      filmstrip.scrollTop = activeTop < previousFilmstripScrollTop
-        ? activeTop
-        : activeBottom > viewportBottom
-          ? activeBottom - filmstrip.clientHeight
-          : previousFilmstripScrollTop;
+    if (filmstripFlowsVertically(filmstrip)) {
+      filmstrip.scrollTop = timelineScrollAfterRebuild({
+        previousScrollLeft: previousFilmstripScrollTop,
+        viewportWidth: filmstrip.clientHeight,
+        contentWidth: filmstrip.scrollHeight,
+        activeLeft: activeCell.offsetTop,
+        activeRight: activeCell.offsetTop + activeCell.offsetHeight,
+      });
     } else {
       filmstrip.scrollLeft = timelineScrollAfterRebuild({
         previousScrollLeft: previousFilmstripScrollLeft,
