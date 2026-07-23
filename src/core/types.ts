@@ -281,6 +281,8 @@ export type PanelKind = "normal" | "timelapse";
 export type Panel = {
   id: string;
   durationMs: number;
+  /** Editor-only dialogue, narration, or sequencing note for this frame. */
+  annotation?: string;
   bg: string;
   paletteId: string | null;
   layers: Layer[];

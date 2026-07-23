@@ -12,6 +12,7 @@ import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 export const MAX_PROJECT_DIMENSION = 4096;
 export const MIN_PROJECT_DIMENSION = 1;
 export const MAX_PANELS = 200;
+export const MAX_PANEL_ANNOTATION_CHARS = 4000;
 export const MAX_LAYERS_PER_PANEL = 256;
 export const MAX_SUBPANELS_PER_PANEL = 64;
 export const MAX_TEXTS_PER_LAYER = 10_000;
@@ -166,6 +167,10 @@ export function validateProject(project: Project): ProjectValidationResult {
     const panel = project.panels[pi];
     if (!Number.isFinite(panel.durationMs) || panel.durationMs < 1) {
       errors.push(`panel ${pi + 1}: durationMs must be a positive finite number`);
+    }
+    if (panel.annotation !== undefined &&
+        (typeof panel.annotation !== "string" || panel.annotation.length > MAX_PANEL_ANNOTATION_CHARS)) {
+      errors.push(`panel ${pi + 1}: annotation must be a string of at most ${MAX_PANEL_ANNOTATION_CHARS} characters`);
     }
     if (panel.layers.length > MAX_LAYERS_PER_PANEL) {
       errors.push(`panel ${pi + 1}: ${panel.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);

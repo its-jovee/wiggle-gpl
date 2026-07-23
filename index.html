@@ -1479,6 +1479,23 @@
       color: var(--text-muted); font-size: 10px;
     }
 
+    /* Per-frame dialogue and sequence notes. */
+    .panel-annotation {
+      width: 100%; min-height: 42px; resize: vertical; padding: 5px 6px;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      background: rgba(255,255,255,.72); color: var(--text-primary);
+      font: 500 10px/1.35 var(--font-ui);
+    }
+    .panel-annotation::placeholder { color: var(--text-disabled); }
+    .panel-annotation:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+    .timeline-module .panel-annotation { grid-column: 2; }
+    @container (min-width: 400px) {
+      .timeline-module .panel-annotation { grid-column: 1; }
+    }
+
     /* ── Reduced motion ── */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {

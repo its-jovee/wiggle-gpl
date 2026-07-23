@@ -118,6 +118,7 @@ import {
   regenerateSubPanelIds,
   type PanelContentsClipboard,
 } from "./core/panelOps";
+import { MAX_PANEL_ANNOTATION_CHARS } from "./core/projectValidation";
 
 const BUCKET_KEY = "__bucket__";
 const TEXT_KEY = "__text__";
@@ -794,6 +795,7 @@ function panelTimelineSignature(panel: Panel): string {
   return JSON.stringify({
     kind: panel.kind,
     durationMs: panel.durationMs,
+    annotation: panel.annotation,
     enter: panel.enter,
     exit: panel.exit,
   });
@@ -4753,6 +4755,30 @@ function buildPanelCell(
   msDetails.appendChild(dur);
   cell.appendChild(msDetails);
 
+  const annotation = document.createElement("textarea");
+  annotation.className = "panel-annotation";
+  annotation.rows = 2;
+  annotation.maxLength = MAX_PANEL_ANNOTATION_CHARS;
+  annotation.value = p.annotation ?? "";
+  annotation.placeholder = "Dialogue / narration…";
+  annotation.title = `Frame ${i + 1} annotation`;
+  annotation.setAttribute("aria-label", `Frame ${i + 1} annotation`);
+  annotation.draggable = false;
+  let committedAnnotation = annotation.value;
+  annotation.oninput = () => {
+    p.annotation = annotation.value;
+    markDirty();
+  };
+  annotation.onchange = () => {
+    if (annotation.value === committedAnnotation) return;
+    p.annotation = annotation.value;
+    commitHistory();
+    committedAnnotation = annotation.value;
+    setStatus(`Frame ${i + 1} annotation updated`);
+  };
+  annotation.addEventListener("dragstart", (e) => e.stopPropagation());
+  cell.appendChild(annotation);
+
   const tools = document.createElement("div");
   tools.className = "panel-cell-actions";
   tools.style.cssText = "display:flex;gap:2px;justify-content:center;";
@@ -4837,7 +4863,7 @@ function buildPanelCell(
 
   cell.onclick = (e) => {
     const t = e.target as HTMLElement;
-    if (t.tagName === "INPUT" || t.tagName === "BUTTON") return;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "BUTTON") return;
     if (e.shiftKey) {
       rangeEndIndex = i;
     } else {
