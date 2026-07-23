@@ -172,13 +172,18 @@ export function renderPanel(
   });
 
   if (!opts?.skipBg) {
-    paintBgUnder(ctx, panel.bg, width, height, ox, oy);
-  }
-
-  // Editor bleed stays transparent so the workspace grid can show through.
-  // Playback uses an opaque mask to keep the exported frame boundary clean.
-  if (!opts?.skipBg && (ox > 0 || oy > 0)) {
-    paintOverscanOverlay(ctx, width, height, ox, oy, bufW, opts?.overscanDim ?? 0.55);
+    const overscanDim = opts?.overscanDim ?? 0;
+    if ((ox > 0 || oy > 0) && overscanDim < 1) {
+      // Focus mode is visually continuous: the finite export background
+      // extends beneath editor bleed without outlining the crop boundary.
+      paintBgUnder(ctx, panel.bg, bufW, bufH);
+    } else {
+      paintBgUnder(ctx, panel.bg, width, height, ox, oy);
+    }
+    // Playback still masks editor-only bleed so the finite frame is explicit.
+    if ((ox > 0 || oy > 0) && overscanDim >= 1) {
+      paintOverscanOverlay(ctx, width, height, ox, oy, bufW);
+    }
   }
 
   ctx.restore();
@@ -439,7 +444,9 @@ function renderTimelapse(
   if (!src) {
     if (!opts?.skipBg) {
       ctx.fillStyle = panel.bg;
-      ctx.fillRect(ox, oy, width, height);
+      const overscanDim = opts?.overscanDim ?? 0;
+      if ((ox > 0 || oy > 0) && overscanDim < 1) ctx.fillRect(0, 0, bufW, bufH);
+      else ctx.fillRect(ox, oy, width, height);
     }
     ctx.fillStyle = "#888";
     ctx.font = "24px ui-monospace, monospace";
@@ -462,10 +469,12 @@ function renderTimelapse(
     });
   }
   if (!opts?.skipBg) {
-    paintBgUnder(ctx, src.bg, width, height, ox, oy);
-  }
-  if (!opts?.skipBg && (ox > 0 || oy > 0)) {
-    paintOverscanOverlay(ctx, width, height, ox, oy, bufW, opts?.overscanDim ?? 0.55);
+    const overscanDim = opts?.overscanDim ?? 0;
+    if ((ox > 0 || oy > 0) && overscanDim < 1) paintBgUnder(ctx, src.bg, bufW, bufH);
+    else paintBgUnder(ctx, src.bg, width, height, ox, oy);
+    if ((ox > 0 || oy > 0) && overscanDim >= 1) {
+      paintOverscanOverlay(ctx, width, height, ox, oy, bufW);
+    }
   }
 }
 
@@ -491,27 +500,18 @@ function paintOverscanOverlay(
   height: number,
   ox: number,
   oy: number,
-  bufW: number,
-  alpha: number
+  bufW: number
 ) {
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
-  if (alpha >= 1) {
-    ctx.fillStyle = "#000000";
-    if (oy > 0) {
-      ctx.fillRect(0, 0, bufW, oy);
-      ctx.fillRect(0, oy + height, bufW, oy);
-    }
-    if (ox > 0) {
-      ctx.fillRect(0, oy, ox, height);
-      ctx.fillRect(ox + width, oy, ox, height);
-    }
-  } else {
-    // Keep a precise frame edge without covering the dotted workspace below.
-    ctx.strokeStyle = "#cbd5e1";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([]);
-    ctx.strokeRect(ox + 0.5, oy + 0.5, width - 1, height - 1);
+  ctx.fillStyle = "#000000";
+  if (oy > 0) {
+    ctx.fillRect(0, 0, bufW, oy);
+    ctx.fillRect(0, oy + height, bufW, oy);
+  }
+  if (ox > 0) {
+    ctx.fillRect(0, oy, ox, height);
+    ctx.fillRect(ox + width, oy, ox, height);
   }
   ctx.restore();
 }

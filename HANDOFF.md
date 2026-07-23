@@ -41,9 +41,11 @@ worth replacing part of that architecture. That is a product-level fork decision
 and must be proposed explicitly before implementation.
 
 ## Shipped in v8 (do not re-implement)
-- **31 brushes** — full Decker directional/soft/stipple family plus texture/scatter variants.
+- **40 brushes** — Decker directional/soft/stipple family plus texture/scatter variants.
 - **Onion skinning** — toggle + opacity while editing; export path ignores it.
 - **Project save/load** — JSON via File System Access, download fallback, autosave recovery.
+- **Spatial Project Board** — IndexedDB-backed local project records, cached previews,
+  per-project panel/viewport restoration, and revision-aware autosave.
 - **Layers** — per-panel stack, blend modes, masks, animation, merge/duplicate.
 - **Audio timeline** — clip placement with fades; MP4 mixdown via Electron desktop bridge.
 - **Electron shell** — COOP/COEP headers, local asset server, macOS build target.

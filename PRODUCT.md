@@ -27,8 +27,8 @@ raster/tile workflow becomes clearly better for the product and community. That
 decision is load-bearing and must be proposed explicitly before implementation.
 
 ## What's built (v8)
-- Native 1080×1920 drawing canvas with zoom/pan viewport.
-- **31 brushes** ported from Decker's `(delta) => stamp` model, color-native,
+- Native 1080×1920 export frame on a borderless zoom/pan editing surface.
+- **40 brushes** using Decker's `(delta) => stamp` model, color-native,
   plus texture and scatter variants (watercolor, spray, foliage, etc.).
 - **Multi-panel timeline** with frame groups, timelapse panels, drag reorder.
 - **Layers** per panel: blend modes, masks, merge/duplicate, animation specs.
@@ -38,6 +38,7 @@ decision is load-bearing and must be proposed explicitly before implementation.
 - Deterministic seeded wiggle (reproducible export).
 - Per-panel Lospec palettes (load by slug) + six offline built-ins.
 - **Project save/load** (JSON, File System Access + download fallback, autosave recovery).
+- **Spatial Project Board** with cached previews and autosaving focus switches.
 - **Audio timeline** with clip placement, fades, and MP4 mixdown (Electron desktop).
 - Export: WebM (quick preview) and deterministic MP4 (bundled ffmpeg.wasm, H.264).
 - **Electron desktop app** with cross-origin isolation for MP4 + audio export.
@@ -54,7 +55,8 @@ decision is load-bearing and must be proposed explicitly before implementation.
 - NOT a general-purpose vector editor or a Procreate competitor.
 - NOT 1-bit/ditherpunk-faithful to Decker — we deliberately chose color.
 - NOT cloud / accounts / collaboration. Local-first, single user.
-- NOT freeform-canvas composition — draws natively at 9:16 by choice.
+- NOT cross-project freeform export composition — the Project Board is a local
+  navigator, while every project retains an explicit finite export frame.
 - NO generative-AI image features.
 - NOT an upstream Krita contribution workflow while Krita's AI development
   moratorium remains active.

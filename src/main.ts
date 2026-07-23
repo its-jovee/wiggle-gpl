@@ -73,11 +73,19 @@ import {
 } from "./core/viewport";
 import {
   canUseFileSystemAccess, clearRecoverySnapshot, openProjectFromPicker,
-  persistenceState, projectHash, projectHashFromString, readFallbackFile,
+  persistenceState, projectHashFromString, readFallbackFile,
   readRecoverySnapshot, recoverProject, resetCurrentFile, saveAsProject,
   saveProject as persistSaveProject, serializeProject, writeHandleString,
   writeRecoverySnapshotString,
 } from "./core/persistence";
+import { AutosaveSerializationCache } from "./core/autosave";
+import {
+  ProjectBoardMeta, ProjectLibraryRecord,
+  defaultProjectBoardMeta, getProjectLibraryRecord,
+  listProjectLibraryRecords, nextProjectBoardPosition, projectLibraryAvailable,
+  putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
+  zoomBoardCamera,
+} from "./core/projectLibrary";
 import {
   CANVAS_PRESETS, canvasPresetByKey, defaultCanvasPreset, formatCanvasDimensions,
 } from "./core/canvasPresets";
@@ -123,6 +131,8 @@ const TOOL_KEYS = new Set([BUCKET_KEY, TEXT_KEY, SUBPANEL_KEY, SELECT_KEY, MARQU
 type TextRef = { layer: Layer; text: TextElement };
 
 let project: Project = createProject();
+const autosaveSerialization = new AutosaveSerializationCache<Project>(serializeProject);
+autosaveSerialization.reset(project);
 let activePanelIndex = 0;
 let rangeAnchorIndex: number | null = null;
 let rangeEndIndex: number | null = null;
@@ -183,10 +193,14 @@ let maskOverlayLayerId: string | null = null;
 // projectHash() call that was running every 500ms via updateFileChrome().
 let _isDirty = false;
 let _autosaveInFlight = false;
-let _recoveryClean = false; // set after recovery write, cleared on any edit
 const dirtyThumbnailPanelIds = new Set<string>();
 
-function markDirty() { _isDirty = true; _recoveryClean = false; updateFileChrome(); requestLoopFrame(); }
+function markDirty() {
+  autosaveSerialization.markChanged();
+  _isDirty = true;
+  updateFileChrome();
+  requestLoopFrame();
+}
 function markClean() { _isDirty = false; updateFileChrome(); }
 let keyframeArm: "from" | "to" | null = null;
 let animHintShown = false;
@@ -388,6 +402,9 @@ const canvas = $("stage") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 const stageArea = $("stage-area") as HTMLElement;
 const loadProjectFile = $("load-project-file") as HTMLInputElement;
+const projectBoard = $("project-board") as HTMLElement;
+const projectBoardSurface = $("project-board-surface") as HTMLElement;
+const projectBoardWorld = $("project-board-world") as HTMLElement;
 
 let overscanX = 0;
 let overscanY = 0;
@@ -397,6 +414,13 @@ const displayRenderCache = createRenderCache(64);
 const perfEnabled = new URLSearchParams(location.search).has("perf");
 const perfProjectUrl = new URLSearchParams(location.search).get("project");
 const historyCheckEnabled = new URLSearchParams(location.search).has("historycheck");
+let projectBoardRecords: ProjectLibraryRecord[] = [];
+let projectBoardMeta: ProjectBoardMeta = defaultProjectBoardMeta();
+let activeLibraryProjectId: string | null = null;
+let projectLibraryReady = false;
+let projectBoardOpen = false;
+const projectFileHandles = new Map<string, FileSystemFileHandle>();
+let projectBoardMetaSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 type PerfBucket = { count: number; totalMs: number; maxMs: number };
 type PerfReport = {
@@ -3093,12 +3117,13 @@ function drawCachedBaseFrame(panel: Panel) {
 }
 
 function paintEditorPanelBackground(panel: Panel) {
+  document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = panel.bg;
-  ctx.fillRect(overscanX, overscanY, project.width, project.height);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 function drawEditorActiveContent(panel: Panel, label: string) {
@@ -3674,6 +3699,7 @@ function loop(now: number) {
       const { index, localMs } = seqPos;
       activePanelIndex = index;
       const panel = project.panels[index];
+      document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
       const seqTick = Math.floor((localMs / 1000) * project.wiggleFps);
       if (shouldRenderPlaybackFrame({
         panelIndex: index,
@@ -3704,6 +3730,7 @@ function loop(now: number) {
   const liveInteraction = hasLiveEditorInteraction();
   if (!playing && shouldRenderIdleFrame({ tickChanged, interacting: liveInteraction })) {
     const panel = activePanel();
+    document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
     if (drawing && liveStroke) {
       if (isEraseBrushKey(liveStroke.brush)) {
         profileRender("live-erase", () => drawLiveErasePreviewFrame());
@@ -4424,6 +4451,24 @@ function renderThumb(c: HTMLCanvasElement, p: Panel) {
     deferFillMasks: true,
   }));
   tctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function renderProjectPreview(source: Project, panelIndex: number): string {
+  const preview = document.createElement("canvas");
+  preview.width = 360;
+  preview.height = Math.max(180, Math.round(preview.width * source.height / source.width));
+  const previewCtx = preview.getContext("2d")!;
+  const panel = source.panels[Math.max(0, Math.min(panelIndex, source.panels.length - 1))];
+  previewCtx.scale(preview.width / source.width, preview.height / source.height);
+  renderPanel(previewCtx, panel, 0, source.width, source.height, {
+    allPanels: source.panels,
+    timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+    skipAnim: true,
+    skipJitter: false,
+    skipFillMaskCache: true,
+  });
+  previewCtx.setTransform(1, 0, 0, 1, 0, 0);
+  return preview.toDataURL("image/jpeg", 0.82);
 }
 
 // Budget thumbnail re-renders per frame so undo/redo on a big project (every
@@ -7746,6 +7791,368 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+function projectRecordName(existing?: ProjectLibraryRecord): string {
+  if (persistenceState.currentFileName) {
+    return persistenceState.currentFileName.replace(/\.wiggle\.json$/i, "").replace(/\.json$/i, "");
+  }
+  return existing?.name ?? `Untitled ${projectBoardRecords.length + 1}`;
+}
+
+function currentProjectRecord(json: string, refreshPreview: boolean): ProjectLibraryRecord | null {
+  if (!activeLibraryProjectId) return null;
+  const existing = projectBoardRecords.find((record) => record.id === activeLibraryProjectId);
+  const position = existing ?? nextProjectBoardPosition(projectBoardRecords);
+  return {
+    id: activeLibraryProjectId,
+    name: projectRecordName(existing),
+    json,
+    previewDataUrl: refreshPreview
+      ? renderProjectPreview(project, activePanelIndex)
+      : existing?.previewDataUrl ?? null,
+    x: position.x,
+    y: position.y,
+    updatedAt: Date.now(),
+    activePanelIndex,
+    viewport: { ...viewport },
+  };
+}
+
+function replaceProjectBoardRecord(record: ProjectLibraryRecord) {
+  const index = projectBoardRecords.findIndex((item) => item.id === record.id);
+  if (index < 0) projectBoardRecords.push(record);
+  else projectBoardRecords[index] = record;
+}
+
+async function persistCurrentProjectRecord(json: string, refreshPreview: boolean): Promise<boolean> {
+  if (!projectLibraryReady || !activeLibraryProjectId) return false;
+  const record = currentProjectRecord(json, refreshPreview);
+  if (!record) return false;
+  await putProjectLibraryRecord(record);
+  replaceProjectBoardRecord(record);
+  return true;
+}
+
+async function flushAutosave(refreshPreview = false, announce = false): Promise<boolean> {
+  if (_autosaveInFlight) {
+    while (_autosaveInFlight) await new Promise<void>((resolve) => setTimeout(resolve, 16));
+    if (!_isDirty && !refreshPreview) return true;
+  }
+  if (!_isDirty && !refreshPreview) return true;
+
+  const { json } = autosaveSerialization.snapshot(project);
+  const currentHash = projectHashFromString(json);
+  _autosaveInFlight = true;
+  let librarySaved = false;
+  let externalSaved = false;
+  try {
+    if (
+      persistenceState.currentFileHandle &&
+      _isDirty &&
+      currentHash !== persistenceState.lastSavedHash
+    ) {
+      try {
+        await writeHandleString(persistenceState.currentFileHandle, json);
+        persistenceState.lastSavedHash = currentHash;
+        externalSaved = true;
+      } catch (err) {
+        setStatus("external file sync failed; preserving work in the project library");
+        console.warn("External project autosave failed", err);
+      }
+    } else if (persistenceState.currentFileHandle) {
+      externalSaved = true;
+    }
+
+    if (projectLibraryReady) {
+      librarySaved = await persistCurrentProjectRecord(json, refreshPreview);
+    } else if (!persistenceState.currentFileHandle) {
+      const snapshot = writeRecoverySnapshotString(json);
+      if (!snapshot) setStatus("recovery unavailable — project is too large for browser storage");
+      librarySaved = !!snapshot;
+    }
+
+    if (librarySaved || externalSaved) {
+      markClean();
+      if (librarySaved) clearRecoverySnapshot();
+      if (announce) {
+        setStatus(externalSaved && persistenceState.currentFileHandle
+          ? `saved ${persistenceState.currentFileName ?? persistenceState.currentFileHandle.name}`
+          : "saved to project library");
+      }
+      return true;
+    }
+    return false;
+  } catch (err) {
+    setStatus("auto-save failed: " + (err as Error).message);
+    return false;
+  } finally {
+    _autosaveInFlight = false;
+    updateFileChrome();
+  }
+}
+
+function applyProjectBoardCamera() {
+  projectBoardWorld.style.transform =
+    `translate(${projectBoardMeta.camera.tx}px, ${projectBoardMeta.camera.ty}px) scale(${projectBoardMeta.camera.scale})`;
+}
+
+function saveProjectBoardMetaSoon() {
+  if (!projectLibraryReady) return;
+  if (projectBoardMetaSaveTimer !== null) clearTimeout(projectBoardMetaSaveTimer);
+  projectBoardMetaSaveTimer = setTimeout(() => {
+    projectBoardMetaSaveTimer = null;
+    void writeProjectBoardMeta(projectBoardMeta).catch((err) => {
+      console.warn("Could not save project board position", err);
+    });
+  }, 250);
+}
+
+function formatBoardUpdatedAt(timestamp: number): string {
+  const date = new Date(timestamp);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function buildProjectBoard() {
+  projectBoardWorld.innerHTML = "";
+  for (const record of projectBoardRecords) {
+    const card = document.createElement("article");
+    card.className = "project-card" + (record.id === activeLibraryProjectId ? " active" : "");
+    card.style.left = `${record.x}px`;
+    card.style.top = `${record.y}px`;
+    card.dataset.projectId = record.id;
+
+    const preview = document.createElement("div");
+    preview.className = "project-card-preview";
+    if (record.previewDataUrl) {
+      const img = document.createElement("img");
+      img.src = record.previewDataUrl;
+      img.alt = "";
+      preview.appendChild(img);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "project-card-preview-placeholder";
+      empty.textContent = "Preview appears after the first autosave";
+      preview.appendChild(empty);
+    }
+    preview.ondblclick = () => { void focusProjectFromBoard(record.id); };
+
+    const body = document.createElement("div");
+    body.className = "project-card-body";
+    const titlebar = document.createElement("div");
+    titlebar.className = "project-card-titlebar";
+    const title = document.createElement("div");
+    title.className = "project-card-title";
+    title.textContent = record.name;
+    title.title = record.name;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "project-card-open";
+    open.textContent = record.id === activeLibraryProjectId ? "Focus" : "Open";
+    open.onclick = () => { void focusProjectFromBoard(record.id); };
+    titlebar.append(title, open);
+
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    const summary = document.createElement("span");
+    const updated = document.createElement("span");
+    try {
+      const parsed = JSON.parse(record.json) as { panels?: unknown[]; width?: number; height?: number };
+      const count = parsed.panels?.length ?? 0;
+      const dimensions = parsed.width && parsed.height ? `${parsed.width}×${parsed.height}` : "";
+      summary.textContent = `${count} panel${count === 1 ? "" : "s"} · ${dimensions}`;
+    } catch {
+      summary.textContent = "Project";
+    }
+    updated.textContent = formatBoardUpdatedAt(record.updatedAt);
+    meta.append(summary, updated);
+
+    titlebar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      titlebar.setPointerCapture(event.pointerId);
+      card.classList.add("dragging");
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const originX = record.x;
+      const originY = record.y;
+      const move = (next: PointerEvent) => {
+        record.x = originX + (next.clientX - startX) / projectBoardMeta.camera.scale;
+        record.y = originY + (next.clientY - startY) / projectBoardMeta.camera.scale;
+        card.style.left = `${record.x}px`;
+        card.style.top = `${record.y}px`;
+      };
+      const up = () => {
+        card.classList.remove("dragging");
+        titlebar.removeEventListener("pointermove", move);
+        titlebar.removeEventListener("pointerup", up);
+        titlebar.removeEventListener("pointercancel", up);
+        void putProjectLibraryRecord(record);
+      };
+      titlebar.addEventListener("pointermove", move);
+      titlebar.addEventListener("pointerup", up);
+      titlebar.addEventListener("pointercancel", up);
+    });
+
+    body.append(titlebar, meta);
+    card.append(preview, body);
+    projectBoardWorld.appendChild(card);
+  }
+}
+
+function fitProjectBoard() {
+  if (!projectBoardRecords.length) {
+    projectBoardMeta.camera = { scale: 1, tx: 80, ty: 80 };
+    applyProjectBoardCamera();
+    saveProjectBoardMetaSoon();
+    return;
+  }
+  const minX = Math.min(...projectBoardRecords.map((record) => record.x));
+  const minY = Math.min(...projectBoardRecords.map((record) => record.y));
+  const maxX = Math.max(...projectBoardRecords.map((record) => record.x + 232));
+  const maxY = Math.max(...projectBoardRecords.map((record) => record.y + 390));
+  const rect = projectBoardSurface.getBoundingClientRect();
+  const scale = Math.max(0.2, Math.min(1.2, Math.min(
+    (rect.width - 120) / Math.max(232, maxX - minX),
+    (rect.height - 140) / Math.max(390, maxY - minY)
+  )));
+  projectBoardMeta.camera = {
+    scale,
+    tx: (rect.width - (maxX - minX) * scale) / 2 - minX * scale,
+    ty: (rect.height - (maxY - minY) * scale) / 2 - minY * scale,
+  };
+  applyProjectBoardCamera();
+  saveProjectBoardMetaSoon();
+}
+
+async function showProjectBoard() {
+  try {
+    await flushAutosave(true);
+    projectBoardRecords = await listProjectLibraryRecords();
+    projectBoardOpen = true;
+    projectBoard.hidden = false;
+    document.body.classList.add("project-board-open");
+    $("project-board-button").classList.add("open");
+    $("project-board-back").textContent = `Back to ${projectRecordName(
+      projectBoardRecords.find((record) => record.id === activeLibraryProjectId)
+    )}`;
+    buildProjectBoard();
+    applyProjectBoardCamera();
+  } catch (err) {
+    setStatus("Project Board unavailable: " + (err as Error).message);
+  }
+}
+
+function hideProjectBoard() {
+  projectBoardOpen = false;
+  projectBoard.hidden = true;
+  document.body.classList.remove("project-board-open");
+  $("project-board-button").classList.remove("open");
+  requestLoopFrame();
+}
+
+async function focusProjectFromBoard(id: string) {
+  if (id === activeLibraryProjectId) {
+    hideProjectBoard();
+    return;
+  }
+  const saved = await flushAutosave(true);
+  if (!saved) return;
+  const record = await getProjectLibraryRecord(id);
+  if (!record) {
+    setStatus("project is no longer available");
+    return;
+  }
+  const next = migrateProject(JSON.parse(record.json));
+  activeLibraryProjectId = id;
+  projectBoardMeta.activeProjectId = id;
+  persistenceState.currentFileHandle = projectFileHandles.get(id) ?? null;
+  persistenceState.currentFileName = record.name.startsWith("Untitled") ? null : record.name;
+  persistenceState.lastSavedHash = projectHashFromString(record.json);
+  resetProjectSession(next, `opened ${record.name}`, record.json);
+  activePanelIndex = Math.max(0, Math.min(record.activePanelIndex, next.panels.length - 1));
+  rangeAnchorIndex = activePanelIndex;
+  rangeEndIndex = activePanelIndex;
+  viewport = { ...record.viewport };
+  buildTimeline();
+  buildLayers();
+  buildBreadcrumb();
+  buildInspector();
+  document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
+  applyViewport();
+  await writeProjectBoardMeta(projectBoardMeta);
+  hideProjectBoard();
+}
+
+async function addProjectToLibrary(
+  next: Project,
+  name: string,
+  fileHandle: FileSystemFileHandle | null = null,
+  serialized?: string
+): Promise<ProjectLibraryRecord | null> {
+  if (!projectLibraryReady) return null;
+  const json = serialized ?? serializeProject(next);
+  const id = crypto.randomUUID();
+  const position = nextProjectBoardPosition(projectBoardRecords);
+  const record: ProjectLibraryRecord = {
+    id,
+    name,
+    json,
+    previewDataUrl: renderProjectPreview(next, 0),
+    ...position,
+    updatedAt: Date.now(),
+    activePanelIndex: 0,
+    viewport: { scale: 1, tx: 0, ty: 0 },
+  };
+  await putProjectLibraryRecord(record);
+  projectBoardRecords.push(record);
+  if (fileHandle) projectFileHandles.set(id, fileHandle);
+  activeLibraryProjectId = id;
+  projectBoardMeta.activeProjectId = id;
+  await writeProjectBoardMeta(projectBoardMeta);
+  return record;
+}
+
+async function initializeProjectLibrary() {
+  if (!projectLibraryAvailable()) {
+    setStatus("Project Board storage unavailable; using single-project recovery");
+    return;
+  }
+  try {
+    projectBoardRecords = await listProjectLibraryRecords();
+    projectBoardMeta = await readProjectBoardMeta();
+    projectLibraryReady = true;
+    const requested = projectBoardMeta.activeProjectId;
+    const activeRecord = requested
+      ? projectBoardRecords.find((record) => record.id === requested)
+      : null;
+    if (activeRecord) {
+      const next = migrateProject(JSON.parse(activeRecord.json));
+      activeLibraryProjectId = activeRecord.id;
+      persistenceState.currentFileHandle = null;
+      persistenceState.currentFileName = activeRecord.name.startsWith("Untitled") ? null : activeRecord.name;
+      persistenceState.lastSavedHash = projectHashFromString(activeRecord.json);
+      resetProjectSession(next, `restored ${activeRecord.name}`, activeRecord.json);
+      activePanelIndex = Math.max(0, Math.min(activeRecord.activePanelIndex, next.panels.length - 1));
+      rangeAnchorIndex = activePanelIndex;
+      rangeEndIndex = activePanelIndex;
+      viewport = { ...activeRecord.viewport };
+      buildTimeline();
+      buildLayers();
+      buildBreadcrumb();
+      buildInspector();
+      document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
+      applyViewport();
+    } else {
+      const json = autosaveSerialization.snapshot(project).json;
+      const record = await addProjectToLibrary(project, "Untitled 1", null, json);
+      if (record) resetCurrentFile(project, json);
+    }
+  } catch (err) {
+    projectLibraryReady = false;
+    setStatus("Project Board unavailable: " + (err as Error).message);
+  }
+}
+
 function currentDirty(): boolean {
   return _isDirty;
 }
@@ -7755,9 +8162,10 @@ function updateFileChrome() {
   $("dirty-dot").classList.toggle("dirty", currentDirty());
 }
 
-function resetProjectSession(next: Project, fileStatus: string) {
+function resetProjectSession(next: Project, fileStatus: string, serialized?: string) {
   applySanitizedGroups(next);
   project = next;
+  autosaveSerialization.reset(project, serialized);
   pruneRasterStoreForProject(project);
   history.init(project, { activePanelIndex: 0 });
   updateUndoRedoButtons();
@@ -7794,13 +8202,19 @@ function resetProjectSession(next: Project, fileStatus: string) {
   fitViewport();
   updateExportMenuLabels();
   updateCanvasHint();
+  document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
   updateFileChrome();
   setStatus(fileStatus);
 }
 
 async function saveProject() {
   try {
-    const result = await persistSaveProject(project);
+    const { json } = autosaveSerialization.snapshot(project);
+    const result = await persistSaveProject(project, json);
+    if (activeLibraryProjectId && persistenceState.currentFileHandle) {
+      projectFileHandles.set(activeLibraryProjectId, persistenceState.currentFileHandle);
+    }
+    if (projectLibraryReady) await persistCurrentProjectRecord(json, true);
     markClean();
     clearRecoverySnapshot();
     updateFileChrome();
@@ -7813,7 +8227,16 @@ async function saveProject() {
 
 async function saveProjectAs() {
   try {
-    const result = await saveAsProject(project, persistenceState.currentFileName ?? "wigglestudio-project.wiggle.json");
+    const { json } = autosaveSerialization.snapshot(project);
+    const result = await saveAsProject(
+      project,
+      persistenceState.currentFileName ?? "wigglestudio-project.wiggle.json",
+      json
+    );
+    if (activeLibraryProjectId && persistenceState.currentFileHandle) {
+      projectFileHandles.set(activeLibraryProjectId, persistenceState.currentFileHandle);
+    }
+    if (projectLibraryReady) await persistCurrentProjectRecord(json, true);
     markClean();
     clearRecoverySnapshot();
     updateFileChrome();
@@ -7825,6 +8248,7 @@ async function saveProjectAs() {
 }
 
 async function openProject() {
+  await flushAutosave(true);
   if (!canUseFileSystemAccess()) {
     loadProjectFile.click();
     return;
@@ -7832,20 +8256,28 @@ async function openProject() {
   try {
     const result = await openProjectFromPicker();
     if (!result) return;
-    resetProjectSession(result.project, `opened ${result.fileName}`);
+    const handle = persistenceState.currentFileHandle;
+    const json = serializeProject(result.project);
+    await addProjectToLibrary(result.project, result.fileName, handle, json);
+    resetProjectSession(result.project, `opened ${result.fileName}`, json);
+    if (projectBoardOpen) hideProjectBoard();
     buildFileMenu();
   } catch (err) {
     if (!isAbortError(err)) setStatus("open failed: " + (err as Error).message);
   }
 }
 
-function newProject(presetKey?: string) {
+async function newProject(presetKey?: string) {
+  await flushAutosave(true);
   const preset = presetKey ? canvasPresetByKey(presetKey) : defaultCanvasPreset();
   const { width, height } = preset ?? defaultCanvasPreset();
   const next = createProject(width, height);
-  resetCurrentFile(next);
+  const json = serializeProject(next);
+  resetCurrentFile(next, json);
+  await addProjectToLibrary(next, `Untitled ${projectBoardRecords.length + 1}`, null, json);
   clearRecoverySnapshot();
-  resetProjectSession(next, `new project (${formatCanvasDimensions(width, height)})`);
+  resetProjectSession(next, `new project (${formatCanvasDimensions(width, height)})`, json);
+  if (projectBoardOpen) hideProjectBoard();
   buildFileMenu();
 }
 
@@ -7866,7 +8298,7 @@ function openPresetPicker() {
     btn.appendChild(meta);
     btn.onclick = () => {
       closePresetPicker();
-      newProject(preset.key);
+      void newProject(preset.key);
     };
     list.appendChild(btn);
   }
@@ -7884,9 +8316,12 @@ async function revertProject() {
   }
   try {
     const file = await persistenceState.currentFileHandle.getFile();
-    const next = migrateProject(JSON.parse(await file.text()));
-    persistenceState.lastSavedHash = projectHash(next);
-    resetProjectSession(next, `reverted ${persistenceState.currentFileName ?? file.name}`);
+    const json = await file.text();
+    const next = migrateProject(JSON.parse(json));
+    const canonical = serializeProject(next);
+    persistenceState.lastSavedHash = projectHashFromString(canonical);
+    resetProjectSession(next, `reverted ${persistenceState.currentFileName ?? file.name}`, canonical);
+    await persistCurrentProjectRecord(canonical, true);
   } catch (err) {
     setStatus("revert failed: " + (err as Error).message);
   }
@@ -7951,6 +8386,60 @@ function buildFileMenu() {
   $("file-menu").classList.toggle("open");
   $("file-menu-button").classList.toggle("open");
 };
+($("project-board-button") as HTMLButtonElement).onclick = () => {
+  if (projectBoardOpen) hideProjectBoard();
+  else void showProjectBoard();
+};
+($("project-board-back") as HTMLButtonElement).onclick = hideProjectBoard;
+($("project-board-new") as HTMLButtonElement).onclick = () => { void newProject(); };
+($("project-board-open-file") as HTMLButtonElement).onclick = () => { void openProject(); };
+($("project-board-reset-view") as HTMLButtonElement).onclick = fitProjectBoard;
+
+projectBoardSurface.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || (event.target as HTMLElement).closest(".project-card, .project-board-toolbar")) return;
+  event.preventDefault();
+  projectBoardSurface.setPointerCapture(event.pointerId);
+  projectBoardSurface.classList.add("is-panning");
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const originX = projectBoardMeta.camera.tx;
+  const originY = projectBoardMeta.camera.ty;
+  const move = (next: PointerEvent) => {
+    projectBoardMeta.camera.tx = originX + next.clientX - startX;
+    projectBoardMeta.camera.ty = originY + next.clientY - startY;
+    applyProjectBoardCamera();
+  };
+  const up = () => {
+    projectBoardSurface.classList.remove("is-panning");
+    projectBoardSurface.removeEventListener("pointermove", move);
+    projectBoardSurface.removeEventListener("pointerup", up);
+    projectBoardSurface.removeEventListener("pointercancel", up);
+    saveProjectBoardMetaSoon();
+  };
+  projectBoardSurface.addEventListener("pointermove", move);
+  projectBoardSurface.addEventListener("pointerup", up);
+  projectBoardSurface.addEventListener("pointercancel", up);
+});
+
+projectBoardSurface.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  if (event.ctrlKey || event.metaKey) {
+    const rect = projectBoardSurface.getBoundingClientRect();
+    const factor = Math.exp(-event.deltaY * 0.002);
+    projectBoardMeta.camera = zoomBoardCamera(
+      projectBoardMeta.camera,
+      projectBoardMeta.camera.scale * factor,
+      event.clientX - rect.left,
+      event.clientY - rect.top
+    );
+  } else {
+    projectBoardMeta.camera.tx -= event.deltaX;
+    projectBoardMeta.camera.ty -= event.deltaY;
+  }
+  applyProjectBoardCamera();
+  saveProjectBoardMetaSoon();
+}, { passive: false });
+
 ($("export-menu-button") as HTMLButtonElement).onclick = (e) => {
   e.stopPropagation();
   closeFileMenu();
@@ -8022,8 +8511,12 @@ loadProjectFile.onchange = async (e) => {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (!file) return;
   try {
+    await flushAutosave(true);
     const next = await readFallbackFile(file);
-    resetProjectSession(next, `opened ${file.name}`);
+    const json = serializeProject(next);
+    await addProjectToLibrary(next, file.name, null, json);
+    resetProjectSession(next, `opened ${file.name}`, json);
+    if (projectBoardOpen) hideProjectBoard();
     buildFileMenu();
   } catch (err) {
     setStatus("load failed: " + (err as Error).message);
@@ -8032,41 +8525,9 @@ loadProjectFile.onchange = async (e) => {
 };
 
 async function autosaveTick() {
-  if (!_isDirty) { updateFileChrome(); return; }
-  if (_autosaveInFlight) return;
-  // If no file handle and nothing changed since the last recovery write, skip
-  // the expensive projectHash()/JSON.stringify until the next real edit.
-  if (!persistenceState.currentFileHandle && _recoveryClean) { updateFileChrome(); return; }
-  // Deferred clean-check: undo/redo only calls markDirty() (O(1)); the hash
-  // comparison runs here at most once every 5 seconds instead of every keystroke.
-  // Serialize exactly once and reuse the string for both the hash comparison
-  // and the actual write (save or recovery snapshot) — `projectHash` and
-  // `writeHandle`/`writeRecoverySnapshot` use this same canonical format, so
-  // this can't disagree with a hash set elsewhere (manual save, project load).
-  const json = serializeProject(project);
-  const currentHash = projectHashFromString(json);
-  if (currentHash === persistenceState.lastSavedHash) { markClean(); updateFileChrome(); return; }
-  _autosaveInFlight = true;
-  try {
-    if (persistenceState.currentFileHandle) {
-      try {
-        await writeHandleString(persistenceState.currentFileHandle, json);
-        persistenceState.lastSavedHash = currentHash;
-        markClean();
-        clearRecoverySnapshot();
-        setStatus(`auto-saved ${new Date().toLocaleTimeString()}`);
-      } catch (err) {
-        setStatus("auto-save failed: " + (err as Error).message);
-      }
-    } else {
-      const snapshot = writeRecoverySnapshotString(json);
-      if (!snapshot) setStatus("recovery unavailable — project is too large for browser storage");
-      _recoveryClean = true;
-    }
-  } finally {
-    _autosaveInFlight = false;
-  }
-  updateFileChrome();
+  if (!_isDirty) return;
+  const saved = await flushAutosave();
+  if (saved) setStatus(`auto-saved ${new Date().toLocaleTimeString()}`);
 }
 
 function showRecoveryPrompt() {
@@ -8081,11 +8542,13 @@ function showRecoveryPrompt() {
   const recover = document.createElement("button");
   recover.className = "ghost";
   recover.textContent = "Recover";
-  recover.onclick = () => {
+  recover.onclick = async () => {
     try {
       const next = recoverProject(snapshot);
-      resetCurrentFile(next);
-      resetProjectSession(next, "recovered unsaved work");
+      const json = serializeProject(next);
+      resetCurrentFile(next, json);
+      await addProjectToLibrary(next, `Recovered ${projectBoardRecords.length + 1}`, null, json);
+      resetProjectSession(next, "recovered unsaved work", json);
       clearRecoverySnapshot();
       updateFileChrome();
     } catch (err) {
@@ -8106,6 +8569,11 @@ function showRecoveryPrompt() {
 }
 
 setInterval(() => { void autosaveTick(); }, 5000);
+
+async function initializePersistentWorkspace() {
+  await initializeProjectLibrary();
+  showRecoveryPrompt();
+}
 
 // ---- undo / redo ----------------------------------------------------------
 
@@ -8200,6 +8668,10 @@ window.addEventListener("keydown", (e) => {
   }
   // Escape clears any in-progress or active selection.
   if (e.key === "Escape" && !inEditable) {
+    if (projectBoardOpen) {
+      hideProjectBoard();
+      return;
+    }
     if ($("about-overlay").classList.contains("open")) {
       closeAboutDialog();
       return;
@@ -8481,7 +8953,7 @@ updateFileChrome();
 setWorkspaceMode("draw");
 showFirstLaunchStatus();
 updateCanvasHint();
-showRecoveryPrompt();
-void loadPerfProjectFromParam();
+if (perfEnabled) void loadPerfProjectFromParam();
+else void initializePersistentWorkspace();
 // File chrome updates are event-driven via markDirty()/markClean() — the old
 // 500ms poll is gone.
