@@ -49,10 +49,23 @@ export function nextProjectBoardPosition(
   records: Pick<ProjectLibraryRecord, "x" | "y">[]
 ): { x: number; y: number } {
   const index = records.length;
-  const columns = 4;
+  const columns = 3;
   return {
-    x: (index % columns) * 280,
-    y: Math.floor(index / columns) * 420,
+    x: (index % columns) * 560,
+    y: Math.floor(index / columns) * 560,
+  };
+}
+
+export function projectBoardCanvasSize(
+  width: number,
+  height: number
+): { width: number; height: number } {
+  const sourceWidth = Number.isFinite(width) && width > 0 ? width : 1080;
+  const sourceHeight = Number.isFinite(height) && height > 0 ? height : 1080;
+  const scale = Math.min(0.24, 520 / Math.max(sourceWidth, sourceHeight));
+  return {
+    width: Math.max(24, Math.round(sourceWidth * scale)),
+    height: Math.max(24, Math.round(sourceHeight * scale)),
   };
 }
 

@@ -27,7 +27,8 @@ raster/tile workflow becomes clearly better for the product and community. That
 decision is load-bearing and must be proposed explicitly before implementation.
 
 ## What's built (v8)
-- Native 1080×1920 export frame on a borderless zoom/pan editing surface.
+- Finite project canvases at their native aspect ratios on a darker spatial
+  zoom/pan workspace; brush bleed can remain visible outside the export frame.
 - **40 brushes** using Decker's `(delta) => stamp` model, color-native,
   plus texture and scatter variants (watercolor, spray, foliage, etc.).
 - **Multi-panel timeline** with frame groups, timelapse panels, drag reorder.
@@ -38,7 +39,8 @@ decision is load-bearing and must be proposed explicitly before implementation.
 - Deterministic seeded wiggle (reproducible export).
 - Per-panel Lospec palettes (load by slug) + six offline built-ins.
 - **Project save/load** (JSON, File System Access + download fallback, autosave recovery).
-- **Spatial Project Board** with cached previews and autosaving focus switches.
+- **Spatial Project Board** with aspect-ratio-accurate canvas previews and
+  autosaving focus switches.
 - **Audio timeline** with clip placement, fades, and MP4 mixdown (Electron desktop).
 - Export: WebM (quick preview) and deterministic MP4 (bundled ffmpeg.wasm, H.264).
 - **Electron desktop app** with cross-origin isolation for MP4 + audio export.

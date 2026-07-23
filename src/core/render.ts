@@ -172,16 +172,10 @@ export function renderPanel(
   });
 
   if (!opts?.skipBg) {
-    const overscanDim = opts?.overscanDim ?? 0;
-    if ((ox > 0 || oy > 0) && overscanDim < 1) {
-      // Focus mode is visually continuous: the finite export background
-      // extends beneath editor bleed without outlining the crop boundary.
-      paintBgUnder(ctx, panel.bg, bufW, bufH);
-    } else {
-      paintBgUnder(ctx, panel.bg, width, height, ox, oy);
-    }
-    // Playback still masks editor-only bleed so the finite frame is explicit.
-    if ((ox > 0 || oy > 0) && overscanDim >= 1) {
+    paintBgUnder(ctx, panel.bg, width, height, ox, oy);
+    // Editor bleed stays transparent so strokes can continue naturally into
+    // the darker workspace. Playback masks that editor-only area.
+    if ((ox > 0 || oy > 0) && (opts?.overscanDim ?? 0) >= 1) {
       paintOverscanOverlay(ctx, width, height, ox, oy, bufW);
     }
   }
@@ -444,9 +438,7 @@ function renderTimelapse(
   if (!src) {
     if (!opts?.skipBg) {
       ctx.fillStyle = panel.bg;
-      const overscanDim = opts?.overscanDim ?? 0;
-      if ((ox > 0 || oy > 0) && overscanDim < 1) ctx.fillRect(0, 0, bufW, bufH);
-      else ctx.fillRect(ox, oy, width, height);
+      ctx.fillRect(ox, oy, width, height);
     }
     ctx.fillStyle = "#888";
     ctx.font = "24px ui-monospace, monospace";
@@ -469,10 +461,8 @@ function renderTimelapse(
     });
   }
   if (!opts?.skipBg) {
-    const overscanDim = opts?.overscanDim ?? 0;
-    if ((ox > 0 || oy > 0) && overscanDim < 1) paintBgUnder(ctx, src.bg, bufW, bufH);
-    else paintBgUnder(ctx, src.bg, width, height, ox, oy);
-    if ((ox > 0 || oy > 0) && overscanDim >= 1) {
+    paintBgUnder(ctx, src.bg, width, height, ox, oy);
+    if ((ox > 0 || oy > 0) && (opts?.overscanDim ?? 0) >= 1) {
       paintOverscanOverlay(ctx, width, height, ox, oy, bufW);
     }
   }

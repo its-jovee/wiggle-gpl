@@ -49,10 +49,16 @@ test("autosave serialization is reused until a real edit", () => {
   assert.equal(calls, 2);
 });
 
-test("board positions projects on a stable four-column grid", () => {
-  const records = Array.from({ length: 5 }, (_, i) => ({ x: i, y: i }));
+test("board positions projects on a stable three-column spatial grid", () => {
+  const records = Array.from({ length: 4 }, (_, i) => ({ x: i, y: i }));
   assert.deepEqual(library.nextProjectBoardPosition([]), { x: 0, y: 0 });
-  assert.deepEqual(library.nextProjectBoardPosition(records), { x: 280, y: 420 });
+  assert.deepEqual(library.nextProjectBoardPosition(records), { x: 560, y: 560 });
+});
+
+test("board canvases preserve each project's natural aspect ratio", () => {
+  assert.deepEqual(library.projectBoardCanvasSize(1080, 1080), { width: 259, height: 259 });
+  assert.deepEqual(library.projectBoardCanvasSize(1920, 1080), { width: 461, height: 259 });
+  assert.deepEqual(library.projectBoardCanvasSize(1080, 1920), { width: 259, height: 461 });
 });
 
 test("board zoom preserves the world point under the pointer", () => {

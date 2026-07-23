@@ -44,8 +44,9 @@ and must be proposed explicitly before implementation.
 - **40 brushes** — Decker directional/soft/stipple family plus texture/scatter variants.
 - **Onion skinning** — toggle + opacity while editing; export path ignores it.
 - **Project save/load** — JSON via File System Access, download fallback, autosave recovery.
-- **Spatial Project Board** — IndexedDB-backed local project records, cached previews,
-  per-project panel/viewport restoration, and revision-aware autosave.
+- **Spatial Project Board** — IndexedDB-backed finite project canvases on a
+  darker infinite workspace, with cached previews, per-project panel/viewport
+  restoration, and revision-aware autosave.
 - **Layers** — per-panel stack, blend modes, masks, animation, merge/duplicate.
 - **Audio timeline** — clip placement with fades; MP4 mixdown via Electron desktop bridge.
 - **Electron shell** — COOP/COEP headers, local asset server, macOS build target.

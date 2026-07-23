@@ -83,7 +83,7 @@ import {
   ProjectBoardMeta, ProjectLibraryRecord,
   defaultProjectBoardMeta, getProjectLibraryRecord,
   listProjectLibraryRecords, nextProjectBoardPosition, projectLibraryAvailable,
-  putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
+  projectBoardCanvasSize, putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
   zoomBoardCamera,
 } from "./core/projectLibrary";
 import {
@@ -3051,13 +3051,12 @@ function drawCachedBaseFrame(panel: Panel) {
 }
 
 function paintEditorPanelBackground(panel: Panel) {
-  document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = panel.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(overscanX, overscanY, project.width, project.height);
 }
 
 function drawEditorActiveContent(panel: Panel, label: string) {
@@ -3626,7 +3625,6 @@ function loop(now: number) {
       const { index, localMs } = seqPos;
       activePanelIndex = index;
       const panel = project.panels[index];
-      document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
       const seqTick = Math.floor((localMs / 1000) * project.wiggleFps);
       if (shouldRenderPlaybackFrame({
         panelIndex: index,
@@ -3660,7 +3658,6 @@ function loop(now: number) {
     interacting: liveInteraction || !!selectionState,
   })) {
     const panel = activePanel();
-    document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
     if (drawing && liveStroke) {
       if (isEraseBrushKey(liveStroke.brush)) {
         profileRender("live-erase", () => drawLiveErasePreviewFrame());
@@ -7841,17 +7838,45 @@ function formatBoardUpdatedAt(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function projectBoardRecordInfo(record: ProjectLibraryRecord): {
+  width: number;
+  height: number;
+  panelCount: number;
+} {
+  try {
+    const parsed = JSON.parse(record.json) as {
+      panels?: unknown[];
+      width?: number;
+      height?: number;
+    };
+    return {
+      width: parsed.width && parsed.width > 0 ? parsed.width : 1080,
+      height: parsed.height && parsed.height > 0 ? parsed.height : 1080,
+      panelCount: parsed.panels?.length ?? 0,
+    };
+  } catch {
+    return { width: 1080, height: 1080, panelCount: 0 };
+  }
+}
+
 function buildProjectBoard() {
   projectBoardWorld.innerHTML = "";
   for (const record of projectBoardRecords) {
+    const info = projectBoardRecordInfo(record);
+    const displaySize = projectBoardCanvasSize(info.width, info.height);
     const card = document.createElement("article");
     card.className = "project-card" + (record.id === activeLibraryProjectId ? " active" : "");
     card.style.left = `${record.x}px`;
     card.style.top = `${record.y}px`;
+    card.style.width = `${displaySize.width}px`;
     card.dataset.projectId = record.id;
 
-    const preview = document.createElement("div");
+    const preview = document.createElement("button");
+    preview.type = "button";
     preview.className = "project-card-preview";
+    preview.style.width = `${displaySize.width}px`;
+    preview.style.height = `${displaySize.height}px`;
+    preview.setAttribute("aria-label", `Focus ${record.name}, ${info.width} by ${info.height}`);
     if (record.previewDataUrl) {
       const img = document.createElement("img");
       img.src = record.previewDataUrl;
@@ -7863,7 +7888,7 @@ function buildProjectBoard() {
       empty.textContent = "Preview appears after the first autosave";
       preview.appendChild(empty);
     }
-    preview.ondblclick = () => { void focusProjectFromBoard(record.id); };
+    preview.onclick = () => { void focusProjectFromBoard(record.id); };
 
     const body = document.createElement("div");
     body.className = "project-card-body";
@@ -7873,25 +7898,14 @@ function buildProjectBoard() {
     title.className = "project-card-title";
     title.textContent = record.name;
     title.title = record.name;
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "project-card-open";
-    open.textContent = record.id === activeLibraryProjectId ? "Focus" : "Open";
-    open.onclick = () => { void focusProjectFromBoard(record.id); };
-    titlebar.append(title, open);
+    titlebar.append(title);
 
     const meta = document.createElement("div");
     meta.className = "project-card-meta";
     const summary = document.createElement("span");
     const updated = document.createElement("span");
-    try {
-      const parsed = JSON.parse(record.json) as { panels?: unknown[]; width?: number; height?: number };
-      const count = parsed.panels?.length ?? 0;
-      const dimensions = parsed.width && parsed.height ? `${parsed.width}×${parsed.height}` : "";
-      summary.textContent = `${count} panel${count === 1 ? "" : "s"} · ${dimensions}`;
-    } catch {
-      summary.textContent = "Project";
-    }
+    summary.textContent =
+      `${info.width}×${info.height} · ${info.panelCount} panel${info.panelCount === 1 ? "" : "s"}`;
     updated.textContent = formatBoardUpdatedAt(record.updatedAt);
     meta.append(summary, updated);
 
@@ -7938,12 +7952,18 @@ function fitProjectBoard() {
   }
   const minX = Math.min(...projectBoardRecords.map((record) => record.x));
   const minY = Math.min(...projectBoardRecords.map((record) => record.y));
-  const maxX = Math.max(...projectBoardRecords.map((record) => record.x + 232));
-  const maxY = Math.max(...projectBoardRecords.map((record) => record.y + 390));
+  const maxX = Math.max(...projectBoardRecords.map((record) => {
+    const info = projectBoardRecordInfo(record);
+    return record.x + projectBoardCanvasSize(info.width, info.height).width;
+  }));
+  const maxY = Math.max(...projectBoardRecords.map((record) => {
+    const info = projectBoardRecordInfo(record);
+    return record.y + projectBoardCanvasSize(info.width, info.height).height + 58;
+  }));
   const rect = projectBoardSurface.getBoundingClientRect();
   const scale = Math.max(0.2, Math.min(1.2, Math.min(
-    (rect.width - 120) / Math.max(232, maxX - minX),
-    (rect.height - 140) / Math.max(390, maxY - minY)
+    (rect.width - 120) / Math.max(240, maxX - minX),
+    (rect.height - 140) / Math.max(240, maxY - minY)
   )));
   projectBoardMeta.camera = {
     scale,
@@ -8007,7 +8027,6 @@ async function focusProjectFromBoard(id: string) {
   buildLayers();
   buildBreadcrumb();
   buildInspector();
-  document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
   applyViewport();
   await writeProjectBoardMeta(projectBoardMeta);
   hideProjectBoard();
@@ -8070,7 +8089,6 @@ async function initializeProjectLibrary() {
       buildLayers();
       buildBreadcrumb();
       buildInspector();
-      document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
       applyViewport();
     } else {
       const json = autosaveSerialization.snapshot(project).json;
@@ -8132,7 +8150,6 @@ function resetProjectSession(next: Project, fileStatus: string, serialized?: str
   fitViewport();
   updateExportMenuLabels();
   updateCanvasHint();
-  document.documentElement.style.setProperty("--active-panel-bg", activePanel().bg);
   updateFileChrome();
   setStatus(fileStatus);
 }
