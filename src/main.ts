@@ -2909,7 +2909,6 @@ canvas.addEventListener("click", (e) => {
 // ---- viewport controls ----------------------------------------------------
 
 stageArea.addEventListener("wheel", (e) => {
-  if (!e.metaKey && !e.ctrlKey) return;
   e.preventDefault();
   const nextScale = viewport.scale * Math.exp(-e.deltaY * 0.0015);
   viewport = zoomAboutPoint(canvas, stageArea, nextScale, e.clientX, e.clientY);
