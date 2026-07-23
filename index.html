@@ -220,6 +220,15 @@
     .zoom-pill button:focus:not(:focus-visible) { outline: none; }
     .zoom-pill button:hover { background: rgba(255,251,242,.06); color: var(--text-primary); }
     .zoom-pill button:active { background: rgba(255,251,242,.1); transform: scale(0.94); }
+    .zoom-pill .platform-preview-toggle {
+      min-width: 58px; margin-right: 3px; padding: 0 8px;
+      border-right-color: var(--border-subtle); border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+      font-weight: 650;
+    }
+    .zoom-pill .platform-preview-toggle.active {
+      color: #087d70; background: rgba(37,244,238,.15);
+      border-color: rgba(8,125,112,.35);
+    }
     #zoom-label { min-width: 48px; font-variant-numeric: tabular-nums; }
     .recovery-prompt { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
       padding: 6px 8px; background: #241a12; border: 1px solid rgba(251,122,60,.45);
@@ -1781,6 +1790,8 @@
           <button id="canvas-hint-dismiss" class="canvas-hint-dismiss" type="button">Got it</button>
         </div>
         <div class="zoom-pill">
+          <button id="tiktok-overlay-toggle" class="platform-preview-toggle" type="button"
+            aria-pressed="false" title="Show TikTok UI and safe-area preview">TikTok</button>
           <button id="zoom-out" type="button" title="Zoom out">−</button>
           <button id="zoom-label" type="button" title="Reset to 100%">100%</button>
           <button id="zoom-in" type="button" title="Zoom in">+</button>

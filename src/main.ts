@@ -29,6 +29,7 @@ import {
   baseFrameCacheKey, editorPreviewPasses, panelHasPlaybackContinuity, shouldRefreshThumbnail,
   shouldRenderIdleFrame, shouldRenderPlaybackFrame, timelapseProgressQuantized,
 } from "./core/renderSchedule";
+import { drawTikTokOverlay } from "./core/tiktokOverlay";
 import { StudioIcons, type IconNode } from "./icons/studio";
 import { BRUSHES, brushByKey } from "./brushes/registry";
 import { BUILTIN_PALETTES, loadLospecPalette, Palette } from "./core/palette";
@@ -363,6 +364,8 @@ let onionEnabled = false;
 let onionPrevCount = 1;
 let onionNextCount = 0;
 let onionOpacity = 0.25;
+let tiktokOverlayEnabled = false;
+let editorPreviewInvalidated = false;
 let panelContentClipboard: PanelContentsClipboard | null = null;
 const recentSlugs: string[] = [];
 const audioPreview = new AudioPreview();
@@ -2866,8 +2869,10 @@ function zoomStep(multiplier: number) {
 ($("zoom-in") as HTMLButtonElement).onclick = () => zoomStep(1.25);
 ($("zoom-label") as HTMLButtonElement).onclick = () => resetViewport();
 ($("zoom-fit") as HTMLButtonElement).onclick = () => fitViewport();
+($("tiktok-overlay-toggle") as HTMLButtonElement).onclick = toggleTikTokOverlay;
+syncTikTokOverlayToggle();
 
-for (const id of ["zoom-out", "zoom-label", "zoom-in", "zoom-fit"]) {
+for (const id of ["tiktok-overlay-toggle", "zoom-out", "zoom-label", "zoom-in", "zoom-fit"]) {
   const btn = $(id) as HTMLButtonElement;
   let pointerActivated = false;
   btn.addEventListener("pointerdown", () => { pointerActivated = true; });
@@ -3557,6 +3562,14 @@ function drawScaleToolOverlay(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
+function drawTikTokOverlayInCanvasSpace() {
+  if (!tiktokOverlayEnabled) return;
+  ctx.save();
+  if (overscanX > 0 || overscanY > 0) ctx.translate(overscanX, overscanY);
+  drawTikTokOverlay(ctx, project.width, project.height);
+  ctx.restore();
+}
+
 // ---- three clocks ---------------------------------------------------------
 
 let wiggleTick = 0;
@@ -3626,7 +3639,7 @@ function loop(now: number) {
       activePanelIndex = index;
       const panel = project.panels[index];
       const seqTick = Math.floor((localMs / 1000) * project.wiggleFps);
-      if (shouldRenderPlaybackFrame({
+      if (editorPreviewInvalidated || shouldRenderPlaybackFrame({
         panelIndex: index,
         seqTick,
         lastPanelIndex: lastPlaybackRenderPanelIndex,
@@ -3645,6 +3658,8 @@ function loop(now: number) {
           renderCache: displayRenderCache,
           contentVersion: renderContentVersion,
         }));
+        drawTikTokOverlayInCanvasSpace();
+        editorPreviewInvalidated = false;
         lastPlaybackRenderPanelIndex = index;
         lastPlaybackRenderSeqTick = seqTick;
       }
@@ -3655,7 +3670,7 @@ function loop(now: number) {
   const liveInteraction = hasLiveEditorInteraction();
   if (!playing && shouldRenderIdleFrame({
     tickChanged,
-    interacting: liveInteraction || !!selectionState,
+    interacting: liveInteraction || !!selectionState || editorPreviewInvalidated,
   })) {
     const panel = activePanel();
     if (drawing && liveStroke) {
@@ -3761,7 +3776,11 @@ function loop(now: number) {
     // Keyframe overlay: A/B handles + motion path for animated layers.
     drawKeyframeOverlay(ctx);
 
+    // Platform chrome is drawn last so it matches how TikTok covers the post.
+    if (tiktokOverlayEnabled) drawTikTokOverlay(ctx, project.width, project.height);
+
     if (overscanX > 0 || overscanY > 0) ctx.restore();
+    editorPreviewInvalidated = false;
   }
 
   // Timeline thumbnails are static previews; refresh only when content changed.
@@ -7507,6 +7526,23 @@ function setStatus(s: string, durationMs = 3500) {
   }
 }
 
+function syncTikTokOverlayToggle() {
+  const button = $("tiktok-overlay-toggle") as HTMLButtonElement;
+  button.classList.toggle("active", tiktokOverlayEnabled);
+  button.setAttribute("aria-pressed", String(tiktokOverlayEnabled));
+  button.title = tiktokOverlayEnabled
+    ? "Hide TikTok UI preview"
+    : "Show TikTok UI and safe-area preview";
+}
+
+function toggleTikTokOverlay() {
+  tiktokOverlayEnabled = !tiktokOverlayEnabled;
+  editorPreviewInvalidated = true;
+  syncTikTokOverlayToggle();
+  requestLoopFrame();
+  setStatus(`TikTok preview ${tiktokOverlayEnabled ? "on" : "off"}`);
+}
+
 type Command = {
   id: string;
   label: string;
@@ -7527,6 +7563,7 @@ function commandList(): Command[] {
     { id: "view-edit", label: "Switch to Edit", group: "View", run: () => setWorkspaceMode("edit") },
     { id: "view-fit", label: "Fit Canvas", group: "View", run: fitViewport },
     { id: "view-actual", label: "Actual Size", group: "View", run: resetViewport },
+    { id: "view-tiktok-overlay", label: "Toggle TikTok UI Preview", group: "View", run: toggleTikTokOverlay },
     { id: "view-onion", label: "Toggle Onion Skin", group: "Draw", run: () => {
       onionEnabled = !onionEnabled;
       const ot = document.getElementById("onion-toggle") as HTMLInputElement | null;
