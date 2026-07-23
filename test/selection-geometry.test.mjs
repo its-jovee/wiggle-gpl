@@ -111,6 +111,27 @@ test("shapeMeetsMinSize", () => {
   assert.equal(sel.shapeMeetsMinSize({ kind: "rect", x: 0, y: 0, w: 20, h: 20 }), true);
 });
 
+test("marquee drag modifiers constrain shape and draw from center", () => {
+  assert.deepEqual(
+    sel.rectFromDrag({ x: 50, y: 50 }, { x: 70, y: 60 }, true, false),
+    { kind: "rect", x: 50, y: 50, w: 20, h: 20 }
+  );
+  assert.deepEqual(
+    sel.rectFromDrag({ x: 50, y: 50 }, { x: 70, y: 60 }, false, true),
+    { kind: "rect", x: 30, y: 40, w: 40, h: 20 }
+  );
+  assert.deepEqual(
+    sel.ellipseFromDrag({ x: 50, y: 50 }, { x: 30, y: 60 }, true, true),
+    { kind: "ellipse", cx: 50, cy: 50, rx: 20, ry: 20 }
+  );
+});
+
+test("marquee ants use a stable time-based phase", () => {
+  assert.equal(sel.marqueeAntsOffset(0), 0);
+  assert.equal(sel.marqueeAntsOffset(250), 6);
+  assert.equal(sel.marqueeAntsOffset(500), 0);
+});
+
 test("transformPoint scales around pivot", () => {
   const p = sel.transformPoint({ x: 20, y: 10 }, { x: 10, y: 10 }, 0.5, 0.5, 0);
   assert.equal(p.x, 15);

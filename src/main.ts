@@ -15,7 +15,7 @@ import {
 import {
   activeRegionContains, activeRegionShape, applyTransformToSnapshot, boundsFromItems, computeTransformFromHandle,
   ellipseFromDrag, growSelectionShape, hitTestTransformHandle, isObjectSelectionIdle, ItemSnapshot,
-  MarqueeRef, MarqueeToolKind, moveMarqueeItems, pointInRegionSelection, Rect, rectCenter, rectFromDrag,
+  marqueeAntsOffset, MarqueeRef, MarqueeToolKind, moveMarqueeItems, pointInRegionSelection, Rect, rectCenter, rectFromDrag,
   restoreFromSnapshot, SelectionState, segmentShapeIntersections, shapeBounds, shapeMeetsMinSize,
   simplifyLassoPath, snapshotItems, splitStrokeAtShape, traceShapePath, translateShape,
   TransformHandleId, transformCursorForHandle, transformHandleVisualHalfSize, transformRotateHandleCenter,
@@ -143,11 +143,6 @@ let selectedText: TextRef | null = null;
 let selectionState: SelectionState | null = null;
 let marqueeToolKind: MarqueeToolKind = "rect";
 let transformSnapshots: ItemSnapshot[] | null = null;
-let pendingRegionTransform: {
-  pointerId: number;
-  handle: TransformHandleId;
-  startPos: Vec2;
-} | null = null;
 let lastCanvasPointerPos: Vec2 | null = null;
 let antsOffset = 0;
 
@@ -786,7 +781,6 @@ function cancelLiveInteractionsForUndo() {
   layerMoveDrag = null;
   perspectiveDrag = null;
   selectDrag = null;
-  pendingRegionTransform = null;
   subPanelDrag = null;
   transformSnapshots = null;
   keyframeArm = null;
@@ -1447,24 +1441,12 @@ function hitTestText(pos: { x: number; y: number }): TextRef | null {
 function clearSelection() {
   selectionState = null;
   transformSnapshots = null;
-  pendingRegionTransform = null;
   canvas.style.cursor = "";
 }
 
-function shapeFromCreating(state: SelectionState & { mode: "region"; phase: "creating" }): SelectionShape {
-  const path = state.lassoPath ?? [];
-  if (state.tool === "lasso") {
-    return { kind: "polygon", points: simplifyLassoPath(path) };
-  }
-  const start = path[0] ?? { x: 0, y: 0 };
-  const end = path[path.length - 1] ?? start;
-  if (state.tool === "ellipse") return ellipseFromDrag(start, end);
-  return rectFromDrag(start, end);
-}
-
 function marqueeTransformBounds(state: SelectionState): Rect | null {
-  if (state.phase === "creating") return null;
-  return state.mode === "object" ? state.bounds : shapeBounds(state.shape);
+  if (state.mode !== "object") return null;
+  return state.bounds;
 }
 
 function pointInBounds(pos: Vec2, b: Rect): boolean {
@@ -1487,7 +1469,7 @@ function updateCanvasCursor(pos?: Vec2) {
   if (currentBrush === MARQUEE_KEY && selectionState) {
     const at = pos ?? lastCanvasPointerPos;
     const bounds = marqueeTransformBounds(selectionState);
-    if (at && bounds && selectionState.phase === "idle") {
+    if (at && bounds && selectionState.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(at, bounds, viewport.scale);
       if (handle) {
         canvas.style.cursor = transformCursorForHandle(handle);
@@ -2225,13 +2207,6 @@ canvas.addEventListener("pointerdown", (e) => {
       buildEditContext();
     }
     if (selectionState?.mode === "region" && selectionState.phase === "idle") {
-      const bounds = shapeBounds(selectionState.shape);
-      const handle = hitTestTransformHandle(pos, bounds, viewport.scale);
-      if (handle) {
-        pendingRegionTransform = { pointerId: e.pointerId, handle, startPos: pos };
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        return;
-      }
       if (activeRegionContains(selectionState, pos)) {
         selectionState = { ...selectionState, phase: "moving", lastPos: pos };
         try { canvas.setPointerCapture(e.pointerId); } catch {}
@@ -2240,8 +2215,8 @@ canvas.addEventListener("pointerdown", (e) => {
       }
     }
     const startShape = marqueeToolKind === "ellipse"
-      ? ellipseFromDrag(pos, pos, e.shiftKey)
-      : rectFromDrag(pos, pos);
+      ? ellipseFromDrag(pos, pos, e.shiftKey, e.altKey)
+      : rectFromDrag(pos, pos, e.shiftKey, e.altKey);
     selectionState = {
       mode: "region",
       phase: "creating",
@@ -2479,19 +2454,6 @@ canvas.addEventListener("pointermove", (e) => {
     e.preventDefault();
     return;
   }
-  if (pendingRegionTransform) {
-    if (e.pointerId !== pendingRegionTransform.pointerId) return;
-    const pos = hoverPos;
-    if (Math.hypot(pos.x - pendingRegionTransform.startPos.x, pos.y - pendingRegionTransform.startPos.y) < 0.5) {
-      return;
-    }
-    const pending = pendingRegionTransform;
-    pendingRegionTransform = null;
-    if (beginObjectSelectionTransform(pending.handle, pending.startPos)) {
-      applyActiveSelectionTransform(pos, e.shiftKey, e.altKey);
-    }
-    return;
-  }
   if (perspectiveDrag) {
     if (e.pointerId !== perspectiveDrag.pointerId) return;
     const guide = activePerspectiveGuide();
@@ -2559,8 +2521,8 @@ canvas.addEventListener("pointermove", (e) => {
       } else {
         const start = path[0] ?? pos;
         const shape = selectionState.tool === "ellipse"
-          ? ellipseFromDrag(start, pos, e.shiftKey)
-          : rectFromDrag(start, pos);
+          ? ellipseFromDrag(start, pos, e.shiftKey, e.altKey)
+          : rectFromDrag(start, pos, e.shiftKey, e.altKey);
         selectionState = { ...selectionState, lassoPath: [start, pos], shape };
       }
       return;
@@ -2570,27 +2532,11 @@ canvas.addEventListener("pointermove", (e) => {
       const dy = pos.y - selectionState.lastPos.y;
       if (selectionState.mode === "region") {
         if (dx === 0 && dy === 0) return;
-        const shape = selectionState.shape;
-        const items = cutAtShape(shape, !!selectionState.inverted);
-        if (items.length > 0) {
-          moveMarqueeItems(items, dx, dy);
-          bumpMarqueeItemLayers(items);
-          selectionState = {
-            mode: "object",
-            phase: "moving",
-            shape: translateShape(shape, dx, dy),
-            bounds: boundsFromItems(items, measureText),
-            items,
-            lastPos: pos,
-          };
-          buildEditContext();
-        } else {
-          selectionState = {
-            ...selectionState,
-            shape: translateShape(shape, dx, dy),
-            lastPos: pos,
-          };
-        }
+        selectionState = {
+          ...selectionState,
+          shape: translateShape(selectionState.shape, dx, dy),
+          lastPos: pos,
+        };
       } else {
         moveMarqueeItems(selectionState.items, dx, dy);
         bumpMarqueeItemLayers(selectionState.items);
@@ -2702,13 +2648,6 @@ window.addEventListener("pointerup", (e) => {
     buildInspector();
     return;
   }
-  if (pendingRegionTransform) {
-    if (e.pointerId === pendingRegionTransform.pointerId) {
-      pendingRegionTransform = null;
-      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
-    }
-    return;
-  }
   if (selectionState) {
     if (selectionState.mode === "region" && selectionState.phase === "creating") {
       let shape = selectionState.shape;
@@ -2722,7 +2661,7 @@ window.addEventListener("pointerup", (e) => {
       }
       selectionState = { mode: "region", phase: "idle", shape, tool: selectionState.tool };
       buildEditContext();
-      setStatus("Selection active · drag or use handles to cut · paint inside · Esc to clear");
+      setStatus("Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
       return;
     }
     if (selectionState.phase === "moving") {
@@ -2823,10 +2762,6 @@ window.addEventListener("pointerup", (e) => {
 });
 
 window.addEventListener("pointercancel", (e) => {
-  if (pendingRegionTransform && e.pointerId === pendingRegionTransform.pointerId) {
-    pendingRegionTransform = null;
-    return;
-  }
   if (perspectiveDrag && e.pointerId === perspectiveDrag.pointerId) {
     perspectiveDrag = null;
     commitHistory([]);
@@ -3532,7 +3467,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   let shape: SelectionShape;
   let b: Rect;
   if (selectionState.mode === "region" && selectionState.phase === "creating") {
-    shape = shapeFromCreating(selectionState as SelectionState & { mode: "region"; phase: "creating" });
+    shape = selectionState.shape;
     b = shapeBounds(shape);
   } else if (selectionState.mode === "object") {
     b = selectionState.bounds;
@@ -3543,8 +3478,14 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   }
 
   ctx.save();
-  ctx.strokeStyle = "rgba(255,205,117,0.95)";
-  ctx.setLineDash([8, 8]);
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.setLineDash([]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  traceShapePath(ctx, shape);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,0.95)";
+  ctx.setLineDash([6, 6]);
   ctx.lineDashOffset = -antsOffset;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -3552,7 +3493,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  if (currentBrush === MARQUEE_KEY && selectionState.phase !== "creating" &&
+  if (currentBrush === MARQUEE_KEY && selectionState.mode === "object" &&
       (selectionState.phase === "idle" || selectionState.phase === "transforming")) {
     const hs = transformHandleVisualHalfSize(viewport.scale);
     const corners = [
@@ -3575,19 +3516,6 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
     ctx.stroke();
   }
 
-  if (selectionState.phase !== "creating") {
-    ctx.fillStyle = "#ffcd75";
-    ctx.font = "24px ui-monospace, monospace";
-    let label: string;
-    if (selectionState.mode === "object") {
-      label = `${selectionState.items.length} extracted · Del to remove · Esc to clear`;
-    } else if (currentBrush === MARQUEE_KEY) {
-      label = "Region · drag/handle to cut · Esc to clear";
-    } else {
-      label = "Painting inside selection · Esc to clear";
-    }
-    ctx.fillText(label, b.x + 8, Math.max(36, b.y - 10));
-  }
   ctx.restore();
 }
 
@@ -3727,7 +3655,10 @@ function loop(now: number) {
     }
   }
   const liveInteraction = hasLiveEditorInteraction();
-  if (!playing && shouldRenderIdleFrame({ tickChanged, interacting: liveInteraction })) {
+  if (!playing && shouldRenderIdleFrame({
+    tickChanged,
+    interacting: liveInteraction || !!selectionState,
+  })) {
     const panel = activePanel();
     document.documentElement.style.setProperty("--active-panel-bg", panel.bg);
     if (drawing && liveStroke) {
@@ -3782,7 +3713,7 @@ function loop(now: number) {
       );
       ctx.restore();
     }
-    antsOffset = (antsOffset + 0.6) % 16;
+    antsOffset = marqueeAntsOffset(now);
     drawPerspectiveOverlay(ctx);
     drawMaskOverlay(ctx);
     drawSelectionOverlay(ctx);
@@ -3858,7 +3789,8 @@ requestLoopFrame();
 // ---- UI: brushes / palette / layers / timeline / inspector / breadcrumb ---
 
 function buildBrushBar() {
-  canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MARQUEE_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
+  canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
+  canvas.classList.toggle("marquee-cursor", currentBrush === MARQUEE_KEY);
   const drawTools = $("tools-draw");
   const editTools = $("tools-edit");
   const insertTools = $("tools-insert");
@@ -3884,7 +3816,6 @@ function buildBrushBar() {
     currentBrush = k;
     if (!TOOL_KEYS.has(k)) lastBrushByTool[brushToolForKey(k)] = k;
     selectDrag = null;
-    pendingRegionTransform = null;
     if (scaleToolDrag) {
       for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
       bumpMarqueeItemLayers(scaleToolDrag.items);
@@ -4353,7 +4284,7 @@ function buildEditContext() {
     if (currentBrush === MARQUEE_KEY) {
       const hint = document.createElement("div");
       hint.className = "context-hint";
-      hint.textContent = "Marquee: drag a region to clip brush/bucket. Drag inside to move items.";
+      hint.textContent = "Drag to select. Shift constrains; Alt draws from center. Drag inside to move the boundary.";
       host.appendChild(hint);
     }
     if (selectionClipboard) {
@@ -4366,14 +4297,14 @@ function buildEditContext() {
   info.className = "context-hint";
   info.style.marginBottom = "8px";
   if (selectionState.mode === "region") {
-    info.textContent = `Region selection (${selectionState.tool}). Paint inside; drag or handle-transform to cut.`;
+    info.textContent = `Region selection (${selectionState.tool}). Paint is clipped; drag inside to move the boundary.`;
   } else {
     info.textContent = `${selectionState.items.length} item(s) extracted. Drag to move; handles to scale/rotate.`;
   }
   host.appendChild(info);
 
   if (selectionState.mode === "region" && selectionState.phase === "idle") {
-    mkBtn("Extract", () => extractSelection(), "Enter");
+    mkBtn("Extract", () => extractSelection());
     mkBtn(selectionState.inverted ? "Uninvert" : "Invert", () => invertActiveSelection());
     mkBtn("Grow", () => growActiveSelection(8));
     mkBtn("Shrink", () => growActiveSelection(-8));
@@ -8623,6 +8554,35 @@ window.addEventListener("keydown", (e) => {
       zoomStep(0.8);
       return;
     }
+    if (key === "a" && canvasOwnsKeyboard) {
+      e.preventDefault();
+      selectionState = {
+        mode: "region",
+        phase: "idle",
+        shape: { kind: "rect", x: 0, y: 0, w: project.width, h: project.height },
+        tool: "rect",
+      };
+      buildEditContext();
+      requestLoopFrame();
+      setStatus("Selected all");
+      return;
+    }
+    if (key === "d" && canvasOwnsKeyboard) {
+      e.preventDefault();
+      clearSelection();
+      buildEditContext();
+      requestLoopFrame();
+      setStatus("Selection cleared");
+      return;
+    }
+    if (key === "i" && e.shiftKey && canvasOwnsKeyboard &&
+        selectionState?.mode === "region" && selectionState.phase === "idle") {
+      e.preventDefault();
+      invertActiveSelection();
+      requestLoopFrame();
+      setStatus(selectionState.inverted ? "Selection inverted" : "Selection uninverted");
+      return;
+    }
     if (key === "c") {
       if (selectionState?.mode === "object") { e.preventDefault(); copySelection(); return; }
       if (activeLayer()) { e.preventDefault(); copyActiveLayer(); return; }
@@ -8651,10 +8611,18 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.key === "Enter" && !inEditable && selectionState?.mode === "region" &&
-      selectionState.phase === "idle") {
+  if (!inEditable && canvasOwnsKeyboard && selectionState?.mode === "region" &&
+      selectionState.phase === "idle" &&
+      ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
     e.preventDefault();
-    extractSelection();
+    const step = e.shiftKey ? 10 : 1;
+    const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+    selectionState = {
+      ...selectionState,
+      shape: translateShape(selectionState.shape, dx, dy),
+    };
+    requestLoopFrame();
     return;
   }
 
@@ -8691,7 +8659,7 @@ window.addEventListener("keydown", (e) => {
     closeFileMenu();
     closeExportMenu();
     if (selectionState) {
-      // Commit before clearing so any auto-extracted cut has an undo entry.
+      // Commit before clearing if an explicit extracted-object move is active.
       if (selectionState.phase === "moving" && selectionState.mode === "object") commitHistory();
       else if (selectionState.phase === "transforming") { transformSnapshots = null; commitHistory(); }
       clearSelection();

@@ -48,23 +48,60 @@ export type SelectionState =
 
 const EPS = 1e-9;
 
-export function rectFromDrag(a: Vec2, b: Vec2): SelectionShape {
-  const x = Math.min(a.x, b.x);
-  const y = Math.min(a.y, b.y);
-  return { kind: "rect", x, y, w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+function dragBounds(
+  a: Vec2,
+  b: Vec2,
+  constrainSquare: boolean,
+  fromCenter: boolean
+): Rect {
+  let dx = b.x - a.x;
+  let dy = b.y - a.y;
+  if (constrainSquare) {
+    const extent = Math.max(Math.abs(dx), Math.abs(dy));
+    dx = (dx < 0 ? -1 : 1) * extent;
+    dy = (dy < 0 ? -1 : 1) * extent;
+  }
+  if (fromCenter) {
+    return {
+      x: a.x - Math.abs(dx),
+      y: a.y - Math.abs(dy),
+      w: Math.abs(dx) * 2,
+      h: Math.abs(dy) * 2,
+    };
+  }
+  return {
+    x: Math.min(a.x, a.x + dx),
+    y: Math.min(a.y, a.y + dy),
+    w: Math.abs(dx),
+    h: Math.abs(dy),
+  };
 }
 
-export function ellipseFromDrag(a: Vec2, b: Vec2, constrainCircle = false): SelectionShape {
-  const x = Math.min(a.x, b.x);
-  const y = Math.min(a.y, b.y);
-  let w = Math.abs(b.x - a.x);
-  let h = Math.abs(b.y - a.y);
-  if (constrainCircle) {
-    const s = Math.max(w, h);
-    w = s;
-    h = s;
-  }
+export function rectFromDrag(
+  a: Vec2,
+  b: Vec2,
+  constrainSquare = false,
+  fromCenter = false
+): SelectionShape {
+  const { x, y, w, h } = dragBounds(a, b, constrainSquare, fromCenter);
+  return { kind: "rect", x, y, w, h };
+}
+
+export function ellipseFromDrag(
+  a: Vec2,
+  b: Vec2,
+  constrainCircle = false,
+  fromCenter = false
+): SelectionShape {
+  const { x, y, w, h } = dragBounds(a, b, constrainCircle, fromCenter);
   return { kind: "ellipse", cx: x + w / 2, cy: y + h / 2, rx: w / 2, ry: h / 2 };
+}
+
+/** Time-based marching-ants phase, independent of display refresh rate. */
+export function marqueeAntsOffset(nowMs: number, cyclePx = 12, pxPerSecond = 24): number {
+  const cycle = Math.max(1, cyclePx);
+  const offset = (nowMs * pxPerSecond) / 1000;
+  return ((offset % cycle) + cycle) % cycle;
 }
 
 export function polygonFromPoints(points: Vec2[]): SelectionShape {
