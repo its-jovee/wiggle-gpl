@@ -1362,13 +1362,21 @@
       .timeline-panel { left: 96px; width: min(210px, calc(100vw - 112px)); }
     }
 
-    /* ── Finite project canvases on one spatial desktop ─────────────── */
-    .stage-area {
-      background-color: #e4e0d8;
-      background-image: radial-gradient(circle, rgba(66, 58, 49, .22) 1px, transparent 1.15px);
+    /* ── Finite project canvases on one continuous spatial desktop ─── */
+    :root {
+      --workspace-surface: #e4e0d8;
+      --workspace-dots: radial-gradient(circle, rgba(66, 58, 49, .22) 1px, transparent 1.15px);
+    }
+    body {
+      background-color: var(--workspace-surface);
+      background-image: var(--workspace-dots);
       background-size: 22px 22px;
       background-position: -1px -1px;
+      background-blend-mode: normal;
     }
+    body::before { display: none; }
+    .app-grid, .stage-wrap, .stage-area { background: transparent; }
+    .stage-area { border: 0; border-radius: 0; box-shadow: none; }
     #stage {
       background: transparent;
       border: 0;
@@ -1378,8 +1386,8 @@
     #project-board[hidden] { display: none; }
     #project-board {
       position: fixed; inset: 48px 0 0; z-index: 18;
-      overflow: hidden; background-color: #e4e0d8;
-      background-image: radial-gradient(circle, rgba(66, 58, 49, .22) 1px, transparent 1.15px);
+      overflow: hidden; background-color: var(--workspace-surface);
+      background-image: var(--workspace-dots);
       background-size: 22px 22px;
       background-position: -1px -1px;
       color: var(--text-primary);
