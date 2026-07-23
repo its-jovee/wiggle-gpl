@@ -22,10 +22,10 @@ lose re-wiggling, clean rescale, and reproducible export — so this is fixed.
 ## Project Board and autosave (`src/core/projectLibrary.ts`, `src/core/autosave.ts`)
 The Project Board is an infinite spatial navigator above the single active
 `Project`. Every item is presented as a finite canvas using the project's own
-aspect ratio, separated by the darker spatial workspace. These canvases use
-cached image previews; only the focused project is loaded into the editor and
-render caches. Switching first awaits a durable save of the current project,
-then restores the selected project's active panel and viewport.
+aspect ratio, arranged on a lightly darker dotted drafting workspace. These
+canvases use cached image previews; only the focused project is loaded into the
+editor and render caches. Switching first awaits a durable save of the current
+project, then restores the selected project's active panel and viewport.
 
 IndexedDB records are keyed by a stable library project id and overwritten in
 place. Autosave tracks an edit revision and serializes at most once per revision;

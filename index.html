@@ -1364,9 +1364,10 @@
 
     /* ── Finite project canvases on one spatial desktop ─────────────── */
     .stage-area {
-      background-color: #343230;
-      background-image: radial-gradient(rgba(255, 255, 255, .085) 1px, transparent 1px);
-      background-size: 24px 24px;
+      background-color: #e4e0d8;
+      background-image: radial-gradient(circle, rgba(66, 58, 49, .22) 1px, transparent 1.15px);
+      background-size: 22px 22px;
+      background-position: -1px -1px;
     }
     #stage {
       background: transparent;
@@ -1377,12 +1378,11 @@
     #project-board[hidden] { display: none; }
     #project-board {
       position: fixed; inset: 48px 0 0; z-index: 18;
-      overflow: hidden; background-color: #343230;
-      background-image:
-        radial-gradient(rgba(255, 255, 255, .085) 1px, transparent 1px),
-        var(--grain);
-      background-size: 24px 24px, 190px 190px;
-      color: #f8f5ef;
+      overflow: hidden; background-color: #e4e0d8;
+      background-image: radial-gradient(circle, rgba(66, 58, 49, .22) 1px, transparent 1.15px);
+      background-size: 22px 22px;
+      background-position: -1px -1px;
+      color: var(--text-primary);
     }
     body.project-board-open .app-grid { visibility: hidden; pointer-events: none; }
     #project-board-surface {
@@ -1414,7 +1414,7 @@
     .project-board-toolbar .project-board-primary:hover { background: var(--accent-hover); color: #fff; }
     .project-board-help {
       position: absolute; z-index: 2; left: 18px; bottom: 14px;
-      margin: 0; color: rgba(255, 255, 255, .58); font-size: 11px;
+      margin: 0; color: rgba(40, 32, 24, .58); font-size: 11px;
       pointer-events: none;
     }
     .project-card {
@@ -1425,40 +1425,41 @@
     .project-card-preview {
       display: grid; place-items: center; padding: 0; overflow: hidden;
       appearance: none; background: #fff; color: var(--text-muted);
-      border: 1px solid rgba(255, 255, 255, .22); border-radius: 2px;
-      box-shadow: 0 14px 34px rgba(0, 0, 0, .3); cursor: pointer;
+      border: 1px solid rgba(40, 32, 24, .2); border-radius: 2px;
+      box-shadow: 0 12px 28px rgba(40, 32, 24, .16); cursor: pointer;
       transition: border-color var(--dur-normal), box-shadow var(--dur-normal), transform var(--dur-fast);
     }
     .project-card-preview:hover {
-      border-color: rgba(255, 255, 255, .58);
-      box-shadow: 0 18px 42px rgba(0, 0, 0, .4);
+      border-color: rgba(40, 32, 24, .38);
+      box-shadow: 0 16px 34px rgba(40, 32, 24, .22);
       transform: translateY(-2px);
     }
     .project-card.active .project-card-preview {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(228, 87, 46, .32), 0 18px 42px rgba(0, 0, 0, .4);
+      box-shadow: 0 0 0 3px rgba(228, 87, 46, .2), 0 16px 34px rgba(40, 32, 24, .2);
     }
     .project-card-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .project-card-preview-placeholder {
       padding: 20px; color: var(--text-muted);
       font: 500 12px/1.4 var(--font-ui); text-align: center;
     }
-    .project-card-body { margin-top: 8px; color: #f8f5ef; }
+    .project-card-body { margin-top: 8px; color: var(--text-primary); }
     .project-card-titlebar {
       display: inline-flex; max-width: 100%; align-items: center; gap: 8px;
-      padding: 5px 8px; border: 1px solid rgba(255, 255, 255, .1);
-      border-radius: 8px; background: rgba(24, 23, 22, .72);
+      padding: 5px 8px; border: 1px solid rgba(40, 32, 24, .14);
+      border-radius: 8px; background: rgba(255, 253, 249, .88);
+      box-shadow: 0 3px 10px rgba(40, 32, 24, .08);
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       cursor: grab; touch-action: none;
     }
     .project-card.dragging .project-card-titlebar { cursor: grabbing; }
     .project-card-title {
       min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      font: 680 13px/1.25 var(--font-ui); color: #fff;
+      font: 680 13px/1.25 var(--font-ui); color: var(--text-primary);
     }
     .project-card-meta {
       display: flex; justify-content: space-between; gap: 8px; margin: 5px 2px 0;
-      color: rgba(255, 255, 255, .55); font-size: 10px;
+      color: var(--text-muted); font-size: 10px;
     }
 
     /* ── Reduced motion ── */

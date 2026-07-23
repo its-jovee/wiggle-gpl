@@ -27,8 +27,8 @@ raster/tile workflow becomes clearly better for the product and community. That
 decision is load-bearing and must be proposed explicitly before implementation.
 
 ## What's built (v8)
-- Finite project canvases at their native aspect ratios on a darker spatial
-  zoom/pan workspace; brush bleed can remain visible outside the export frame.
+- Finite project canvases at their native aspect ratios on a light dotted
+  drafting workspace; brush bleed can remain visible outside the export frame.
 - **40 brushes** using Decker's `(delta) => stamp` model, color-native,
   plus texture and scatter variants (watercolor, spray, foliage, etc.).
 - **Multi-panel timeline** with frame groups, timelapse panels, drag reorder.
