@@ -2085,6 +2085,7 @@ type WorkspaceMode = "draw" | "edit";
 
 let workspaceMode: WorkspaceMode = "draw";
 let timelineMode: "cells" | "tracks" = "cells";
+const expandedPanelAnnotations = new Set<string>();
 
 function canvasPos(e: PointerEvent | MouseEvent) {
   const raw = screenToCanvas(canvas, e.clientX, e.clientY);
@@ -4755,8 +4756,17 @@ function buildPanelCell(
   msDetails.appendChild(dur);
   cell.appendChild(msDetails);
 
+  const annotationToggle = document.createElement("button");
+  annotationToggle.type = "button";
+  annotationToggle.className = "panel-annotation-toggle";
+  annotationToggle.classList.toggle("has-note", !!p.annotation?.trim());
+  annotationToggle.textContent = "Note";
+  annotationToggle.title = `Show or hide frame ${i + 1} annotation`;
+  annotationToggle.setAttribute("aria-label", `Toggle frame ${i + 1} annotation`);
+
   const annotation = document.createElement("textarea");
   annotation.className = "panel-annotation";
+  annotation.id = `panel-annotation-${p.id}`;
   annotation.rows = 2;
   annotation.maxLength = MAX_PANEL_ANNOTATION_CHARS;
   annotation.value = p.annotation ?? "";
@@ -4764,9 +4774,24 @@ function buildPanelCell(
   annotation.title = `Frame ${i + 1} annotation`;
   annotation.setAttribute("aria-label", `Frame ${i + 1} annotation`);
   annotation.draggable = false;
+  annotation.hidden = !expandedPanelAnnotations.has(p.id);
+  annotationToggle.setAttribute("aria-controls", annotation.id);
+  annotationToggle.setAttribute("aria-expanded", String(!annotation.hidden));
+  annotationToggle.onclick = (e) => {
+    e.stopPropagation();
+    annotation.hidden = !annotation.hidden;
+    annotationToggle.setAttribute("aria-expanded", String(!annotation.hidden));
+    if (annotation.hidden) {
+      expandedPanelAnnotations.delete(p.id);
+    } else {
+      expandedPanelAnnotations.add(p.id);
+      annotation.focus();
+    }
+  };
   let committedAnnotation = annotation.value;
   annotation.oninput = () => {
     p.annotation = annotation.value;
+    annotationToggle.classList.toggle("has-note", !!annotation.value.trim());
     markDirty();
   };
   annotation.onchange = () => {
@@ -4777,7 +4802,7 @@ function buildPanelCell(
     setStatus(`Frame ${i + 1} annotation updated`);
   };
   annotation.addEventListener("dragstart", (e) => e.stopPropagation());
-  cell.appendChild(annotation);
+  cell.append(annotationToggle, annotation);
 
   const tools = document.createElement("div");
   tools.className = "panel-cell-actions";

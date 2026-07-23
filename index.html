@@ -1480,6 +1480,22 @@
     }
 
     /* Per-frame dialogue and sequence notes. */
+    .panel-annotation-toggle {
+      width: 100%; min-height: 24px; padding: 3px 6px;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      background: transparent; color: var(--text-muted);
+      font: 650 10px/1 var(--font-ui); cursor: pointer; text-align: left;
+    }
+    .panel-annotation-toggle:hover,
+    .panel-annotation-toggle[aria-expanded="true"] {
+      border-color: var(--border-strong); color: var(--text-primary);
+      background: rgba(255,255,255,.58);
+    }
+    .panel-annotation-toggle.has-note::after {
+      content: ""; display: inline-block; width: 5px; height: 5px;
+      margin-left: 5px; border-radius: 50%; background: var(--accent);
+      vertical-align: 1px;
+    }
     .panel-annotation {
       width: 100%; min-height: 42px; resize: vertical; padding: 5px 6px;
       border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
@@ -1491,8 +1507,11 @@
       outline: none; border-color: var(--accent);
       box-shadow: 0 0 0 2px var(--accent-soft);
     }
+    .panel-annotation[hidden] { display: none; }
+    .timeline-module .panel-annotation-toggle,
     .timeline-module .panel-annotation { grid-column: 2; }
     @container (min-width: 400px) {
+      .timeline-module .panel-annotation-toggle,
       .timeline-module .panel-annotation { grid-column: 1; }
     }
 
