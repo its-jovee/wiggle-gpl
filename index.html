@@ -4,38 +4,38 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://lospec.com; worker-src 'self' blob:;" />
-  <title>Wiggle Studio</title>
+  <title>Wiggle GPL</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Comic+Neue&family=Patrick+Hand&family=Bangers&family=Caveat&family=Permanent+Marker&family=Special+Elite&family=Press+Start+2P&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
   <style>
     :root {
-      /* ── Surface scale ── */
-      --app-bg: #f5f4ff;
-      --window-bg: #ffffff;
-      --sidebar-bg: #faf9ff;
-      --panel-bg: #ffffff;
+      /* ── Surface scale — warm paper, picnic-adjacent ── */
+      --app-bg: #f6f1ea;
+      --window-bg: #fffdf9;
+      --sidebar-bg: #fffdf9;
+      --panel-bg: #fffdf9;
       --panel-bg-raised: #ffffff;
-      --canvas-matte: #ebeaff;
+      --canvas-matte: #ebe4da;
       /* ── Text ── */
-      --text-primary: #20204a;
-      --text-secondary: #54547a;
-      --text-muted: #737398;
-      --text-disabled: #aaaac2;
+      --text-primary: #1c1916;
+      --text-secondary: #5c564e;
+      --text-muted: #8a8378;
+      --text-disabled: #b7b0a5;
       /* ── Borders ── */
-      --border-subtle: rgba(48,47,117,.12);
-      --border-strong: rgba(48,47,117,.22);
-      /* ── Accent ── */
-      --accent: #4a43c4;
-      --accent-hover: #3d36b0;
-      --accent-active: #302a92;
-      --accent-ink: #3d36b0;
-      --accent-soft: rgba(74,67,196,.12);
-      --accent-glow: 0 0 0 3px rgba(74,67,196,.16);
+      --border-subtle: rgba(40, 32, 24, .10);
+      --border-strong: rgba(40, 32, 24, .18);
+      /* ── Accent — clay orange, like the picnic basket ── */
+      --accent: #e4572e;
+      --accent-hover: #d14822;
+      --accent-active: #b93c1b;
+      --accent-ink: #c2411a;
+      --accent-soft: rgba(228, 87, 46, .12);
+      --accent-glow: 0 0 0 3px rgba(228, 87, 46, .16);
       /* ── Sequence palette ── */
       --sequence-video: #6fc7ee; --sequence-audio-voice: #a78bfa;
       --sequence-audio-sfx: #34d399; --sequence-audio-music: #fbbf24;
-      --playhead: #4256d0;
+      --playhead: #e4572e;
       /* ── Aliases ── */
       --bg: var(--window-bg); --panel: var(--panel-bg); --line: var(--border-subtle);
       --ink: var(--text-primary); --dim: var(--text-muted);
@@ -43,24 +43,27 @@
       --space-1: 2px; --space-2: 4px; --space-3: 8px;
       --space-4: 12px; --space-5: 16px; --space-6: 24px; --space-7: 32px;
       /* ── Radius ── */
-      --radius-xs: 3px; --radius-sm: 5px; --radius-md: 8px;
-      --radius-lg: 11px; --radius-xl: 14px;
+      --radius-xs: 4px; --radius-sm: 7px; --radius-md: 11px;
+      --radius-lg: 16px; --radius-xl: 22px;
+      --radius-control: 5px; --radius-card: 10px; --radius-panel: 14px;
       /* ── Shadows ── */
-      --shadow-sm: 0 1px 2px rgba(15,23,42,.06), 0 0 0 .5px rgba(15,23,42,.05);
-      --shadow-md: 0 6px 18px rgba(15,23,42,.08), 0 0 0 .5px rgba(15,23,42,.05);
-      --shadow-lg: 0 18px 48px rgba(15,23,42,.14), 0 0 0 .5px rgba(15,23,42,.06);
-      --shadow-pop: 0 12px 32px rgba(15,23,42,.13), 0 0 0 .5px rgba(15,23,42,.07);
-      --shadow-inset: inset 0 1px 2px rgba(15,23,42,.06);
+      --shadow-sm: 0 1px 2px rgba(40, 28, 16, .05), 0 0 0 .5px rgba(40, 28, 16, .04);
+      --shadow-md: 0 8px 24px rgba(40, 28, 16, .08), 0 0 0 .5px rgba(40, 28, 16, .05);
+      --shadow-lg: 0 22px 56px rgba(40, 28, 16, .14), 0 0 0 .5px rgba(40, 28, 16, .06);
+      --shadow-pop: 0 14px 36px rgba(40, 28, 16, .12), 0 0 0 .5px rgba(40, 28, 16, .06);
+      --shadow-inset: inset 0 1px 2px rgba(40, 28, 16, .05);
       /* ── Z-index ── */
       --z-dropdown: 20; --z-sticky: 30; --z-modal-bg: 40;
       --z-modal: 50; --z-toast: 60; --z-tooltip: 70;
-      /* ── Motion ── */
-      --dur-fast: 100ms; --dur-normal: 160ms; --dur-slow: 260ms;
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      /* ── Motion — soft spring, slightly playful ── */
+      --dur-fast: 120ms; --dur-normal: 180ms; --dur-slow: 320ms;
+      --ease-out: cubic-bezier(0.22, 1.2, 0.36, 1);
       --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
       /* ── Type ── */
-      --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+      --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
       --font-ui: -apple-system, system-ui, "SF Pro Text", "Segoe UI", sans-serif;
+      --font-display: "Bangers", "Patrick Hand", system-ui, sans-serif;
+      --grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
     }
     * { box-sizing: border-box; }
     * { scrollbar-color: rgba(71,85,105,.35) transparent; }
@@ -89,13 +92,23 @@
       margin: 0; background: var(--app-bg); color: var(--ink);
       font-family: var(--font-ui);
       -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
-      display: grid; grid-template-rows: 44px 1fr; height: 100vh;
-      background: var(--app-bg);
+      display: grid; grid-template-rows: 48px 1fr; height: 100vh;
+      background-color: var(--app-bg);
+      background-image: var(--grain);
+      background-size: 180px 180px;
+      background-blend-mode: multiply;
     }
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      opacity: 0.35; mix-blend-mode: multiply;
+      background-image: var(--grain); background-size: 220px 220px;
+    }
+    body > * { position: relative; z-index: 1; }
     .topbar {
       display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-      height: 44px; padding: 0 16px; border-bottom: 1px solid var(--border-subtle);
-      background: rgba(255,255,255,.94);
+      height: 48px; padding: 0 18px; border-bottom: 1px solid var(--border-subtle);
+      background: rgba(255, 253, 249, .82);
+      backdrop-filter: saturate(140%) blur(18px); -webkit-backdrop-filter: saturate(140%) blur(18px);
       position: relative; z-index: var(--z-sticky);
     }
     .file-warning {
@@ -111,9 +124,9 @@
     .brand-lockup { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; }
     .brand-mark { width: 24px; height: 24px; flex: 0 0 auto; color: var(--accent-ink); }
     .brand-mark path { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
-    .wordmark { font-family: var(--font-ui); font-size: 13px;
-      letter-spacing: -0.035em; font-weight: 770; line-height: 1; color: var(--text-primary); }
-    .wordmark b { color: var(--accent-ink); font-weight: 770; }
+    .wordmark { font-family: var(--font-display); font-size: 18px;
+      letter-spacing: 0.04em; font-weight: 400; line-height: 1; color: var(--text-primary); }
+    .wordmark b { color: var(--accent-ink); font-weight: 400; }
     #file-name { color: var(--dim); font-size: 12px; overflow: hidden;
       white-space: nowrap; text-overflow: ellipsis; max-width: 42vw; }
     #dirty-dot { color: var(--accent-ink); font-size: 14px; line-height: 1; visibility: hidden; }
@@ -180,23 +193,36 @@
       box-shadow: inset 0 1px 0 rgba(255,255,255,.9); }
     .canvas-hint {
       position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      max-width: min(320px, calc(100% - 48px)); padding: 14px 16px;
-      background: var(--panel-bg-raised); border: 1px solid var(--border-strong);
-      border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+      max-width: min(280px, calc(100% - 56px)); padding: 28px 24px 20px;
+      background: rgba(255, 253, 249, .92); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl); box-shadow: var(--shadow-md);
       text-align: center; z-index: 2; pointer-events: auto;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     }
     .canvas-hint[hidden] { display: none; }
-    .canvas-hint p { margin: 0 0 10px; font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
+    .canvas-hint-mark {
+      width: 44px; height: 44px; margin: 0 auto 14px; color: var(--accent);
+      display: grid; place-items: center;
+    }
+    .canvas-hint-mark svg { width: 36px; height: 36px; }
+    .canvas-hint-title {
+      margin: 0 0 8px; font-family: var(--font-display); font-size: 28px;
+      letter-spacing: 0.04em; color: var(--text-primary); line-height: 1;
+    }
+    .canvas-hint-copy {
+      margin: 0 0 16px; font-size: 13px; line-height: 1.5; color: var(--text-secondary);
+    }
     .canvas-hint kbd {
       display: inline-block; padding: 1px 5px; border-radius: var(--radius-xs);
-      background: rgba(255,251,242,.06); border: 1px solid var(--border-subtle);
+      background: rgba(40, 32, 24, .05); border: 1px solid var(--border-subtle);
       font: 500 11px/1.4 var(--font-mono); color: var(--text-primary);
     }
     .canvas-hint-dismiss {
-      background: transparent; color: var(--text-muted); border: none;
-      font: inherit; font-size: 12px; cursor: pointer; padding: 4px 8px;
+      background: var(--accent); color: #fff; border: none; border-radius: var(--radius-md);
+      font: 650 12px/1 var(--font-ui); cursor: pointer; padding: 9px 16px;
     }
-    .canvas-hint-dismiss:hover { color: var(--text-primary); }
+    .canvas-hint-dismiss:hover { background: var(--accent-hover); }
+    .canvas-hint-dismiss:active { transform: scale(0.97); }
     #stage {
       height: 100%; max-height: calc(100vh - 190px); aspect-ratio: var(--canvas-aspect, 9 / 16);
       background: transparent; border: 1px solid var(--border-strong); border-radius: var(--radius-md);
@@ -308,7 +334,6 @@
     .left-sidebar { border-right: 1px solid rgba(255,251,242,.07); }
     .right-sidebar { border-left: 1px solid rgba(255,251,242,.07); background: #171717; }
     body.mode-edit .left-sidebar { padding: 10px 8px; }
-    body.mode-edit .left-sidebar > :not(.mode-rail) { display: none; }
     body.mode-edit .draw-only { display: none !important; }
     .mode-rail { display: none; gap: 6px; flex-direction: column; }
     body.mode-edit .mode-rail { display: flex; }
@@ -433,6 +458,31 @@
     .swatch:hover { transform: scale(1.12); }
     .swatch:active { transform: scale(0.95); }
     .swatch.active { border-color: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+    .swatch-transparent {
+      position: relative;
+      overflow: hidden;
+      background-color: #fff;
+      background-image:
+        linear-gradient(45deg, #cbd2dc 25%, transparent 25%),
+        linear-gradient(-45deg, #cbd2dc 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #cbd2dc 75%),
+        linear-gradient(-45deg, transparent 75%, #cbd2dc 75%);
+      background-size: 10px 10px;
+      background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+    }
+    .swatch-transparent::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      top: 50%;
+      height: 2px;
+      border-radius: 2px;
+      background: #e5484d;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.7);
+      transform: rotate(-45deg);
+      transform-origin: center;
+    }
     .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
     .control-row { display: flex; gap: 8px; align-items: center; justify-content: space-between;
       margin-top: 8px; font-size: 11px; color: var(--text-muted); min-height: 24px; }
@@ -714,20 +764,33 @@
     .about-overlay {
       position: fixed; inset: 0; z-index: var(--z-modal);
       display: none; align-items: center; justify-content: center;
-      padding: 24px; background: rgba(8,7,6,.62);
+      padding: 24px; background: rgba(40, 28, 16, .28);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     }
     .about-overlay.open { display: flex; }
     .about-sheet {
-      width: min(440px, calc(100vw - 48px)); padding: 22px 24px;
-      background: var(--panel-bg-raised); border: 1px solid var(--border-strong);
+      width: min(400px, calc(100vw - 48px)); padding: 36px 28px 24px;
+      background: #fffdf9; border: 1px solid var(--border-subtle);
       border-radius: var(--radius-xl); box-shadow: var(--shadow-lg);
+      text-align: center;
+      background-image: var(--grain); background-size: 180px 180px;
+      background-blend-mode: multiply;
     }
-    .about-sheet h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600;
-      color: var(--text-primary); letter-spacing: -0.01em; text-transform: none; }
-    .about-version { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; }
-    .about-body { font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+    .about-hero {
+      width: 56px; height: 56px; margin: 0 auto 18px; color: var(--accent);
+      display: grid; place-items: center;
+    }
+    .about-hero .brand-mark { width: 48px; height: 48px; }
+    .about-sheet h2 {
+      margin: 0 0 6px; font-family: var(--font-display); font-size: 34px;
+      font-weight: 400; letter-spacing: 0.04em; color: var(--text-primary);
+      text-transform: none;
+    }
+    .about-version { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+    .about-body { font-size: 14px; line-height: 1.55; color: var(--text-secondary); }
     .about-body p { margin: 0 0 10px; }
-    .about-actions { margin-top: 16px; display: flex; justify-content: flex-end; }
+    .about-credit { font-size: 12px; color: var(--text-muted); }
+    .about-actions { margin-top: 20px; display: flex; justify-content: center; }
     .audio-toolbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
     .audio-toolbar select { max-width: 180px; }
     #audio-status { color: var(--dim); font-size: 11px; overflow: hidden;
@@ -968,8 +1031,8 @@
     }
     .stage-area {
       background-color: var(--canvas-matte);
-      background-image: radial-gradient(rgba(74,67,196,.09) 1px, transparent 1px);
-      background-size: 18px 18px;
+      background-image: radial-gradient(rgba(40, 32, 24, .07) 1px, transparent 1px);
+      background-size: 16px 16px;
     }
     .brand-lockup:hover .brand-mark { transform: scale(1.06); }
     .brand-mark { transition: transform var(--dur-normal) var(--ease-out); }
@@ -1021,114 +1084,226 @@
     }
 
     /* ── Studio rebuild ────────────────────────────────────────────────
-       A compact, low-glare shell keeps focus on the animated artwork. The
-       canvas remains bright by design, while active tools use the project
-       violet as a precise state signal rather than decoration. */
+       Company Picnic–adjacent chrome: warm paper, soft grain, clay accent.
+       Canvas stays the hero; panels float quietly and advanced brush
+       controls stay collapsed until needed. */
     :root {
-      --app-bg: #10121a;
-      --window-bg: #151822;
-      --sidebar-bg: #181b26;
-      --panel-bg: #1d2130;
-      --panel-bg-raised: #232838;
-      --canvas-matte: #292e42;
-      --text-primary: #f3f5fb;
-      --text-secondary: #c4c9d9;
-      --text-muted: #9299ad;
-      --text-disabled: #62697d;
-      --border-subtle: rgba(203, 212, 235, .12);
-      --border-strong: rgba(203, 212, 235, .2);
-      --accent: #8c7cff;
-      --accent-hover: #a295ff;
-      --accent-active: #7665e8;
-      --accent-ink: #b5adff;
-      --accent-soft: rgba(140, 124, 255, .16);
-      --accent-glow: 0 0 0 3px rgba(140, 124, 255, .2);
-      --shadow-sm: 0 1px 2px rgba(0,0,0,.22);
-      --shadow-md: 0 12px 26px rgba(0,0,0,.28);
-      --shadow-lg: 0 24px 56px rgba(0,0,0,.42);
-      --shadow-pop: 0 16px 36px rgba(0,0,0,.36);
+      --app-bg: #f6f1ea;
+      --window-bg: #fffdf9;
+      --sidebar-bg: #fffdf9;
+      --panel-bg: #fffdf9;
+      --panel-bg-raised: #ffffff;
+      --canvas-matte: #ebe4da;
+      --text-primary: #1c1916;
+      --text-secondary: #5c564e;
+      --text-muted: #8a8378;
+      --text-disabled: #b7b0a5;
+      --border-subtle: rgba(40, 32, 24, .10);
+      --border-strong: rgba(40, 32, 24, .18);
+      --accent: #e4572e;
+      --accent-hover: #d14822;
+      --accent-active: #b93c1b;
+      --accent-ink: #c2411a;
+      --accent-soft: rgba(228, 87, 46, .12);
+      --accent-glow: 0 0 0 3px rgba(228, 87, 46, .16);
+      --playhead: #e4572e;
+      --shadow-sm: 0 1px 2px rgba(40, 28, 16, .05), 0 0 0 .5px rgba(40, 28, 16, .04);
+      --shadow-md: 0 8px 24px rgba(40, 28, 16, .08), 0 0 0 .5px rgba(40, 28, 16, .05);
+      --shadow-lg: 0 22px 56px rgba(40, 28, 16, .14), 0 0 0 .5px rgba(40, 28, 16, .06);
+      --shadow-pop: 0 14px 36px rgba(40, 28, 16, .12), 0 0 0 .5px rgba(40, 28, 16, .06);
     }
-    body { background: var(--app-bg); }
+    body {
+      background-color: var(--app-bg);
+      background-image: var(--grain);
+      background-size: 180px 180px;
+      background-blend-mode: multiply;
+    }
     .topbar {
-      background: rgba(21, 24, 34, .92);
+      background: rgba(255, 253, 249, .84);
       border-color: var(--border-subtle);
-      box-shadow: 0 1px 0 rgba(255,255,255,.03);
+      box-shadow: none;
     }
-    .wordmark, .wordmark b { color: var(--text-primary); }
+    .wordmark { color: var(--text-primary); }
+    .wordmark b { color: var(--accent-ink); }
     .brand-mark { color: var(--accent); }
-    .mode-switcher { background: #10131c; border-color: var(--border-subtle); }
+    .mode-switcher { background: rgba(40, 32, 24, .05); border-color: transparent; }
     .mode-button.active, .rail-button.active {
-      background: #2a2e40; border-color: rgba(181,173,255,.3); color: #fff;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 1px 2px rgba(0,0,0,.3);
+      background: #fff; border-color: var(--border-strong); color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
     }
     .menu-button { color: var(--text-secondary); }
-    .menu-button:hover, .menu-button.open { color: #fff; background: rgba(255,255,255,.07); border-color: var(--border-subtle); }
-    .stage-wrap { background: var(--app-bg); }
+    .menu-button:hover, .menu-button.open {
+      color: var(--text-primary); background: rgba(40, 32, 24, .05); border-color: var(--border-subtle);
+    }
+    .stage-wrap { background: transparent; }
     .stage-area {
       background-color: var(--canvas-matte);
-      background-image: radial-gradient(rgba(181,173,255,.13) 1px, transparent 1px);
-      border-color: rgba(181,173,255,.17);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
+      background-image: radial-gradient(rgba(40, 32, 24, .07) 1px, transparent 1px);
+      background-size: 16px 16px;
+      border-color: var(--border-subtle);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
     }
-    #stage { border-color: rgba(255,255,255,.38); box-shadow: 0 22px 44px rgba(0,0,0,.35); }
+    #stage {
+      border-color: rgba(40, 32, 24, .2);
+      box-shadow: 0 18px 40px rgba(40, 28, 16, .12);
+      background: #fff;
+    }
     .left-sidebar, .right-sidebar {
-      background: rgba(29,33,48,.96); border-color: rgba(203,212,235,.16) !important;
-      box-shadow: var(--shadow-pop), inset 0 1px 0 rgba(255,255,255,.035);
+      background: rgba(255, 253, 249, .94) !important;
+      border-color: var(--border-strong) !important;
+      box-shadow: var(--shadow-pop);
     }
     .sidebar-section, .section-details { border-color: var(--border-subtle); }
     .workspace-section > summary, #timeline-region > summary, .side-title { color: var(--text-primary); }
-    .tool-group-label, .section-details > summary, h2, .control-row, .control-check, .control-note { color: var(--text-secondary); }
+    .tool-group-label, .section-details > summary, h2, .control-row, .control-check, .control-note {
+      color: var(--text-secondary);
+    }
     .chip, .chip.tool, .brush-picker-trigger, .cellbtn, .dur, .frame-dur,
     .layer-name, .frame-group-repeat, .track-strip, .edit-timeline,
     .audio-timeline, .audio-track-head input[type=text], input[type=text],
     select, input[type=number] {
-      background: #151924; color: var(--text-primary); border-color: var(--border-subtle);
+      background: #fff; color: var(--text-primary); border-color: var(--border-subtle);
     }
     .chip.tool { color: var(--text-secondary); }
     .chip:hover, .chip.tool:hover, .brush-picker-trigger:hover, button.ghost:hover,
     .cellbtn:hover, .layer-row:hover:not(.active), .iconbtn:hover:not(:disabled),
-    .zoom-pill button:hover, .brush-option:hover, .brush-option:focus { background: #2a3042; color: #fff; }
+    .zoom-pill button:hover, .brush-option:hover, .brush-option:focus {
+      background: #f3ede4; color: var(--text-primary);
+    }
     .chip.active, .cellbtn.active, .layer-row.active, .brush-option.active {
-      color: #fff; border-color: rgba(181,173,255,.6); background: var(--accent-soft);
+      color: var(--accent-ink); border-color: rgba(228, 87, 46, .45); background: var(--accent-soft);
     }
     .file-menu, .brush-menu, .command-palette, .toast, .export-sheet, .about-sheet, .canvas-hint {
-      background: #232838; border-color: rgba(203,212,235,.2); color: var(--text-primary);
+      background: #fffdf9; border-color: var(--border-strong); color: var(--text-primary);
     }
     .menu-item { color: var(--text-primary); }
     .menu-item:hover:not(:disabled) { background: var(--accent); color: #fff; }
     .menu-item small, .file-menu .menu-item small { color: var(--text-muted); }
-    #timeline { background: #1d2130; border-color: var(--border-subtle); box-shadow: var(--shadow-sm); }
-    #timeline-region:not([open]) { background: #1d2130; border-color: var(--border-subtle); }
+    #timeline { background: #fffdf9; border-color: var(--border-subtle); box-shadow: var(--shadow-sm); }
+    #timeline-region:not([open]) { background: #fffdf9; border-color: var(--border-subtle); }
     .timeline-tabs, .timeline-transport, .onion-skin-bar { border-color: var(--border-subtle); }
-    .timeline-transport button, .panel-cell { background: #171b27; border-color: var(--border-subtle); color: var(--text-secondary); }
-    .timeline-transport button:hover, .panel-cell:hover { background: #282e40; border-color: rgba(203,212,235,.25); color: #fff; }
-    .panel-cell.active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(140,124,255,.34), var(--accent-glow); }
-    .add-panel { border-color: rgba(203,212,235,.26); color: var(--text-muted); }
-    .zoom-pill { background: rgba(29,33,48,.92); border-color: rgba(203,212,235,.2); }
+    .timeline-transport button, .panel-cell {
+      background: #fff; border-color: var(--border-subtle); color: var(--text-secondary);
+    }
+    .timeline-transport button:hover, .panel-cell:hover {
+      background: #f3ede4; border-color: var(--border-strong); color: var(--text-primary);
+    }
+    .panel-cell.active {
+      border-color: var(--accent); box-shadow: 0 0 0 1px rgba(228, 87, 46, .28), var(--accent-glow);
+    }
+    .add-panel { border-color: rgba(40, 32, 24, .22); color: var(--text-muted); }
+    .zoom-pill {
+      background: rgba(255, 253, 249, .92); border-color: var(--border-strong);
+    }
     .zoom-pill button { color: var(--text-secondary); }
-    input[type=range] { background: #454c61; }
-    input[type=range]::-webkit-slider-thumb { background: var(--accent); border-color: #1d2130; }
-    .file-warning, .recovery-prompt { background: #3b2c21; border-color: #bc7445; color: #fff0e6; }
+    input[type=range] { background: #d9d1c5; }
+    input[type=range]::-webkit-slider-thumb { background: var(--accent); border-color: #fff; }
+    .file-warning, .recovery-prompt {
+      background: #fff7ed; border-color: rgba(228, 87, 46, .35); color: var(--text-primary);
+    }
     .right-sidebar #status { border-color: var(--border-subtle); }
+    .timeline-transport button.transport-primary { color: #fff; }
+    .timeline-transport button.transport-primary:hover { color: #fff; background: var(--accent-hover); }
+
+    /* Collapsed advanced brush groups */
+    .sidebar-fold {
+      border-top: 1px solid var(--border-subtle);
+      padding: 4px 0 2px;
+      margin-top: 4px;
+    }
+    .sidebar-fold > summary {
+      list-style: none; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; gap: 8px;
+      color: var(--text-secondary); font: 650 11px/1.2 var(--font-ui);
+      padding: 8px 2px;
+    }
+    .sidebar-fold > summary::-webkit-details-marker { display: none; }
+    .sidebar-fold > summary::after {
+      content: ""; width: 9px; height: 9px; flex: 0 0 9px; background: currentColor;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1.5l4 3.5-4 3.5' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1.5l4 3.5-4 3.5' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
+      transition: transform var(--dur-normal) var(--ease-out);
+    }
+    .sidebar-fold[open] > summary::after { transform: rotate(90deg); }
+    .sidebar-fold > summary:hover { color: var(--accent-ink); }
+    .sidebar-fold-body { padding: 2px 0 8px; }
+
+    /* Dense single tool strip */
+    .visually-hidden {
+      position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+    .tools-section > summary.visually-hidden { display: none; }
+    #timeline-region > summary.visually-hidden { display: none; }
+    .tool-strip {
+      display: flex; flex-direction: column; gap: 0; margin-bottom: 4px;
+    }
+    .tool-strip .tool-grid {
+      display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px;
+    }
+    .tool-strip-gap {
+      height: 1px; margin: 8px 2px; background: var(--border-subtle);
+    }
+    .brush-essentials {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 12px;
+    }
+    .brush-essentials .size-row { margin-top: 10px; }
+    .control-val {
+      font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 11px;
+    }
+    .palette-section {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 12px; margin-top: 4px;
+    }
+    .timeline-transport {
+      gap: 4px; padding: 8px;
+      flex-wrap: wrap;
+    }
+    .timeline-transport button.transport-icon {
+      min-width: 32px; width: 32px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .timeline-transport button.transport-primary.transport-icon {
+      min-width: 40px; width: 40px;
+    }
+    .timeline-transport .transport-command {
+      font-size: 11px; padding: 4px 8px; min-width: 0;
+    }
+    .onion-skin-bar {
+      flex-wrap: wrap; gap: 6px; padding: 6px 8px;
+    }
+    .onion-skin-bar select { max-width: 72px; }
+
+    .rail-button {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 48px; height: 48px; padding: 0;
+    }
+    .undo-redo-group button {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 30px; height: 30px; color: var(--text-secondary);
+    }
+    .chip.tool svg, .iconbtn svg, .rail-button svg { color: inherit; }
+
     /* ── Range inputs ── */
     input[type=range] { -webkit-appearance: none; appearance: none; height: 4px;
-      background: rgba(255,251,242,.1); border-radius: 2px; outline: none; }
+      background: #d9d1c5; border-radius: 2px; outline: none; }
     input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px;
-      border-radius: 50%; background: var(--text-secondary); border: 2px solid var(--panel-bg);
-      box-shadow: 0 1px 3px rgba(0,0,0,.35); cursor: pointer;
+      border-radius: 50%; background: var(--accent); border: 2px solid #fff;
+      box-shadow: 0 1px 3px rgba(40, 28, 16, .2); cursor: pointer;
       transition: background var(--dur-fast) var(--ease-standard),
         transform var(--dur-fast) var(--ease-out); }
-    input[type=range]::-webkit-slider-thumb:hover { background: var(--text-primary);
+    input[type=range]::-webkit-slider-thumb:hover { background: var(--accent-hover);
       transform: scale(1.15); }
-    input[type=range]::-webkit-slider-thumb:active { background: var(--accent);
+    input[type=range]::-webkit-slider-thumb:active { background: var(--accent-active);
       transform: scale(1.05); }
     input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--accent); }
 
     /* ── Scrollbar refinement ── */
     *::-webkit-scrollbar { width: 8px; height: 8px; }
-    *::-webkit-scrollbar-thumb { background: rgba(71,85,105,.24); border-radius: 999px;
+    *::-webkit-scrollbar-thumb { background: rgba(40, 32, 24, .18); border-radius: 999px;
       border: 2px solid transparent; background-clip: padding-box; }
-    *::-webkit-scrollbar-thumb:hover { background: rgba(71,85,105,.42);
+    *::-webkit-scrollbar-thumb:hover { background: rgba(40, 32, 24, .32);
       border: 2px solid transparent; background-clip: padding-box; }
 
     /* ── Responsive ── */
@@ -1196,12 +1371,11 @@
         max-height: calc(100vh - 280px);
       }
       .canvas-hint {
-        max-width: min(180px, calc(100% - 24px));
-        padding: 10px 12px;
+        max-width: min(220px, calc(100% - 24px));
+        padding: 20px 16px 16px;
       }
-      .canvas-hint p {
-        font-size: 12px;
-      }
+      .canvas-hint-title { font-size: 24px; }
+      .canvas-hint-copy { font-size: 12px; }
       .timeline-transport {
         gap: 5px;
       }
@@ -1218,72 +1392,37 @@
     /* ── Movable workspace panels ───────────────────────────────────── */
     .stage-wrap { grid-template-rows: auto minmax(0, 1fr); }
     .workspace-panel {
-      position: fixed; z-index: var(--z-sticky); margin: 0;
-      border: 1px solid rgba(203,212,235,.16) !important;
-      border-radius: var(--radius-lg); background: #1d2130;
-      box-shadow: var(--shadow-pop), inset 0 1px 0 rgba(255,255,255,.035);
+      --workspace-panel-layer: 0;
+      position: fixed; z-index: calc(var(--z-sticky) + var(--workspace-panel-layer)); margin: 0;
+      border: 1px solid var(--border-strong) !important;
+      border-radius: var(--radius-lg); background: rgba(255, 253, 249, .96);
+      box-shadow: var(--shadow-pop);
       container-type: inline-size;
       resize: both;
       min-width: 196px;
       min-height: 72px;
       max-width: calc(100vw - 16px);
       max-height: calc(100vh - 60px);
+      cursor: default;
     }
-    .workspace-panel.is-front { z-index: calc(var(--z-sticky) + 1); }
-    .workspace-panel.is-moving { box-shadow: var(--shadow-lg); }
-    .workspace-panel-titlebar {
-      height: 32px; display: flex; align-items: center; justify-content: space-between;
-      gap: 8px; padding: 0 10px; margin: -4px -4px 8px;
-      color: var(--text-secondary); border-radius: 8px 8px 4px 4px;
-      font: 650 11px/1 var(--font-ui); cursor: grab; touch-action: none;
+    .workspace-panel:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
     }
-    .workspace-panel-titlebar:hover { color: var(--text-primary); background: rgba(255,255,255,.045); }
-    .workspace-panel-titlebar:active, .workspace-panel.is-moving .workspace-panel-titlebar { cursor: grabbing; }
-    .workspace-panel-grip {
-      width: 24px; overflow: hidden; color: var(--text-disabled);
-      font: 700 10px/6px var(--font-mono); letter-spacing: 1px;
+    .workspace-panel.is-moving {
+      box-shadow: var(--shadow-lg); cursor: grabbing; user-select: none;
     }
-    .workspace-anchor-select {
-      appearance: none; width: 58px; min-width: 0; padding: 3px 17px 3px 6px;
-      border: 1px solid rgba(203,212,235,.16); border-radius: 5px;
-      color: var(--text-muted); background: rgba(255,255,255,.035)
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23a7b7d8' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") right 5px center/8px no-repeat;
-      font: 650 10px/1 var(--font-ui); cursor: pointer;
-    }
-    .workspace-anchor-select:hover, .workspace-anchor-select:focus-visible {
-      color: var(--text-primary); border-color: var(--accent); outline: none;
-    }
-    .workspace-dock-targets {
-      position: fixed; inset: 52px 8px 8px; z-index: calc(var(--z-sticky) + 2);
-      pointer-events: none; opacity: 0; transition: opacity var(--dur-fast) var(--ease-standard);
-    }
-    .workspace-dock-targets.is-visible { opacity: 1; }
-    .workspace-dock-target {
-      position: absolute; display: grid; place-items: center; width: 82px; height: 52px;
-      border: 1px dashed rgba(203,212,235,.35); border-radius: 8px;
-      color: var(--text-muted); background: rgba(29,33,48,.88); font: 650 10px/1 var(--font-ui);
-      box-shadow: var(--shadow-sm); transition: border-color var(--dur-fast) var(--ease-standard),
-        color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
-    }
-    .workspace-dock-target[data-anchor$="left"] { left: 0; }
-    .workspace-dock-target[data-anchor$="center"] { left: 50%; transform: translateX(-50%); }
-    .workspace-dock-target[data-anchor$="right"] { right: 0; }
-    .workspace-dock-target[data-anchor^="top"] { top: 0; }
-    .workspace-dock-target[data-anchor^="bottom"] { bottom: 0; }
-    .workspace-dock-target.is-active { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
     .left-sidebar {
-      left: 16px; right: auto; top: 56px; height: auto; width: min(250px, calc(100vw - 32px));
-      padding: 8px 12px 12px; overflow: auto; background: #1d2130;
+      left: 16px; right: auto; top: 60px; height: auto; width: min(248px, calc(100vw - 32px));
+      padding: 8px 12px 12px; overflow: auto; background: rgba(255, 253, 249, .96);
     }
     .timeline-panel {
-      left: 278px; top: 56px; height: auto; width: min(220px, calc(100vw - 32px));
+      left: 278px; top: 60px; height: auto; width: min(220px, calc(100vw - 32px));
       padding: 8px; overflow: hidden; display: flex; flex-direction: column;
     }
     .right-sidebar {
-      left: auto; right: 16px; top: 56px; height: auto; width: min(272px, calc(100vw - 32px));
-      padding: 8px 12px 12px; overflow: auto; background: #1d2130;
+      left: auto; right: 16px; top: 60px; height: auto; width: min(272px, calc(100vw - 32px));
+      padding: 8px 12px 12px; overflow: auto; background: rgba(255, 253, 249, .96);
     }
-    body.mode-edit .left-sidebar .workspace-panel-titlebar { display: flex !important; }
     #timeline-region { min-height: 0; flex: 1; display: flex; flex-direction: column; }
     #timeline-region > summary { flex: 0 0 auto; padding: 2px 2px 8px; }
     #timeline-region:not([open]) { width: auto; padding: 0; background: transparent; border: 0; box-shadow: none; }
@@ -1479,6 +1618,438 @@
       color: var(--text-muted); font-size: 10px;
     }
 
+    /* ── Floating command pills + modular Inspector ─────────────────── */
+    body { display: block; height: 100vh; overflow: hidden; }
+    .app-grid { height: 100vh; }
+    .topbar {
+      position: fixed; inset: 8px 12px auto; height: 36px; z-index: calc(var(--z-modal-bg) - 1);
+      display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center; gap: 10px; padding: 0;
+      background: transparent; border: 0; box-shadow: none;
+      backdrop-filter: none; -webkit-backdrop-filter: none;
+      pointer-events: none;
+    }
+    .topbar-cluster,
+    .topbar-center .mode-switcher {
+      min-height: 36px; border: 1px solid var(--border-strong);
+      background: rgba(255, 253, 249, .94); box-shadow: var(--shadow-pop);
+      backdrop-filter: saturate(140%) blur(18px);
+      -webkit-backdrop-filter: saturate(140%) blur(18px);
+      pointer-events: auto;
+    }
+    .topbar-cluster {
+      width: max-content; max-width: 100%; display: flex; align-items: center;
+      gap: 4px; padding: 3px 5px; border-radius: var(--radius-lg);
+    }
+    .topbar-left { justify-self: start; }
+    .topbar-center { justify-self: center; pointer-events: auto; }
+    .topbar-center .mode-switcher {
+      border-radius: var(--radius-lg); padding: 3px; background: rgba(255, 253, 249, .94);
+    }
+    .topbar-menus { justify-self: end; }
+    .topbar .brand-lockup { gap: 5px; padding: 0 3px; }
+    .topbar .brand-mark { width: 20px; height: 20px; }
+    .topbar .wordmark { font-size: 16px; }
+    .topbar .menu-button { min-height: 28px; padding: 4px 7px; }
+    .topbar .file-menu { top: calc(100% + 7px); }
+    .topbar-menus .menu-wrap:last-child .file-menu { left: auto; right: 0; }
+    .stage-wrap { height: 100vh; padding: 48px 16px 16px; }
+    #stage { max-height: calc(100vh - 64px); }
+    .toolbox-panel, .left-sidebar, .timeline-panel, .right-sidebar { top: 52px; }
+    #project-board { inset: 0; }
+    .project-board-toolbar { top: 56px; }
+
+    /* Photoshop-like vertical toolbox with modular settings beside it. */
+    .toolbox-panel {
+      left: 16px; width: 52px; min-width: 52px; max-width: 52px;
+      min-height: 72px; height: auto; padding: 6px;
+      overflow-x: hidden; overflow-y: auto; resize: none;
+      background: rgba(255, 253, 249, .96);
+    }
+    .toolbox-panel .mode-rail { display: none !important; }
+    .toolbox-panel .tool-strip { margin: 0; gap: 0; }
+    .toolbox-panel .tool-grid,
+    .toolbox-panel #tools-draw,
+    .toolbox-panel #tools-edit,
+    .toolbox-panel #tools-insert {
+      display: grid; grid-template-columns: 1fr; gap: 4px;
+    }
+    .toolbox-panel .chip.tool {
+      width: 40px; min-width: 40px; min-height: 38px; padding: 0;
+      display: grid; place-items: center;
+    }
+    .toolbox-panel .tool-strip-gap { margin: 6px 4px; }
+    .settings-group {
+      left: 78px; right: auto; width: min(282px, calc(100vw - 94px));
+      bottom: auto; max-height: calc(100vh - 68px);
+      padding: 8px 12px 12px; overflow: auto;
+    }
+    body.mode-edit .settings-group {
+      width: min(282px, calc(100vw - 94px)); padding: 8px 12px 12px;
+    }
+    .settings-group .brush-essentials {
+      border: 0; margin: 0; padding: 9px 0 2px;
+    }
+    .settings-group .palette-section { margin-top: 0; padding-top: 10px; }
+    .settings-group .section-body { min-width: 0; }
+    .settings-group .control-row { min-width: 0; }
+    .timeline-panel { left: 372px; }
+
+    /* Controls adapt to the panel instead of forcing a single long column. */
+    .responsive-controls {
+      display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
+      align-items: center;
+    }
+    .range-control {
+      min-width: 0; display: grid;
+      grid-template-columns: minmax(72px, .55fr) minmax(96px, 1fr);
+      gap: 10px; align-items: center;
+    }
+    .range-control > .control-row { margin: 0; }
+    .range-control > input[type=range] { width: 100%; min-width: 0; }
+    .check-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+      gap: 6px 10px;
+    }
+    .compact-check {
+      min-height: 26px; padding: 3px 0;
+    }
+    #brush-presets .brush-preset-actions {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px;
+    }
+    #brush-presets .brush-preset-actions .chip {
+      min-width: 0; padding-inline: 5px;
+    }
+    .settings-group #palette {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(22px, 1fr)); gap: 5px;
+    }
+    .settings-group #palette .swatch { width: 100%; min-width: 22px; }
+
+    .inspector-group {
+      overflow: auto;
+      transition: outline-color var(--dur-normal) var(--ease-standard),
+        box-shadow var(--dur-normal) var(--ease-standard);
+    }
+    .inspector-group.module-drop-ready {
+      outline: 2px solid var(--accent); outline-offset: 3px;
+      box-shadow: var(--shadow-lg), var(--accent-glow);
+    }
+    .inspector-group.module-drop-ready::before {
+      content: "Release to join"; position: absolute; left: 50%; top: -30px;
+      transform: translateX(-50%); padding: 5px 9px; border-radius: 999px;
+      background: var(--accent); color: #fff; box-shadow: var(--shadow-sm);
+      font: 650 10px/1 var(--font-ui); white-space: nowrap; pointer-events: none;
+    }
+    .inspector-module {
+      position: relative; border-top: 1px solid var(--border-subtle);
+      padding: 10px 0 7px;
+    }
+    .inspector-module:first-of-type { border-top: 0; padding-top: 0; }
+    .inspector-module > summary {
+      position: relative; display: flex; align-items: center; gap: 4px;
+      min-width: 0; padding-right: 0; cursor: pointer; touch-action: manipulation;
+    }
+    .inspector-module > summary::after {
+      order: 3; flex: 0 0 10px; margin-left: 2px;
+    }
+    .module-summary-label {
+      order: 1; flex: 1 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .inspector-module.is-module-dragging { opacity: .82; }
+    .inspector-module.module-drop-before::before,
+    .inspector-module.module-drop-after::after {
+      content: ""; position: absolute; left: 0; right: 0; height: 3px;
+      border-radius: 999px; background: var(--accent); box-shadow: var(--accent-glow);
+      pointer-events: none;
+    }
+    .inspector-module.module-drop-before::before { top: -2px; }
+    .inspector-module.module-drop-after::after { bottom: -2px; }
+    .module-popout {
+      position: static; z-index: 2; order: 2; flex: 0 0 20px;
+      width: 20px; height: 20px; padding: 0; display: none; place-items: center;
+      border: 1px solid transparent; border-radius: var(--radius-sm);
+      background: transparent; color: var(--text-muted); cursor: pointer;
+      opacity: 0; transition: opacity var(--dur-fast), color var(--dur-fast),
+        background var(--dur-fast), border-color var(--dur-fast);
+    }
+    .module-drag-handle {
+      position: static; z-index: 2; order: 0; flex: 0 0 18px;
+      width: 18px; height: 20px; margin-right: 2px; padding: 0;
+      display: none; place-items: center;
+      border: 1px solid transparent; border-radius: var(--radius-control);
+      background: transparent; color: var(--text-muted); cursor: grab;
+      opacity: 0; pointer-events: none;
+      transition: opacity var(--dur-fast), color var(--dur-fast),
+        background var(--dur-fast), border-color var(--dur-fast);
+    }
+    .module-drag-handle:active { cursor: grabbing; }
+    .inspector-module:hover > summary > .module-popout,
+    .inspector-module > summary:focus-visible > .module-popout,
+    .module-popout:focus-visible {
+      display: grid; opacity: 1;
+    }
+    .inspector-module:hover > summary > .module-drag-handle,
+    .inspector-module > summary:focus-visible > .module-drag-handle,
+    .module-drag-handle:focus-visible {
+      display: grid; opacity: 1; pointer-events: auto;
+      transition-delay: 0s;
+    }
+    .module-drag-handle:hover, .module-drag-handle:focus-visible,
+    .module-popout:hover, .module-popout:focus-visible {
+      color: var(--accent-ink); background: var(--accent-soft);
+      border-color: rgba(228, 87, 46, .32);
+    }
+    .inspector-module-panel {
+      width: min(272px, calc(100vw - 32px)); min-height: 72px;
+      padding: 8px 12px 12px;
+    }
+    .inspector-module-panel:not(:has(> .inspector-module[open])) {
+      bottom: auto; height: auto; min-height: 0; overflow: hidden; resize: none;
+    }
+    .inspector-module-panel[hidden] { display: none; }
+
+    /* ── Consistent radius hierarchy ───────────────────────────────── */
+    .workspace-panel,
+    .topbar-cluster,
+    .topbar-center .mode-switcher,
+    .project-board-toolbar {
+      border-radius: var(--radius-panel);
+    }
+    .layer-row,
+    .panel-cell,
+    .frame-group-bracket,
+    .brush-menu,
+    .file-menu {
+      border-radius: var(--radius-card);
+    }
+    .chip,
+    .chip.tool,
+    .cellbtn,
+    .iconbtn,
+    .menu-button,
+    .mode-button,
+    .rail-button,
+    .brush-picker-trigger,
+    .add-panel,
+    input[type=text],
+    input[type=number],
+    select {
+      border-radius: var(--radius-control);
+    }
+    .layer-row .iconbtn,
+    .panel-cell .iconbtn,
+    .timeline-transport button,
+    .module-popout,
+    .module-drag-handle {
+      border-radius: var(--radius-xs);
+    }
+
+    /* Active layers reflow their controls instead of squeezing into one row. */
+    .layer-expanded {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px 8px; align-items: center;
+    }
+    .layer-expanded .layer-op { grid-column: 1; width: 100%; }
+    .layer-expanded .layer-op-label { grid-column: 2; min-width: 34px; }
+    .layer-expanded .layer-actions {
+      grid-column: 1 / -1;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(26px, 1fr));
+      gap: 4px;
+    }
+    .layer-expanded .layer-actions .iconbtn {
+      width: 100%; min-width: 26px; min-height: 26px;
+    }
+
+    /* ── Compact, absorbable timeline module ───────────────────────── */
+    .timeline-panel {
+      left: 372px; bottom: auto; width: min(252px, calc(100vw - 32px));
+      max-height: calc(100vh - 68px); padding: 8px 10px 10px;
+      overflow: auto;
+    }
+    .timeline-panel[hidden] { display: none; }
+    #timeline-region {
+      min-height: 0; display: block; padding-bottom: 0;
+    }
+    #timeline-region > summary { padding-block: 2px 8px; }
+    #timeline-region:not([open]) {
+      width: auto; justify-self: stretch; box-shadow: none;
+      border: 0; padding: 0; background: transparent;
+    }
+    #timeline-region:not([open]) > summary { padding-bottom: 2px; }
+    #timeline-region:not([open]) > .section-body { display: none; }
+    .timeline-panel:has(> #timeline-region:not([open])) {
+      bottom: auto; height: auto; min-height: 0; max-height: none;
+      padding-block: 8px; overflow: hidden; resize: none;
+    }
+    .timeline-module .section-body { padding-top: 2px; }
+    .timeline-module #timeline {
+      display: grid; min-width: 0; min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 0; border-radius: 0; background: transparent;
+    }
+    .timeline-module .timeline-transport {
+      display: grid; grid-template-columns: repeat(3, 30px) minmax(42px, 1fr);
+      align-items: center; gap: 5px; padding: 4px 0 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .timeline-module .timeline-transport button {
+      width: 30px; min-width: 30px; min-height: 30px; padding: 0;
+      display: grid; place-items: center;
+    }
+    .timeline-module .timeline-transport button[hidden] { display: none; }
+    .timeline-module .timeline-transport .transport-command {
+      grid-column: 1 / -1; width: 100%; padding-inline: 8px;
+    }
+    .timeline-module .timeline-transport .frame-counter {
+      grid-column: 4; margin: 0; text-align: right; white-space: nowrap;
+    }
+    .timeline-module .timeline-filmstrip {
+      display: flex; flex-direction: column; align-items: stretch;
+      min-height: 0; max-height: min(48vh, 390px);
+      gap: 6px; overflow-x: hidden; overflow-y: auto; padding: 8px 0;
+    }
+    .timeline-module .panel-cell {
+      width: 100%; display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      column-gap: 9px; row-gap: 5px; align-items: start; padding: 7px;
+    }
+    .timeline-module .panel-cell canvas {
+      grid-column: 1; grid-row: 1 / span 3;
+      width: 48px; height: auto; justify-self: center;
+      border-radius: var(--radius-xs);
+    }
+    .timeline-module .panel-cell > div:not(.exposure-control):not(.panel-cell-actions),
+    .timeline-module .exposure-control,
+    .timeline-module .duration-ms-details {
+      grid-column: 2;
+    }
+    .timeline-module .exposure-control {
+      justify-content: flex-start !important; flex-wrap: nowrap !important;
+    }
+    .timeline-module .exposure-control .cellbtn { display: none; }
+    .timeline-module .panel-cell-actions {
+      grid-column: 1 / -1;
+      display: grid !important;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 3px !important; opacity: 0; max-height: 0; overflow: hidden;
+    }
+    .timeline-module .panel-cell.active .panel-cell-actions { max-height: 0; }
+    .timeline-module .panel-cell:hover .panel-cell-actions,
+    .timeline-module .panel-cell:focus-within .panel-cell-actions {
+      opacity: 1; max-height: 32px;
+    }
+    .timeline-module .panel-cell-actions .iconbtn {
+      width: 100%; min-width: 24px; min-height: 26px;
+    }
+    .timeline-module .add-panel {
+      width: 100%; min-height: 34px; font-size: 16px;
+    }
+    .timeline-module .onion-skin-bar {
+      display: block; padding: 0; border-top: 1px solid var(--border-subtle);
+      background: transparent;
+    }
+    .timeline-module .onion-skin-summary {
+      list-style: none; display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 2px 2px; cursor: pointer;
+      color: var(--text-secondary); font: 650 10px/1.2 var(--font-ui);
+    }
+    .timeline-module .onion-skin-summary::-webkit-details-marker { display: none; }
+    .timeline-module .onion-skin-state {
+      color: var(--text-muted); font-weight: 550;
+    }
+    .timeline-module .onion-skin-controls {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: center; gap: 6px; padding: 8px 0 2px;
+    }
+    .timeline-module .onion-skin-controls label { min-width: 0; }
+    .timeline-module .onion-skin-controls label:first-child { grid-column: 1 / -1; }
+    .timeline-module .onion-skin-controls select { width: 100%; min-width: 0; }
+    .timeline-module .onion-skin-controls input[type=range] {
+      grid-column: 1 / -1; width: 100%;
+    }
+    .timeline-module .frame-group-cells { flex-direction: column; }
+    .timeline-module .panel-cell.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
+    .timeline-module .panel-cell.drop-after { box-shadow: 0 3px 0 0 var(--accent); }
+
+    /* Wider timeline groups recover a horizontal filmstrip and quick durations. */
+    @container (min-width: 400px) {
+      .timeline-module .timeline-filmstrip {
+        flex-direction: row; align-items: stretch; max-height: none;
+        overflow-x: auto; overflow-y: hidden; padding: 9px 0;
+      }
+      .timeline-module .panel-cell {
+        width: 86px; flex: 0 0 86px;
+        grid-template-columns: 1fr; row-gap: 5px;
+      }
+      .timeline-module .panel-cell canvas {
+        grid-column: 1; grid-row: auto; width: 60px;
+      }
+      .timeline-module .panel-cell > div:not(.exposure-control):not(.panel-cell-actions),
+      .timeline-module .exposure-control,
+      .timeline-module .duration-ms-details,
+      .timeline-module .panel-cell-actions {
+        grid-column: 1;
+      }
+      .timeline-module .exposure-control {
+        justify-content: center !important; flex-wrap: wrap !important;
+      }
+      .timeline-module .exposure-control .cellbtn { display: inline-flex; }
+      .timeline-module .panel-cell-actions {
+        display: flex !important; overflow-x: auto;
+      }
+      .timeline-module .add-panel { width: 54px; min-height: auto; }
+      .timeline-module .frame-group-cells { flex-direction: row; }
+      .timeline-module .panel-cell.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
+      .timeline-module .panel-cell.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
+    }
+
+    @container (min-width: 360px) {
+      .inspector-group .responsive-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .inspector-group .responsive-controls > .check-grid,
+      .inspector-group .responsive-controls > .control-note {
+        grid-column: 1 / -1;
+      }
+      .inspector-group .range-control {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+      }
+      .inspector-module-panel {
+        width: min(420px, calc(100vw - 32px));
+      }
+    }
+    @container (max-width: 250px) {
+      .inspector-group .range-control { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+      #brush-presets .brush-preset-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .topbar { inset-inline: 8px; gap: 6px; }
+      .topbar .wordmark, .topbar #file-name, .topbar #dirty-dot { display: none; }
+      .topbar-cluster { padding-inline: 3px; }
+      .topbar .menu-button { padding-inline: 5px; }
+      .topbar .mode-button { min-width: 56px; }
+      .toolbox-panel { left: 8px; }
+      .settings-group { left: 66px; width: min(246px, calc(100vw - 74px)); }
+      body.mode-edit .settings-group { width: min(246px, calc(100vw - 74px)); }
+      .timeline-panel {
+        left: 66px; right: auto; top: auto; bottom: 8px;
+        width: min(246px, calc(100vw - 74px)); max-height: min(46vh, 360px);
+      }
+      .right-sidebar {
+        right: 8px; width: min(246px, calc(100vw - 16px));
+        max-height: calc(100vh - 68px);
+      }
+    }
+    @media (max-width: 560px) {
+      .topbar .undo-redo-group,
+      .topbar-menus .menu-wrap:last-child { display: none; }
+      .topbar { grid-template-columns: auto auto auto; }
+      .topbar-menus { min-width: 0; }
+    }
+
     /* Per-frame dialogue and sequence notes. */
     .panel-annotation-toggle {
       width: 100%; min-height: 24px; padding: 3px 6px;
@@ -1527,36 +2098,38 @@
 </head>
 <body>
   <div id="file-warning" class="file-warning">
-    <strong>WiggleStudio is running from a raw file.</strong>
+    <strong>Wiggle GPL is running from a raw file.</strong>
     The editor needs the Vite or Electron app server to load its TypeScript modules.
     Run <code>npm run dev</code> and open <code>http://127.0.0.1:5173/</code>, or launch the Electron app.
   </div>
   <header class="topbar">
-    <div class="topbar-left">
-      <div class="brand-lockup" aria-label="Wiggle Studio">
+    <div class="topbar-left topbar-cluster">
+      <div class="brand-lockup" aria-label="Wiggle GPL">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
           <path d="M4 17c3-8 6-8 9 0s6 8 9 0 5-8 6-2" stroke-width="2.4" />
         </svg>
-        <div class="wordmark">WIGGLE <b>STUDIO</b></div>
+        <div class="wordmark">WIGGLE <b>GPL</b></div>
       </div>
       <button id="project-board-button" class="menu-button" type="button">Projects</button>
       <span id="file-name">Untitled</span>
       <span id="dirty-dot">●</span>
     </div>
-    <div class="menu-wrap">
-      <button id="file-menu-button" class="menu-button" type="button">File ▾</button>
-      <div id="file-menu" class="file-menu"></div>
-    </div>
-    <div class="topbar-menus">
-      <div class="undo-redo-group">
-        <button id="undo-btn" class="ghost" type="button" title="Undo (⌘Z)" aria-label="Undo">↶</button>
-        <button id="redo-btn" class="ghost" type="button" title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
-      </div>
+    <div class="topbar-center">
       <div class="mode-switcher" role="tablist" aria-label="Workspace">
         <button id="mode-draw" class="mode-button active" type="button" role="tab"
           aria-selected="true" aria-controls="workspace-main">Draw</button>
         <button id="mode-edit" class="mode-button" type="button" role="tab"
           aria-selected="false" aria-controls="workspace-main" tabindex="-1">Edit</button>
+      </div>
+    </div>
+    <div class="topbar-menus topbar-cluster">
+      <div class="menu-wrap">
+        <button id="file-menu-button" class="menu-button" type="button">File ▾</button>
+        <div id="file-menu" class="file-menu"></div>
+      </div>
+      <div class="undo-redo-group">
+        <button id="undo-btn" class="ghost iconbtn" type="button" title="Undo (⌘Z)" aria-label="Undo"></button>
+        <button id="redo-btn" class="ghost iconbtn" type="button" title="Redo (⇧⌘Z)" aria-label="Redo"></button>
       </div>
       <div class="menu-wrap">
         <button id="export-menu-button" class="menu-button" type="button">Export ▾</button>
@@ -1573,7 +2146,7 @@
         <button id="help-menu-button" class="menu-button" type="button">Help ▾</button>
         <div id="help-menu" class="file-menu">
           <button id="help-commands" class="menu-item" type="button"><span>Command palette</span><small>⌘K</small></button>
-          <button id="help-about" class="menu-item" type="button"><span>About WiggleStudio</span><small></small></button>
+          <button id="help-about" class="menu-item" type="button"><span>About Wiggle GPL</span><small></small></button>
         </div>
       </div>
     </div>
@@ -1636,16 +2209,16 @@
   </div>
   <div id="about-overlay" class="about-overlay" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
     <div class="about-sheet">
-      <div class="about-brand">
-        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <div class="about-hero" aria-hidden="true">
+        <svg class="brand-mark" viewBox="0 0 32 32">
           <path d="M4 17c3-8 6-8 9 0s6 8 9 0 5-8 6-2" stroke-width="2.4" />
         </svg>
-        <h2 id="about-title">Wiggle Studio</h2>
       </div>
-      <div class="about-version">Version 0.1.0</div>
+      <h2 id="about-title">Wiggle GPL</h2>
+      <div id="about-version" class="about-version">Local-first · GPL-3.0-only</div>
       <div class="about-body">
-        <p>Local-first animation for hand-drawn, wiggly 9:16 video. Your projects stay on this device — no accounts, no cloud.</p>
-        <p>Brush techniques derive from <strong>Decker</strong> (MIT code / CC0 assets) by John Earnest. WiggleStudio is an original tool that borrows the technique, not a redistribution of Decker.</p>
+        <p>Hand-drawn, wiggly 9:16 video — no accounts, no cloud. Your projects stay on this device.</p>
+        <p class="about-credit">GPL-licensed source and notices are available on <a href="https://github.com/its-jovee/wiggle-gpl" target="_blank" rel="noreferrer">GitHub</a>. Brush techniques from <strong>Decker</strong> by John Earnest.</p>
       </div>
       <div class="about-actions">
         <button id="about-close" class="act" type="button">Done</button>
@@ -1654,111 +2227,148 @@
   </div>
   <div id="toast-stack" aria-live="polite" aria-relevant="additions"></div>
   <div class="app-grid" id="workspace-main" role="tabpanel">
-    <aside class="left-sidebar workspace-panel" data-workspace-panel="tools">
-      <div class="workspace-panel-titlebar" role="button" tabindex="0" aria-label="Move Tools panel">
-        <span>Brushes &amp; tools</span><span class="workspace-panel-grip" aria-hidden="true">••••••</span>
+    <aside class="toolbox-panel workspace-panel" data-workspace-panel="toolbox"
+      tabindex="0" aria-label="Toolbox. Drag empty space or use arrow keys to move.">
+      <div class="mode-rail" aria-hidden="true">
+        <button id="rail-draw" class="rail-button active" type="button" title="Draw" aria-label="Draw"></button>
+        <button id="rail-edit" class="rail-button" type="button" title="Edit" aria-label="Edit"></button>
       </div>
-      <div class="mode-rail">
-        <button id="rail-draw" class="rail-button active" type="button">Draw</button>
-        <button id="rail-edit" class="rail-button" type="button">Edit</button>
+      <div class="tool-strip" role="toolbar" aria-label="Drawing tools">
+        <div id="tools-draw" class="tool-grid" aria-label="Draw"></div>
+        <div class="tool-strip-gap" aria-hidden="true"></div>
+        <div id="tools-edit" class="tool-grid" aria-label="Edit"></div>
+        <div class="tool-strip-gap" aria-hidden="true"></div>
+        <div id="tools-insert" class="tool-grid" aria-label="Insert"></div>
       </div>
-      <details class="workspace-section tools-section" open>
-      <summary>Tools</summary>
-      <div class="tool-group">
-        <div class="tool-group-label">Draw</div>
-        <div id="tools-draw" class="tool-grid"></div>
-      </div>
-      <div class="tool-group">
-        <div class="tool-group-label">Edit</div>
-        <div id="tools-edit" class="tool-grid"></div>
-      </div>
-      <div class="tool-group">
-        <div class="tool-group-label">Insert</div>
-        <div id="tools-insert" class="tool-grid"></div>
-      </div>
+    </aside>
 
-      <div class="tool-contexts">
-        <div id="draw-context" class="tool-context active">
-          <div class="sidebar-section">
-            <h2>Brush Shape</h2>
+    <aside class="left-sidebar workspace-panel inspector-group settings-group"
+      data-workspace-panel="settings" data-inspector-group="settings"
+      tabindex="0" aria-label="Settings panels. Drag a panel heading to move or join it.">
+        <details id="draw-context"
+          class="section-details inspector-module tool-context active"
+          data-inspector-module="brush" open>
+          <summary>Brush</summary>
+          <div class="section-body brush-essentials">
             <div id="brushes"></div>
-          </div>
-          <div class="sidebar-section">
-            <h2>Size</h2>
-            <input id="size" type="range" min="1" max="8" step="0.5" value="2" />
-            <label class="control-check">
-              <input id="pen-pressure" type="checkbox" checked /> Pen pressure
-            </label>
-          </div>
-          <div class="sidebar-section">
-            <h2>Brush Options</h2>
-            <label class="control-row">
-              <span>Spacing <span id="brush-spacing-val">1.0x</span></span>
-            </label>
-            <input id="brush-spacing" type="range" min="0.5" max="3" step="0.1" value="1" />
-            <label class="control-row">
-              <span>Flow <span id="brush-flow-val">100%</span></span>
-            </label>
-            <input id="brush-flow" type="range" min="0.1" max="1" step="0.05" value="1" />
-            <label class="control-check">
-              <input id="brush-pressure-size" type="checkbox" checked /> Pressure size
-            </label>
-            <label class="control-check">
-              <input id="brush-pressure-flow" type="checkbox" /> Pressure flow
-            </label>
-          </div>
-          <div class="sidebar-section">
-            <h2>Smoothing</h2>
-            <label class="control-row">
-              <span>Smoothing</span>
-              <select id="stroke-smoothing-mode" class="chip">
-                <option value="off">Off</option>
-                <option value="weighted">Weighted</option>
-                <option value="stabilizer">Stabilizer</option>
-              </select>
-            </label>
-            <label class="control-row">
-              <span>Distance <span id="stroke-smoothing-distance-val">24px</span></span>
-            </label>
-            <input id="stroke-smoothing-distance" type="range" min="1" max="128" step="1" value="24" />
-            <label id="stroke-smoothing-delay-row" class="control-row">
-              <span>Delay <span id="stroke-smoothing-delay-val">16px</span></span>
-            </label>
-            <input id="stroke-smoothing-delay" type="range" min="1" max="128" step="1" value="16" />
-            <label class="control-check">
-              <input id="stroke-smoothing-finish" type="checkbox" checked /> Finish stabilized stroke
-            </label>
-            <label class="control-check">
-              <input id="stroke-smoothing-pressure" type="checkbox" /> Smooth pressure
-            </label>
-          </div>
-          <div class="sidebar-section">
-            <h2>Brush Presets</h2>
-            <div id="brush-presets"></div>
-          </div>
-        </div>
-
-        <div id="text-context" class="tool-context">
-          <div class="sidebar-section">
-            <h2>Text</h2>
-            <select id="font-picker" class="chip" style="width:100%;"></select>
-            <div class="control-row">
-              <span>Size <span id="font-size-val">64</span></span>
+            <div class="responsive-controls">
+              <div class="range-control">
+                <label class="control-row size-row" for="size">
+                  <span>Size</span>
+                  <span id="size-val" class="control-val">2</span>
+                </label>
+                <input id="size" type="range" min="1" max="8" step="0.5" value="2" />
+              </div>
+              <label class="control-check compact-check">
+                <input id="pen-pressure" type="checkbox" checked /> Pen pressure
+              </label>
             </div>
-            <input id="font-size" type="range" min="12" max="200" step="2" value="64" />
-            <div class="control-row"><span>Text wiggle</span></div>
-            <input id="text-wiggle" type="range" min="0" max="6" step="0.5" value="1.5" />
           </div>
-        </div>
+        </details>
 
-        <div id="bucket-context" class="tool-context">
-          <div class="sidebar-section">
-            <h2>Bucket</h2>
+        <details class="section-details inspector-module draw-setting-module"
+          data-inspector-module="brush-options">
+          <summary>Brush Options</summary>
+          <div class="section-body">
+            <div class="responsive-controls">
+              <div class="range-control">
+              <label class="control-row">
+                <span>Spacing <span id="brush-spacing-val">1.0x</span></span>
+              </label>
+              <input id="brush-spacing" type="range" min="0.5" max="3" step="0.1" value="1" />
+              </div>
+              <div class="range-control">
+              <label class="control-row">
+                <span>Flow <span id="brush-flow-val">100%</span></span>
+              </label>
+              <input id="brush-flow" type="range" min="0.1" max="1" step="0.05" value="1" />
+              </div>
+              <div class="check-grid">
+              <label class="control-check">
+                <input id="brush-pressure-size" type="checkbox" checked /> Pressure size
+              </label>
+              <label class="control-check">
+                <input id="brush-pressure-flow" type="checkbox" /> Pressure flow
+              </label>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="section-details inspector-module draw-setting-module"
+          data-inspector-module="smoothing">
+          <summary>Smoothing</summary>
+          <div class="section-body">
+            <div class="responsive-controls">
+              <label class="control-row">
+                <span>Smoothing</span>
+                <select id="stroke-smoothing-mode" class="chip">
+                  <option value="off">Off</option>
+                  <option value="weighted">Weighted</option>
+                  <option value="stabilizer">Stabilizer</option>
+                </select>
+              </label>
+              <div class="range-control">
+              <label class="control-row">
+                <span>Distance <span id="stroke-smoothing-distance-val">24px</span></span>
+              </label>
+              <input id="stroke-smoothing-distance" type="range" min="1" max="128" step="1" value="24" />
+              </div>
+              <div class="range-control">
+              <label id="stroke-smoothing-delay-row" class="control-row">
+                <span>Delay <span id="stroke-smoothing-delay-val">16px</span></span>
+              </label>
+              <input id="stroke-smoothing-delay" type="range" min="1" max="128" step="1" value="16" />
+              </div>
+              <div class="check-grid">
+              <label class="control-check">
+                <input id="stroke-smoothing-finish" type="checkbox" checked /> Finish stabilized stroke
+              </label>
+              <label class="control-check">
+                <input id="stroke-smoothing-pressure" type="checkbox" /> Smooth pressure
+              </label>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="section-details inspector-module draw-setting-module"
+          data-inspector-module="brush-presets">
+          <summary>Brush Presets</summary>
+          <div class="section-body"><div id="brush-presets"></div></div>
+        </details>
+
+        <details id="text-context"
+          class="section-details inspector-module tool-context"
+          data-inspector-module="text-settings" open>
+          <summary>Text</summary>
+          <div class="section-body responsive-controls">
+            <select id="font-picker" class="chip" style="width:100%;"></select>
+            <div class="range-control">
+              <label class="control-row" for="font-size">
+                <span>Size <span id="font-size-val">64</span></span>
+              </label>
+              <input id="font-size" type="range" min="12" max="200" step="2" value="64" />
+            </div>
+            <div class="range-control">
+              <label class="control-row" for="text-wiggle"><span>Text wiggle</span></label>
+              <input id="text-wiggle" type="range" min="0" max="6" step="0.5" value="1.5" />
+            </div>
+          </div>
+        </details>
+
+        <details id="bucket-context"
+          class="section-details inspector-module tool-context"
+          data-inspector-module="bucket-settings" open>
+          <summary>Bucket</summary>
+          <div class="section-body responsive-controls">
             <p class="control-note">Fills enclosed regions on the active layer with the current palette color.</p>
-            <label class="control-row">
-              <span>Tolerance <span id="fill-tolerance-val">0</span></span>
-            </label>
-            <input id="fill-tolerance" type="range" min="0" max="64" step="1" value="0" />
+            <div class="range-control">
+              <label class="control-row" for="fill-tolerance">
+                <span>Tolerance <span id="fill-tolerance-val">0</span></span>
+              </label>
+              <input id="fill-tolerance" type="range" min="0" max="64" step="1" value="0" />
+            </div>
             <label class="control-row">
               <span>Gap close</span>
               <select id="fill-gap-close" class="chip">
@@ -1776,44 +2386,50 @@
               </select>
             </label>
           </div>
-        </div>
+        </details>
 
-        <div id="edit-context" class="tool-context">
-          <div class="sidebar-section">
-            <h2>Edit</h2>
-            <div id="edit-context-inspector"></div>
-          </div>
-        </div>
+        <details id="edit-context"
+          class="section-details inspector-module tool-context"
+          data-inspector-module="edit-settings" open>
+          <summary>Edit</summary>
+          <div class="section-body"><div id="edit-context-inspector"></div></div>
+        </details>
 
-        <div id="subpanel-context" class="tool-context">
-          <div class="sidebar-section">
-            <h2>Sub-panel</h2>
-            <div id="subpanel-inspector"></div>
-          </div>
-        </div>
+        <details id="subpanel-context"
+          class="section-details inspector-module tool-context"
+          data-inspector-module="subpanel-settings" open>
+          <summary>Sub-panel</summary>
+          <div class="section-body"><div id="subpanel-inspector"></div></div>
+        </details>
 
-        <div id="perspective-context" class="tool-context">
-          <div class="sidebar-section">
-            <h2>Perspective Ruler</h2>
+        <details id="perspective-context"
+          class="section-details inspector-module tool-context"
+          data-inspector-module="perspective-settings" open>
+          <summary>Perspective Ruler</summary>
+          <div class="section-body">
             <div id="perspective-inspector" style="font-size:11px;color:var(--dim);line-height:1.45;"></div>
           </div>
-        </div>
-      </div>
+        </details>
 
-      <div class="sidebar-section">
-        <details class="section-details" open>
-          <summary>Palette</summary>
-          <div class="section-body">
-            <select id="palette-picker" class="chip" style="width:100%;"></select>
-            <div id="palette" style="margin-top:6px;"></div>
+      <details class="section-details inspector-module palette-section"
+        data-inspector-module="palettes" open>
+        <summary>Palettes</summary>
+        <div class="section-body">
+          <select id="palette-picker" class="chip" style="width:100%;"></select>
+          <div id="palette" style="margin-top:6px;"></div>
+        </div>
+      </details>
+
+      <details class="section-details inspector-module"
+        data-inspector-module="lospec">
+        <summary>Load Lospec</summary>
+        <div class="section-body">
             <div class="palette-load-row">
               <input id="lospec-slug" type="text" placeholder="lospec slug (sweetie-16)" />
               <button id="lospec" class="chip">Load</button>
             </div>
             <div id="lospec-error" style="font-size:11px;color:#ff6e6e;margin-top:4px;min-height:14px;"></div>
-          </div>
-        </details>
-      </div>
+        </div>
       </details>
     </aside>
 
@@ -1822,7 +2438,11 @@
       <div class="stage-area" id="stage-area">
         <canvas id="stage"></canvas>
         <div id="canvas-hint" class="canvas-hint" hidden>
-          <p>Draw here · <kbd>+</kbd> add panels · Export for MP4</p>
+          <div class="canvas-hint-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M4 17c3-8 6-8 9 0s6 8 9 0 5-8 6-2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <p class="canvas-hint-title">Start wiggling</p>
+          <p class="canvas-hint-copy">Draw on the canvas. Press <kbd>+</kbd> for another panel. Export when it’s alive.</p>
           <button id="canvas-hint-dismiss" class="canvas-hint-dismiss" type="button">Got it</button>
         </div>
         <div class="zoom-pill">
@@ -1835,37 +2455,37 @@
         </div>
       </div>
     </div>
-    <aside class="timeline-panel workspace-panel" data-workspace-panel="timeline">
-      <div class="workspace-panel-titlebar" role="button" tabindex="0" aria-label="Move Timeline panel">
-        <span>Timeline</span><span class="workspace-panel-grip" aria-hidden="true">••••••</span>
-      </div>
-      <details id="timeline-region" open>
-        <summary>Animation frames</summary>
-        <div id="timeline"></div>
+    <aside class="timeline-panel workspace-panel inspector-group"
+      data-workspace-panel="timeline" data-inspector-group="timeline"
+      tabindex="0" aria-label="Timeline panels. Drag a panel heading to move or join it.">
+      <details id="timeline-region"
+        class="section-details inspector-module timeline-module"
+        data-inspector-module="timeline" open>
+        <summary>Timeline</summary>
+        <div class="section-body"><div id="timeline"></div></div>
       </details>
     </aside>
-    <aside class="right-sidebar workspace-panel" data-workspace-panel="inspector">
-      <div class="workspace-panel-titlebar" role="button" tabindex="0" aria-label="Move Inspector panel">
-        <span>Inspector</span><span class="workspace-panel-grip" aria-hidden="true">••••••</span>
-      </div>
+    <aside class="right-sidebar workspace-panel inspector-group" data-workspace-panel="inspector"
+      data-inspector-group="main"
+      tabindex="0" aria-label="Layers panel. Drag empty space or use arrow keys to move.">
       <input id="load-project-file" type="file" accept="application/json,.wiggle.json,.json" style="display:none" />
 
-      <details class="section-details">
+      <details class="section-details inspector-module" data-inspector-module="project">
         <summary>Project</summary>
         <div class="section-body"><div id="project-settings"></div></div>
       </details>
 
-      <details class="section-details">
+      <details class="section-details inspector-module" data-inspector-module="properties">
         <summary id="inspector-heading">Properties</summary>
         <div class="section-body"><div id="inspector"></div></div>
       </details>
 
-      <details class="section-details draw-only">
+      <details class="section-details draw-only inspector-module" data-inspector-module="animation">
         <summary>Layer Animation</summary>
         <div class="section-body"><div id="layer-animation"></div></div>
       </details>
 
-      <details class="section-details draw-only">
+      <details class="section-details draw-only inspector-module" data-inspector-module="layers" open>
         <summary>Layers</summary>
         <div class="section-body"><div id="layers"></div></div>
       </details>

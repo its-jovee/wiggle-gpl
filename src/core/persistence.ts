@@ -49,7 +49,7 @@ const RECENTS_KEY = "wigglestudio.recents";
 const RECOVERY_KEY = "wigglestudio.recovery";
 
 const PROJECT_TYPES: PickerAccept[] = [{
-  description: "WiggleStudio project",
+  description: "Wiggle GPL project",
   accept: { "application/json": [".wiggle.json", ".json"] },
 }];
 

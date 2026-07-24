@@ -76,11 +76,30 @@ export type LayerAnimation = {
   loop?: LayerLoopKind;
 };
 
+/**
+ * Render-time pixel warp for raster / tone layers. Stored bitmaps stay static;
+ * faux movement is applied during renderPanel from seeded noise, like stroke
+ * jitter. Independent of LayerAnimation transforms.
+ */
+export type LayerNoiseDisplace = {
+  enabled: boolean;
+  /** Max cell offset in px (typical 2–16). */
+  amplitude: number;
+  /** Grid cell size in px — smaller = finer waves. */
+  cellSize: number;
+  /** Multiplier on wiggle tick for how fast the field evolves. */
+  speed: number;
+};
+
 // ---- Strokes / Fills / Text -----------------------------------------------
 
 export type Stroke = {
   brush: string;
   color: string;
+  /** Paint this stroke by removing pixels instead of adding color. This keeps
+   *  erasing independent of the brush registry, so any brush can be used as
+   *  an eraser while preserving its stamp shape, spacing, and pressure. */
+  erase?: boolean;
   size: number;
   brushSettings?: BrushSettings;
   points: Vec2[];
@@ -204,6 +223,8 @@ export type Layer = {
   fadeIn?: FadeSpec;
   fadeOut?: FadeSpec;
   animation?: LayerAnimation;
+  /** Optional noise-displacement wiggle for raster / tone layers only. */
+  noiseDisplace?: LayerNoiseDisplace;
   strokes: Stroke[];
   fills: Fill[];
   texts?: TextElement[];

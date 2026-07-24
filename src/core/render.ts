@@ -12,7 +12,8 @@
 // shape polyline, render its layers + texts, lift the clip, stamp the border.
 //
 // Finally paint the panel bg with destination-over so it sits behind
-// everything. Whole-panel animations wrap the entire render.
+// everything. Whole-panel animations wrap the entire render. Raster/tone
+// layers may also get a seeded noise-displacement warp after compose.
 // ============================================================================
 
 import { Layer, LayerBlendMode, LayerMask, Panel, Stroke, SubPanel, TextElement, Vec2 } from "./types";
@@ -38,6 +39,11 @@ import {
   effectiveBrushSettings,
 } from "./brushSettings";
 import { renderTone } from "./tone";
+import {
+  activeNoiseDisplace,
+  cellDisplaceOffset,
+  noiseDisplaceSeed,
+} from "./noiseDisplace";
 import { getRasterCanvas, rasterPixelVersion } from "./rasterStore";
 
 const WIGGLE_AMPLITUDE = 2.5;
@@ -237,7 +243,7 @@ function timelapseLayerNeedsFallback(layer: Layer): boolean {
   // Raster layers have no stroke-budget concept — always render whole.
   if (layer.kind === "raster") return true;
   for (const stroke of layer.strokes) {
-    if (brushByKey(stroke.brush).erase) return true;
+    if (brushByKey(stroke.brush).erase || stroke.erase) return true;
   }
   return false;
 }
@@ -516,6 +522,8 @@ let _layerXform: HTMLCanvasElement | null = null;
 let _layerXformCtx: CanvasRenderingContext2D | null = null;
 let _toneScratch: HTMLCanvasElement | null = null;
 let _toneScratchCtx: CanvasRenderingContext2D | null = null;
+let _noiseDisplace: HTMLCanvasElement | null = null;
+let _noiseDisplaceCtx: CanvasRenderingContext2D | null = null;
 
 // Frame-scoped canvas pool: lazily grown, index reset at the start of each
 // renderPanel call. Eliminates per-frame HTMLCanvasElement allocation that
@@ -572,6 +580,52 @@ function getLayerTransformOffscreen(width: number, height: number) {
     _layerXformCtx = _layerXform.getContext("2d");
   }
   return { off: _layerXform!, oc: _layerXformCtx! };
+}
+
+function getNoiseDisplaceOffscreen(width: number, height: number) {
+  if (!_noiseDisplace || _noiseDisplace.width !== width || _noiseDisplace.height !== height) {
+    _noiseDisplace = document.createElement("canvas");
+    _noiseDisplace.width = width;
+    _noiseDisplace.height = height;
+    _noiseDisplaceCtx = _noiseDisplace.getContext("2d");
+  }
+  return { off: _noiseDisplace!, oc: _noiseDisplaceCtx! };
+}
+
+/**
+ * Grid-sample warp: each dest cell pulls from (cell - offset). Never mutates
+ * `src` (which may be a raw-layer cache entry).
+ */
+function applyNoiseDisplaceCanvas(
+  src: HTMLCanvasElement,
+  layerId: string,
+  tick: number,
+  amplitude: number,
+  cellSize: number,
+  speed: number,
+  width: number,
+  height: number
+): HTMLCanvasElement {
+  const { off, oc } = getNoiseDisplaceOffscreen(width, height);
+  oc.setTransform(1, 0, 0, 1, 0, 0);
+  oc.globalCompositeOperation = "source-over";
+  oc.globalAlpha = 1;
+  oc.clearRect(0, 0, width, height);
+  const seed = noiseDisplaceSeed(layerId);
+  const cell = Math.max(8, Math.round(cellSize));
+  const cols = Math.ceil(width / cell);
+  const rows = Math.ceil(height / cell);
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const x = col * cell;
+      const y = row * cell;
+      const cw = Math.min(cell, width - x);
+      const ch = Math.min(cell, height - y);
+      const { dx, dy } = cellDisplaceOffset(tick, seed, col, row, amplitude, speed);
+      oc.drawImage(src, x - dx, y - dy, cw, ch, x, y, cw, ch);
+    }
+  }
+  return cloneCanvas(off, width, height);
 }
 
 type ClipBase = {
@@ -635,6 +689,19 @@ function drawLayerStack(
       stamped = composeLayerCanvas(raw, finalAnim, width, height, effectiveOpacity);
     } else {
       stamped = raw;
+    }
+    const displace = activeNoiseDisplace(layer, opts?.skipJitter ?? false);
+    if (displace) {
+      stamped = applyNoiseDisplaceCanvas(
+        stamped,
+        layer.id,
+        tick,
+        displace.amplitude,
+        displace.cellSize,
+        displace.speed,
+        width,
+        height
+      );
     }
     drawLayerWithBlend(ctx, stamped, layer.blendMode ?? "normal");
     if (!layer.clipToBelow) {
@@ -1108,6 +1175,7 @@ function mixString(h: number, s: string): number {
 function mixStroke(h: number, s: Stroke): number {
   h = mixString(h, s.brush);
   h = mixString(h, s.color);
+  h = mixHash(h, s.erase ? 1 : 0);
   h = mixFloat(h, s.size);
   const brushSettings = brushSettingsSignatureValues(s.brushSettings);
   h = mixFloat(h, brushSettings.spacingScale);
@@ -1671,7 +1739,7 @@ function walkLayerStrokes(
     const pts = stroke.points;
     if (pts.length === 0) { drawn[si] = true; continue; }
 
-    const isErase = brush.erase === true;
+    const isErase = brush.erase === true || stroke.erase === true;
     if (isErase) {
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";

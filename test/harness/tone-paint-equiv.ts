@@ -20,8 +20,22 @@ function toneLayer(coverage: "full" | "painted", strokes: Layer["strokes"] = [])
   };
 }
 
-function inkStroke(x1: number, y1: number, x2: number, y2: number, brush = "round", size = 3) {
-  return { brush, color: "#000000", size, points: [{ x: x1, y: y1 }, { x: x2, y: y2 }] };
+function inkStroke(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  brush = "round",
+  size = 3,
+  erase = false
+) {
+  return {
+    brush,
+    color: "#000000",
+    size,
+    ...(erase ? { erase: true } : {}),
+    points: [{ x: x1, y: y1 }, { x: x2, y: y2 }],
+  };
 }
 
 function panelWith(layer: Layer): { project: Project; panel: Panel } {
@@ -88,6 +102,16 @@ async function runToneEquivTests(): Promise<string[]> {
     ]));
     const ctx = renderToCanvas(panel, project);
     if (alphaAt(ctx, 10, 10) !== 0) failures.push("eraser: expected hole at (10,10)");
+  }
+
+  // Transparent palette intent makes the selected normal brush erase too.
+  {
+    const { project, panel } = panelWith(toneLayer("painted", [
+      inkStroke(0, 10, 99, 10),
+      inkStroke(0, 10, 20, 10, "round", 30, true),
+    ]));
+    const ctx = renderToCanvas(panel, project);
+    if (alphaAt(ctx, 10, 10) !== 0) failures.push("transparent paint: expected normal brush to erase at (10,10)");
   }
 
   // Static across ticks — no wiggle clock on tone layers.

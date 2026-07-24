@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused product improvement
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Artist problem
+      description: What workflow or outcome is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: I reviewed the load-bearing decisions in `AGENTS.md`.
+          required: true
+        - label: I understand GPL/Krita-derived work cannot be copied to the MIT project.
+          required: true

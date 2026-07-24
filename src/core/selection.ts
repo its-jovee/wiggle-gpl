@@ -10,10 +10,22 @@ import { SIMPLIFY_TOLERANCE } from "./input";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
+export type RasterSelectionPayload = {
+  layer: Layer;
+  /** Immutable, tightly-cropped selected pixels in their original orientation. */
+  pixels: HTMLCanvasElement;
+  /** Layer pixels with this selection removed. */
+  base: HTMLCanvasElement;
+  /** Unrotated destination frame in layer coordinates. */
+  frame: Rect;
+  rotation: number;
+};
+
 export type MarqueeRef =
   | { kind: "stroke"; layer: Layer; stroke: Stroke }
   | { kind: "fill"; layer: Layer; fill: Fill }
   | { kind: "text"; layer: Layer; text: TextElement }
+  | { kind: "raster"; layer: Layer; selection: RasterSelectionPayload }
   | { kind: "subpanel"; subPanel: SubPanel };
 
 export type MarqueeToolKind = "rect" | "ellipse" | "lasso";
@@ -47,6 +59,19 @@ export type SelectionState =
     };
 
 const EPS = 1e-9;
+
+function rasterPayloadBounds(selection: RasterSelectionPayload): Rect {
+  const { frame, rotation } = selection;
+  if (rotation === 0) return { ...frame };
+  const width = Math.abs(frame.w * Math.cos(rotation)) + Math.abs(frame.h * Math.sin(rotation));
+  const height = Math.abs(frame.w * Math.sin(rotation)) + Math.abs(frame.h * Math.cos(rotation));
+  return {
+    x: frame.x + frame.w / 2 - width / 2,
+    y: frame.y + frame.h / 2 - height / 2,
+    w: width,
+    h: height,
+  };
+}
 
 function dragBounds(
   a: Vec2,
@@ -289,6 +314,7 @@ export function splitStrokeAtShape(stroke: Stroke, shape: SelectionShape): { ins
     if (currentPts.length === 0) return;
     const seg: Stroke = {
       brush: stroke.brush, color: stroke.color, size: stroke.size,
+      erase: stroke.erase,
       points: currentPts.map((p) => ({ x: p.x, y: p.y })),
       pressures: pres ? currentPts.map((p) => p.pressure) : undefined,
       brushSettings: stroke.brushSettings ? { ...stroke.brushSettings } : undefined,
@@ -583,6 +609,8 @@ export type ItemSnapshot = {
   textRotation?: number;
   subBounds?: Rect;
   subTail?: Vec2;
+  rasterFrame?: Rect;
+  rasterRotation?: number;
 };
 
 export function snapshotItems(items: MarqueeRef[]): ItemSnapshot[] {
@@ -603,6 +631,9 @@ export function snapshotItems(items: MarqueeRef[]): ItemSnapshot[] {
     } else if (ref.kind === "subpanel") {
       snap.subBounds = { ...ref.subPanel.bounds };
       snap.subTail = ref.subPanel.tail ? { ...ref.subPanel.tail } : undefined;
+    } else if (ref.kind === "raster") {
+      snap.rasterFrame = { ...ref.selection.frame };
+      snap.rasterRotation = ref.selection.rotation;
     }
     return snap;
   });
@@ -629,6 +660,9 @@ export function restoreFromSnapshot(snap: ItemSnapshot): void {
   } else if (ref.kind === "subpanel" && snap.subBounds) {
     ref.subPanel.bounds = { ...snap.subBounds };
     ref.subPanel.tail = snap.subTail ? { ...snap.subTail } : undefined;
+  } else if (ref.kind === "raster" && snap.rasterFrame) {
+    ref.selection.frame = { ...snap.rasterFrame };
+    ref.selection.rotation = snap.rasterRotation ?? 0;
   }
 }
 
@@ -680,6 +714,24 @@ export function applyTransformToSnapshot(
       const tt = transformPoint(snap.subTail, pivot, scaleX, scaleY, 0);
       ref.subPanel.tail = tt;
     }
+  } else if (ref.kind === "raster" && snap.rasterFrame) {
+    const frame = snap.rasterFrame;
+    const center = transformPoint(
+      { x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 },
+      pivot,
+      scaleX,
+      scaleY,
+      allowRotation ? angleRad : 0
+    );
+    const width = Math.max(0.01, frame.w * Math.abs(scaleX));
+    const height = Math.max(0.01, frame.h * Math.abs(scaleY));
+    ref.selection.frame = {
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      w: width,
+      h: height,
+    };
+    ref.selection.rotation = (snap.rasterRotation ?? 0) + (allowRotation ? angleRad : 0);
   }
 }
 
@@ -700,6 +752,10 @@ export function boundsFromItems(items: MarqueeRef[], measureText?: (t: TextEleme
       add(ref.text.x + m.width, ref.text.y + m.height);
     } else if (ref.kind === "subpanel") {
       const b = ref.subPanel.bounds;
+      add(b.x, b.y);
+      add(b.x + b.w, b.y + b.h);
+    } else if (ref.kind === "raster") {
+      const b = rasterPayloadBounds(ref.selection);
       add(b.x, b.y);
       add(b.x + b.w, b.y + b.h);
     }
@@ -726,6 +782,9 @@ export function moveMarqueeItems(items: MarqueeRef[], dx: number, dy: number): v
         ref.subPanel.tail.x += dx;
         ref.subPanel.tail.y += dy;
       }
+    } else if (ref.kind === "raster") {
+      ref.selection.frame.x += dx;
+      ref.selection.frame.y += dy;
     }
   }
 }
