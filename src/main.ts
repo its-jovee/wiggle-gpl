@@ -190,6 +190,7 @@ let currentSize = 2;
 let currentBrushSettings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
 let activeBrushPresetId: string | null = null;
 let closeBrushPicker: (() => void) | null = null;
+let closeFontPicker: (() => void) | null = null;
 const lastBrushByTool: Partial<Record<BrushToolKey, string>> = {};
 /** Raster-only brush parked while the user is on a non-raster layer, restored
  *  when they return to a raster layer (if still available). */
@@ -7354,23 +7355,11 @@ function appendTextInspector(host: HTMLElement, ref: TextRef) {
   row("Content", content);
 
   // Font
-  const font = document.createElement("input");
-  font.type = "text";
-  font.setAttribute("list", "font-options");
-  font.autocomplete = "off";
-  font.spellcheck = false;
-  font.value = t.fontFamily;
-  font.style.fontFamily = fontFamilyCss(t.fontFamily);
-  font.oninput = () => {
-    const family = font.value.trim();
-    if (!family) return;
+  const font = document.createElement("div");
+  buildFontPickerIn(font, t.fontFamily, (family) => {
     t.fontFamily = family;
-    font.style.fontFamily = fontFamilyCss(family);
-  };
-  font.onchange = () => {
-    if (!font.value.trim()) font.value = t.fontFamily;
     commitHistory();
-  };
+  });
   row("Font", font);
 
   // Size
@@ -8410,66 +8399,231 @@ function updatePlayheadChrome() {
 
 // ---- text controls --------------------------------------------------------
 
-function refreshFontDatalist() {
-  const list = $("font-options") as HTMLDataListElement;
-  list.innerHTML = "";
-  for (const f of availableFontOptions) {
-    const option = document.createElement("option");
-    option.value = f.family;
-    option.label = f.label;
-    list.appendChild(option);
+async function loadInstalledFonts(): Promise<number> {
+  if (installedFontsLoaded) {
+    return availableFontOptions.filter((option) => option.id.startsWith("local:")).length;
   }
+  const installed = await queryInstalledFontOptions();
+  const byFamily = new Map<string, FontOption>();
+  for (const option of [...FONT_OPTIONS, ...installed]) {
+    const key = option.family.toLocaleLowerCase();
+    if (!byFamily.has(key)) byFamily.set(key, option);
+  }
+  availableFontOptions = [...byFamily.values()];
+  installedFontsLoaded = true;
+  return installed.length;
 }
 
-async function loadInstalledFonts() {
-  const button = $("load-installed-fonts") as HTMLButtonElement;
-  if (installedFontsLoaded) {
-    ($("font-picker") as HTMLInputElement).focus();
-    return;
-  }
-  button.disabled = true;
-  button.textContent = "Loading…";
-  try {
-    const installed = await queryInstalledFontOptions();
-    const byFamily = new Map<string, FontOption>();
-    for (const option of [...FONT_OPTIONS, ...installed]) {
-      const key = option.family.toLocaleLowerCase();
-      if (!byFamily.has(key)) byFamily.set(key, option);
+function buildFontPickerIn(
+  host: HTMLElement,
+  selectedFamily: string,
+  onSelect: (family: string) => void
+) {
+  host.innerHTML = "";
+  host.classList.add("font-picker");
+
+  const picker = document.createElement("div");
+  picker.className = "brush-picker";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "brush-picker-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-label", `Font: ${selectedFamily}`);
+  const triggerLabel = document.createElement("span");
+  triggerLabel.className = "brush-picker-label";
+  triggerLabel.textContent = selectedFamily;
+  triggerLabel.style.fontFamily = fontFamilyCss(selectedFamily);
+  trigger.appendChild(triggerLabel);
+
+  const menu = document.createElement("div");
+  menu.className = "brush-menu font-menu";
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+  const search = document.createElement("input");
+  search.type = "text";
+  search.className = "font-menu-search";
+  search.placeholder = "Search fonts";
+  search.autocomplete = "off";
+  search.spellcheck = false;
+  search.setAttribute("aria-label", "Search fonts");
+  menu.appendChild(search);
+  const scroll = document.createElement("div");
+  scroll.className = "font-menu-scroll";
+  menu.appendChild(scroll);
+
+  let currentFamily = selectedFamily;
+  let open = false;
+  let onDocumentPointerDown: ((event: PointerEvent) => void) | null = null;
+
+  const choose = (family: string) => {
+    currentFamily = family;
+    triggerLabel.textContent = family;
+    triggerLabel.style.fontFamily = fontFamilyCss(family);
+    trigger.setAttribute("aria-label", `Font: ${family}`);
+    onSelect(family);
+    closePicker();
+  };
+
+  const renderOptions = () => {
+    scroll.innerHTML = "";
+    const query = search.value.trim();
+    const normalizedQuery = query.toLocaleLowerCase();
+    const matches = availableFontOptions.filter((option) =>
+      !normalizedQuery
+      || option.family.toLocaleLowerCase().includes(normalizedQuery)
+      || option.label.toLocaleLowerCase().includes(normalizedQuery)
+    );
+    const hasExactMatch = matches.some(
+      (option) => option.family.toLocaleLowerCase() === normalizedQuery
+    );
+    const options = query && !hasExactMatch
+      ? [{ id: `custom:${query}`, family: query, label: `Use “${query}”` }, ...matches]
+      : matches;
+
+    if (!options.length) {
+      const empty = document.createElement("div");
+      empty.className = "font-menu-empty";
+      empty.textContent = "No matching fonts";
+      scroll.appendChild(empty);
     }
-    availableFontOptions = [...byFamily.values()];
-    installedFontsLoaded = true;
-    refreshFontDatalist();
-    button.textContent = "Installed";
-    button.title = `${installed.length} installed font families available`;
-    setStatus(`${installed.length} installed font families are now available`);
-    ($("font-picker") as HTMLInputElement).focus();
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = "Installed…";
-    const message = error instanceof DOMException && error.name === "NotAllowedError"
-      ? "Installed font access was not allowed"
-      : "Installed fonts are unavailable in this browser";
-    showToast(message, "info");
-  }
+    for (const optionData of options) {
+      const option = document.createElement("button");
+      option.type = "button";
+      const active = optionData.family === currentFamily;
+      option.className = "brush-option font-option" + (active ? " active" : "");
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(active));
+      option.style.fontFamily = fontFamilyCss(optionData.family);
+      const label = document.createElement("span");
+      label.textContent = optionData.label;
+      option.appendChild(label);
+      option.onclick = () => choose(optionData.family);
+      scroll.appendChild(option);
+    }
+
+    if (supportsInstalledFontAccess() && !installedFontsLoaded) {
+      const load = document.createElement("button");
+      load.type = "button";
+      load.className = "brush-option font-menu-action";
+      load.textContent = "Load installed fonts…";
+      load.onclick = async () => {
+        load.disabled = true;
+        load.textContent = "Loading…";
+        try {
+          const count = await loadInstalledFonts();
+          setStatus(`${count} installed font families are now available`);
+          renderOptions();
+          search.focus();
+        } catch (error) {
+          load.disabled = false;
+          load.textContent = "Load installed fonts…";
+          const message = error instanceof DOMException && error.name === "NotAllowedError"
+            ? "Installed font access was not allowed"
+            : "Installed fonts are unavailable in this browser";
+          showToast(message, "info");
+        }
+      };
+      scroll.appendChild(load);
+    }
+  };
+
+  const closePicker = () => {
+    if (!open) return;
+    open = false;
+    picker.classList.remove("open");
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    search.value = "";
+    if (onDocumentPointerDown) {
+      document.removeEventListener("pointerdown", onDocumentPointerDown);
+      onDocumentPointerDown = null;
+    }
+    if (closeFontPicker === closePicker) closeFontPicker = null;
+  };
+  const openPicker = () => {
+    if (open) return;
+    closeFontPicker?.();
+    open = true;
+    picker.classList.add("open");
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    closeFontPicker = closePicker;
+    renderOptions();
+    search.focus();
+    onDocumentPointerDown = (event) => {
+      const target = event.target;
+      if (target instanceof Node && !picker.contains(target)) closePicker();
+    };
+    window.setTimeout(() => {
+      if (onDocumentPointerDown) document.addEventListener("pointerdown", onDocumentPointerDown);
+    }, 0);
+  };
+  const focusOption = (direction: 1 | -1) => {
+    const options = [...scroll.querySelectorAll<HTMLButtonElement>(".font-option")];
+    if (!options.length) return;
+    const index = options.indexOf(document.activeElement as HTMLButtonElement);
+    const next = index < 0
+      ? (direction === 1 ? 0 : options.length - 1)
+      : Math.max(0, Math.min(options.length - 1, index + direction));
+    options[next]?.focus();
+  };
+
+  trigger.onclick = () => {
+    if (open) closePicker();
+    else openPicker();
+  };
+  trigger.onkeydown = (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openPicker();
+  };
+  search.oninput = renderOptions;
+  search.onkeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePicker();
+      trigger.focus();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusOption(1);
+    } else if (event.key === "Enter" && search.value.trim()) {
+      event.preventDefault();
+      const exact = availableFontOptions.find(
+        (option) => option.family.toLocaleLowerCase() === search.value.trim().toLocaleLowerCase()
+      );
+      choose(exact?.family ?? search.value.trim());
+    }
+  };
+  menu.onkeydown = (event) => {
+    if (event.target === search) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePicker();
+      trigger.focus();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusOption(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusOption(-1);
+    }
+  };
+  picker.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && picker.contains(next)) return;
+    closePicker();
+  });
+
+  picker.appendChild(trigger);
+  picker.appendChild(menu);
+  host.appendChild(picker);
 }
 
 function buildFontPicker() {
-  const input = $("font-picker") as HTMLInputElement;
-  const button = $("load-installed-fonts") as HTMLButtonElement;
-  input.value = currentFont;
-  input.style.fontFamily = fontFamilyCss(currentFont);
-  input.oninput = () => {
-    const family = input.value.trim();
-    if (!family) return;
+  buildFontPickerIn($("font-picker"), currentFont, (family) => {
     currentFont = family;
-    input.style.fontFamily = fontFamilyCss(family);
-  };
-  input.onchange = () => {
-    if (!input.value.trim()) input.value = currentFont;
-  };
-  refreshFontDatalist();
-  button.hidden = !supportsInstalledFontAccess();
-  button.onclick = () => { void loadInstalledFonts(); };
+  });
 }
 
 ($("font-size") as HTMLInputElement).oninput = (e) => {
