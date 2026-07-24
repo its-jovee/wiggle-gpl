@@ -15,6 +15,7 @@ import {
   stampHardDisc,
   stampPixelSquare,
   stampSoftDisc,
+  stampSprayParticles,
   tipAngle,
   unit01,
 } from "./kritaTips";
@@ -290,8 +291,77 @@ const KRITA_CHALK_BRUSHES: Brush[] = [
   },
 ];
 
+/** Phase 4: deterministic spray (bounded particle counts). */
+const KRITA_SPRAY_BRUSHES: Brush[] = [
+  {
+    // Inspired by spraybrush engine default preset.
+    key: "krita.spray",
+    label: "Spray",
+    spacing: 6,
+    group: "Krita Spray",
+    rasterOnly: true,
+    stamp: (b) => {
+      const radius = Math.max(4, 7 * b.size);
+      // Bound work: particle count grows slowly with size, hard-capped in helper.
+      const count = Math.min(36, 8 + Math.floor(b.size * 4));
+      const pr = Math.max(0.4, 0.55 * b.size);
+      stampSprayParticles(b, radius, count, pr, 0.7 * (0.4 + 0.6 * (b.pressure ?? 1)));
+    },
+  },
+  {
+    // Inspired by y)_Texture_Spray — textured particles via mask.
+    key: "krita.sprayTexture",
+    label: "Spray Texture",
+    spacing: 7,
+    group: "Krita Spray",
+    rasterOnly: true,
+    stamp: (b) => {
+      const radius = Math.max(5, 8 * b.size);
+      const count = Math.min(24, 6 + Math.floor(b.size * 3));
+      const p = b.pressure ?? 1;
+      for (let i = 0; i < count; i++) {
+        const u = unit01(b.tick + i * 17.3, b.seed + i * 9.1, 1.7);
+        const v = unit01(b.tick + i * 29.1, b.seed + i * 13.7, 3.3);
+        const ang = u * Math.PI * 2;
+        const r = Math.sqrt(v) * radius;
+        const ox = Math.cos(ang) * r;
+        const oy = Math.sin(ang) * r;
+        const pr = (0.6 + 0.8 * unit01(b.tick + i * 41, b.seed + i * 23, 5.5)) * b.size;
+        stampGeneratedTip(
+          { ...b, pos: { x: b.pos.x + ox, y: b.pos.y + oy } },
+          "dryTooth",
+          pr,
+          0.45 * (0.35 + 0.65 * p) * (b.flow ?? 1) *
+            (0.4 + 0.6 * unit01(b.tick + i * 7, b.seed + i * 11, 8.1)),
+          { angle: tipAngle(b, "noise") }
+        );
+      }
+    },
+  },
+  {
+    // Inspired by v)_Texture_Pointillism — larger sparse dots.
+    key: "krita.sprayDots",
+    label: "Spray Dots",
+    spacing: 8,
+    group: "Krita Spray",
+    rasterOnly: true,
+    stamp: (b) => {
+      const radius = Math.max(6, 9 * b.size);
+      const count = Math.min(16, 4 + Math.floor(b.size * 2));
+      stampSprayParticles(
+        b,
+        radius,
+        count,
+        Math.max(0.8, 1.4 * b.size),
+        0.85 * (0.4 + 0.6 * (b.pressure ?? 1))
+      );
+    },
+  },
+];
+
 /** All Krita-inspired raster registry entries (phases accumulate here). */
 export const KRITA_RASTER_BRUSHES: Brush[] = [
   ...KRITA_EVERYDAY_BRUSHES,
   ...KRITA_CHALK_BRUSHES,
+  ...KRITA_SPRAY_BRUSHES,
 ];

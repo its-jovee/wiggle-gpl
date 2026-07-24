@@ -169,6 +169,46 @@ function runKritaRasterTests(): string[] {
     failures.push("chalk soft pressure/flow should increase coverage");
   }
 
+  // Phase 4 spray: bounded + deterministic + seed variation
+  for (const key of ["krita.spray", "krita.sprayTexture", "krita.sprayDots"]) {
+    const brush = BRUSHES.find((b) => b.key === key);
+    if (!brush?.rasterOnly) failures.push(`${key} missing or not rasterOnly`);
+  }
+  if (!isBrushKeyAvailable("krita.spray", "raster") || isBrushKeyAvailable("krita.spray", "draw")) {
+    failures.push("spray should be raster-gated");
+  }
+  const sprayA = paintStroke("krita.spray", { pressure: 1 });
+  const sprayB = paintStroke("krita.spray", { pressure: 1 });
+  if (hashCanvas(sprayA) !== hashCanvas(sprayB)) failures.push("spray not deterministic");
+
+  // Large size stays bounded: stamp with huge size and count fills via helper cap
+  {
+    const canvas = document.createElement("canvas");
+    canvas.width = 160;
+    canvas.height = 160;
+    const ctx = canvas.getContext("2d")!;
+    let fills = 0;
+    const orig = ctx.fill.bind(ctx);
+    ctx.fill = (...args: Parameters<CanvasRenderingContext2D["fill"]>) => {
+      fills++;
+      return orig(...args);
+    };
+    brushByKey("krita.spray").stamp({
+      ctx,
+      pos: { x: 80, y: 80 },
+      delta: { x: 1, y: 0 },
+      color: "#f00",
+      size: 40,
+      tick: 1,
+      seed: 2,
+      bg: "#000",
+      pressure: 1,
+      flow: 1,
+    });
+    if (fills > 48) failures.push(`spray unbounded at large size: ${fills}`);
+    if (fills < 1) failures.push("large spray produced no particles");
+  }
+
   // Eraser compositing punches existing pixels
   const erased = paintStroke("krita.eraserHard", { eraseOverlay: true });
   const mid = erased.getContext("2d")!.getImageData(40, 20, 16, 8).data;

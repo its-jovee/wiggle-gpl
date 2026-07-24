@@ -100,6 +100,8 @@ test("phase-2 krita brushes stay raster-gated and map into tool chrome", () => {
   assert.equal(groups.brushToolForKey("krita.quick"), "classic");
   assert.equal(groups.brushToolForKey("krita.paintTextured"), "texture");
   assert.equal(groups.brushToolForKey("krita.eraserHard"), "eraser");
+  assert.equal(groups.brushToolForKey("krita.spray"), "scatter");
+  assert.equal(groups.brushToolForKey("krita.chalkSoft"), "texture");
   assert.equal(groups.isBrushKeyAvailable("krita.pixelHard", "draw"), false);
   assert.equal(groups.isBrushKeyAvailable("krita.pixelHard", "raster"), true);
   assert.ok(
@@ -107,5 +109,8 @@ test("phase-2 krita brushes stay raster-gated and map into tool chrome", () => {
   );
   assert.ok(
     !groups.brushesForTool("classic", "draw").some((b) => b.key.startsWith("krita."))
+  );
+  assert.ok(
+    groups.brushesForTool("scatter", "raster").some((b) => b.key === "krita.spray")
   );
 });
