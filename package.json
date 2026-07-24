@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
     "verify": "npm run typecheck && npm run build && npm test",
+    "check": "npm run verify",
     "notices": "node scripts/generate-third-party-notices.mjs",
     "notices:check": "node scripts/generate-third-party-notices.mjs --check",
     "release:validate": "node scripts/validate-release.mjs",

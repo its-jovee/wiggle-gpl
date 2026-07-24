@@ -24,13 +24,38 @@ that policy remains active.
    code paths. All randomness goes through `core/rng.ts` and is seeded by
    `(tick, stroke, point)` so the display, WebM, and MP4 paths agree frame-for-
    frame. If two exports of the same project differ, that's a P0 bug.
-3. **Verify before declaring done.** Run `npx tsc --noEmit` AND `npx vite build`.
-   Both must pass. The repo is currently green; keep it green.
+3. **Verify before declaring done.** Run `npm run check`. It must pass locally,
+   and the GitHub Quality Gate must pass independently.
 4. **One task = one focused commit** with a message that names the task.
 5. **Match the existing style.** Brushes get a comment citing their Decker
    original. Core modules keep their top-of-file explanation block.
 6. **Keep GPL provenance auditable.** If a change is copied from or closely
    ports Krita, update the Krita import ledger in the same commit.
+
+## Canonical quality gate
+
+Install locked dependencies with:
+
+```bash
+npm ci
+```
+
+Run the complete deterministic gate with:
+
+```bash
+npm run check
+```
+
+This runs strict type checking, the production build, GPL/third-party notice
+validation through the build pre-hook, and automated tests. Do not claim work is
+complete unless the command exits successfully. Report the exact commands run
+and any behavior that remains untested.
+
+New or changed behavior must have meaningful tests for normal, boundary, failure,
+serialization, and determinism cases where applicable. Do not delete, skip,
+weaken, or replace tests merely to accept a new implementation. Do not add type
+suppressions, unconditional-success scripts, swallowed errors, or tautological
+assertions to make the gate green.
 
 ## The four load-bearing decisions
 - Strokes store RAW points; jitter is render-time only.
@@ -75,11 +100,11 @@ locally at `public/ffmpeg/` (copied from `@ffmpeg/core` via
 ## Constraints
 - Prefer in-memory state + explicit file save/load over localStorage, to keep
   the code portable to a Claude.ai artifact context if ever needed.
-- Keep dependencies minimal. Current deps: vite, typescript, @ffmpeg/core,
-  @ffmpeg/ffmpeg, @ffmpeg/util. Justify any addition in the commit message.
+- Keep dependencies minimal. Justify any addition in the commit message.
 - Don't introduce a framework (React/Vue) without flagging it first — the app is
   intentionally vanilla TS + DOM and small.
 
 ## What to do when unsure
 Flag it in your response with a short options list and a recommendation. Don't
-guess on anything touching determinism, the data model, or export output.
+guess on anything touching determinism, the data model, licensing, or export
+output.
