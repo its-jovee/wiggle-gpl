@@ -204,6 +204,8 @@ let currentPalette: Palette = BUILTIN_PALETTES[0];
 let currentFont = DEFAULT_FONT.family;
 let availableFontOptions: FontOption[] = [...FONT_OPTIONS];
 let installedFontsLoaded = false;
+let installedFontsUnavailable = false;
+let installedFontsLoading: Promise<number> | null = null;
 let currentFontSize = 64;
 let currentTextWiggle = 1.5;
 let currentFillTolerance = 0;
@@ -8403,15 +8405,23 @@ async function loadInstalledFonts(): Promise<number> {
   if (installedFontsLoaded) {
     return availableFontOptions.filter((option) => option.id.startsWith("local:")).length;
   }
-  const installed = await queryInstalledFontOptions();
-  const byFamily = new Map<string, FontOption>();
-  for (const option of [...FONT_OPTIONS, ...installed]) {
-    const key = option.family.toLocaleLowerCase();
-    if (!byFamily.has(key)) byFamily.set(key, option);
+  if (installedFontsLoading) return installedFontsLoading;
+  installedFontsLoading = (async () => {
+    const installed = await queryInstalledFontOptions();
+    const byFamily = new Map<string, FontOption>();
+    for (const option of [...FONT_OPTIONS, ...installed]) {
+      const key = option.family.toLocaleLowerCase();
+      if (!byFamily.has(key)) byFamily.set(key, option);
+    }
+    availableFontOptions = [...byFamily.values()];
+    installedFontsLoaded = true;
+    return installed.length;
+  })();
+  try {
+    return await installedFontsLoading;
+  } finally {
+    installedFontsLoading = null;
   }
-  availableFontOptions = [...byFamily.values()];
-  installedFontsLoaded = true;
-  return installed.length;
 }
 
 function buildFontPickerIn(
@@ -8502,30 +8512,33 @@ function buildFontPickerIn(
       scroll.appendChild(option);
     }
 
-    if (supportsInstalledFontAccess() && !installedFontsLoaded) {
-      const load = document.createElement("button");
-      load.type = "button";
-      load.className = "brush-option font-menu-action";
-      load.textContent = "Load installed fonts…";
-      load.onclick = async () => {
-        load.disabled = true;
-        load.textContent = "Loading…";
-        try {
-          const count = await loadInstalledFonts();
-          setStatus(`${count} installed font families are now available`);
-          renderOptions();
-          search.focus();
-        } catch (error) {
-          load.disabled = false;
-          load.textContent = "Load installed fonts…";
-          const message = error instanceof DOMException && error.name === "NotAllowedError"
-            ? "Installed font access was not allowed"
-            : "Installed fonts are unavailable in this browser";
-          showToast(message, "info");
-        }
-      };
-      scroll.appendChild(load);
+    if (supportsInstalledFontAccess() && !installedFontsLoaded && !installedFontsUnavailable) {
+      const loading = document.createElement("div");
+      loading.className = "font-menu-empty";
+      loading.textContent = "Loading installed fonts…";
+      scroll.appendChild(loading);
     }
+  };
+
+  const autoLoadInstalledFonts = () => {
+    if (
+      installedFontsLoaded
+      || installedFontsUnavailable
+      || !supportsInstalledFontAccess()
+    ) return;
+    void loadInstalledFonts().then((count) => {
+      setStatus(`${count} installed font families are now available`);
+      if (!open) return;
+      renderOptions();
+      search.focus();
+    }).catch((error) => {
+      installedFontsUnavailable = true;
+      if (open) renderOptions();
+      const message = error instanceof DOMException && error.name === "NotAllowedError"
+        ? "Installed font access was not allowed"
+        : "Installed fonts are unavailable in this browser";
+      showToast(message, "info");
+    });
   };
 
   const closePicker = () => {
@@ -8551,6 +8564,7 @@ function buildFontPickerIn(
     closeFontPicker = closePicker;
     renderOptions();
     search.focus();
+    autoLoadInstalledFonts();
     onDocumentPointerDown = (event) => {
       const target = event.target;
       if (target instanceof Node && !picker.contains(target)) closePicker();
