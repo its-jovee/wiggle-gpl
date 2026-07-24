@@ -440,6 +440,7 @@ const loadProjectFile = $("load-project-file") as HTMLInputElement;
 // preview card share this one camera-transformed container. The stage area
 // itself is the board "surface" (the screen-space viewport into the world).
 const boardWorld = $("board-world") as HTMLElement;
+const activeProjectFrame = $("active-project-frame") as HTMLElement;
 
 let overscanX = 0;
 let overscanY = 0;
@@ -457,6 +458,7 @@ let projectLibraryReady = false;
 // active project is always live (the drawing canvas); this toggle only hides
 // the neighbours for a focused, solo-project look.
 let boardCardsVisible = true;
+let boardMoveToolActive = false;
 const projectFileHandles = new Map<string, FileSystemFileHandle>();
 let projectBoardMetaSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -637,8 +639,12 @@ function activeWorldRect(): WorldRect {
  *  so its top-left sits at (frame - overscan). */
 function positionActiveCanvas() {
   const rect = activeWorldRect();
-  canvas.style.left = `${rect.x - overscanX}px`;
-  canvas.style.top = `${rect.y - overscanY}px`;
+  activeProjectFrame.style.left = `${rect.x}px`;
+  activeProjectFrame.style.top = `${rect.y}px`;
+  activeProjectFrame.style.width = `${rect.width}px`;
+  activeProjectFrame.style.height = `${rect.height}px`;
+  canvas.style.left = `${-overscanX}px`;
+  canvas.style.top = `${-overscanY}px`;
   canvas.style.width = `${canvas.width}px`;
   canvas.style.height = `${canvas.height}px`;
 }
@@ -646,6 +652,10 @@ function positionActiveCanvas() {
 function applyViewport() {
   boardWorld.style.transform =
     `translate(${viewport.tx}px, ${viewport.ty}px) scale(${viewport.scale})`;
+  const inverseScale = 1 / Math.max(viewport.scale, 0.001);
+  boardWorld.style.setProperty("--board-pickup-lift", `${Math.min(120, 14 * inverseScale)}px`);
+  boardWorld.style.setProperty("--board-shadow-drop", `${Math.min(150, 18 * inverseScale)}px`);
+  boardWorld.style.setProperty("--board-shadow-blur", `${Math.min(180, 22 * inverseScale)}px`);
   $("zoom-label").textContent = `${Math.round(viewport.scale * 100)}%`;
   updateChromeFade();
   projectBoardMeta.camera = { ...viewport };
@@ -2707,6 +2717,13 @@ canvas.addEventListener("pointerdown", (e) => {
   if (playing) return;
   e.preventDefault();
   requestLoopFrame();
+  if (boardMoveToolActive) {
+    const record = activeLibraryProjectId
+      ? projectBoardRecords.find((item) => item.id === activeLibraryProjectId)
+      : null;
+    if (record) beginCanvasPlacement(e, activeProjectFrame, record, true);
+    return;
+  }
   if (shouldStartViewportPan(e)) {
     beginViewportPan(e);
     return;
@@ -9081,6 +9098,10 @@ function buildProjectBoard() {
     card.dataset.projectId = record.id;
     card.setAttribute("role", "button");
     card.setAttribute("aria-label", `Open ${record.name}`);
+    card.addEventListener("pointerdown", (event) => {
+      if (!boardMoveToolActive || event.button !== 0) return;
+      beginCanvasPlacement(event, card, record, false);
+    });
 
     if (record.previewDataUrl) {
       const img = document.createElement("img");
@@ -9108,6 +9129,10 @@ function buildProjectBoard() {
 
     // Click the preview to dive into the project; drag the label to arrange it.
     card.addEventListener("click", (event) => {
+      if (boardMoveToolActive) {
+        card.dataset.dragged = "";
+        return;
+      }
       if ((event.target as HTMLElement).closest(".board-card-label")) return;
       if (card.dataset.dragged === "1") { card.dataset.dragged = ""; return; }
       void focusProjectFromBoard(record.id);
@@ -9155,6 +9180,62 @@ function attachCardDrag(card: HTMLElement, handle: HTMLElement, record: ProjectL
   });
 }
 
+// Board placement is intentionally application state only: picking up a canvas
+// changes its library record, never project pixels, raw points, or render data.
+function beginCanvasPlacement(
+  event: PointerEvent,
+  element: HTMLElement,
+  record: ProjectLibraryRecord,
+  active: boolean
+) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const originX = record.x;
+  const originY = record.y;
+  let moved = false;
+  element.classList.remove("canvas-settling");
+  // Alternate a tiny deterministic tilt so repeated pickups feel handmade
+  // without introducing random state into any render path.
+  const tilt = record.id.length % 2 === 0 ? "-0.6deg" : "0.6deg";
+  element.style.setProperty("--board-pickup-tilt", tilt);
+  element.classList.add("canvas-picked-up");
+  try { element.setPointerCapture(event.pointerId); } catch {}
+
+  const move = (next: PointerEvent) => {
+    if (next.pointerId !== event.pointerId) return;
+    const screenDx = next.clientX - startX;
+    const screenDy = next.clientY - startY;
+    if (!moved && Math.hypot(screenDx, screenDy) > 3) moved = true;
+    record.x = originX + screenDx / viewport.scale;
+    record.y = originY + screenDy / viewport.scale;
+    if (active) {
+      positionActiveCanvas();
+    } else {
+      element.style.left = `${record.x}px`;
+      element.style.top = `${record.y}px`;
+    }
+  };
+  const finish = (next: PointerEvent) => {
+    if (next.pointerId !== event.pointerId) return;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    element.classList.remove("canvas-picked-up");
+    // Restart the little weight-settle animation even on quick successive moves.
+    void element.offsetWidth;
+    element.classList.add("canvas-settling");
+    element.addEventListener("animationend", () => element.classList.remove("canvas-settling"), { once: true });
+    if (moved) element.dataset.dragged = "1";
+    void putProjectLibraryRecord(record);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+}
+
 // Smoothly glide the camera to a target over ~320ms; used when diving into a
 // project so the preview stays in view while the session loads underneath.
 let cameraTween: number | null = null;
@@ -9190,6 +9271,15 @@ function setBoardCardsVisible(visible: boolean) {
   const button = $("project-board-button");
   button.classList.toggle("open", visible);
   button.setAttribute("aria-pressed", visible ? "true" : "false");
+}
+
+function setBoardMoveTool(active: boolean) {
+  boardMoveToolActive = active;
+  document.body.classList.toggle("board-move-tool", active);
+  const button = $("board-move-canvas");
+  button.setAttribute("aria-pressed", active ? "true" : "false");
+  button.classList.toggle("open", active);
+  setStatus(active ? "Move canvas: drag any canvas to place it" : "Canvas move tool off");
 }
 
 // Arrange every project on a tidy grid (newest first, top-left), then fit them
@@ -9601,6 +9691,9 @@ function buildFileMenu() {
   fitAllProjects();
 };
 ($("board-organize") as HTMLButtonElement).onclick = () => { void organizeProjects(); };
+const boardMoveButton = $("board-move-canvas") as HTMLButtonElement;
+boardMoveButton.prepend(StudioIcons.Move());
+boardMoveButton.onclick = () => setBoardMoveTool(!boardMoveToolActive);
 
 // Drag empty world space to pan the board. Events on the live canvas, a card,
 // or a floating control are left for their own handlers.

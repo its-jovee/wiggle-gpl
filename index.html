@@ -215,6 +215,8 @@
       position: absolute; overflow: visible; cursor: pointer;
       background: #fff; border: 1px solid var(--border-strong);
       border-radius: 2px; box-shadow: 0 8px 30px rgba(15,23,42,.16);
+      transform-origin: 50% 55%;
+      transition: transform 260ms var(--ease-out), box-shadow 260ms var(--ease-out);
     }
     .board-card img {
       display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 1px;
@@ -233,8 +235,50 @@
     .board-card-label .board-card-sub {
       font-weight: 500; color: var(--text-secondary); font-size: 0.82em;
     }
-    .board-card.dragging { cursor: grabbing; box-shadow: 0 14px 44px rgba(15,23,42,.24); }
+    #active-project-frame {
+      position: absolute; overflow: visible; pointer-events: none;
+      transform-origin: 50% 55%;
+      transition: transform 260ms var(--ease-out), filter 260ms var(--ease-out);
+    }
+    #active-project-frame::after {
+      content: ""; position: absolute; inset: 4% 3% -5%; z-index: -1;
+      border-radius: 8%; background: rgba(48, 36, 24, .24);
+      filter: blur(var(--board-shadow-blur, 22px));
+      opacity: 0; transform: translateY(var(--board-shadow-drop, 20px)) scale(.92);
+      transition: opacity 180ms ease-out, transform 260ms var(--ease-out);
+    }
+    #active-project-frame > #stage { pointer-events: auto; }
+    .board-card.canvas-picked-up,
+    #active-project-frame.canvas-picked-up {
+      cursor: grabbing;
+      transform: translateY(calc(-1 * var(--board-pickup-lift, 18px))) rotate(var(--board-pickup-tilt, -0.55deg));
+    }
+    .board-card.canvas-picked-up {
+      z-index: 4;
+      box-shadow:
+        0 var(--board-shadow-drop, 20px) var(--board-shadow-blur, 22px) rgba(48, 36, 24, .26),
+        0 2px 4px rgba(48, 36, 24, .12);
+    }
+    #active-project-frame.canvas-picked-up::after { opacity: 1; transform: translateY(var(--board-shadow-drop, 20px)) scale(1); }
+    .board-card.canvas-settling,
+    #active-project-frame.canvas-settling { animation: canvas-settle 360ms var(--ease-out); }
+    @keyframes canvas-settle {
+      0% { transform: translateY(calc(-.35 * var(--board-pickup-lift, 18px))) rotate(calc(-.45 * var(--board-pickup-tilt, -0.55deg))); }
+      42% { transform: translateY(calc(.12 * var(--board-pickup-lift, 18px))) rotate(.3deg); }
+      72% { transform: translateY(calc(-.04 * var(--board-pickup-lift, 18px))) rotate(-.12deg); }
+      100% { transform: none; }
+    }
+    .board-card.dragging { cursor: grabbing; }
     .board-card.active-frame { outline: 2px solid var(--accent); outline-offset: 2px; }
+    body.board-move-tool .board-card,
+    body.board-move-tool #stage { cursor: grab; }
+    body.board-move-tool .board-card.canvas-picked-up,
+    body.board-move-tool #active-project-frame.canvas-picked-up #stage { cursor: grabbing; }
+    #board-move-canvas[aria-pressed="true"] {
+      color: var(--accent-ink); background: var(--accent-soft);
+      border-color: rgba(228, 87, 46, .32);
+    }
+    #board-move-canvas svg { width: 15px; height: 15px; margin-right: 3px; vertical-align: -3px; }
     .canvas-hint {
       position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
       max-width: min(280px, calc(100% - 56px)); padding: 28px 24px 20px;
@@ -267,9 +311,8 @@
     }
     .canvas-hint-dismiss:hover { background: var(--accent-hover); }
     .canvas-hint-dismiss:active { transform: scale(0.97); }
-    /* The live canvas is positioned in world coordinates by JS (left/top/width/
-       height set to the active project's world slot). Zoom/pan comes from the
-       #board-world camera transform, so the canvas itself carries no transform. */
+    /* The live canvas sits inside a frame wrapper so board placement can lift
+       the finite canvas without touching its render or input coordinates. */
     #stage {
       position: absolute;
       background: transparent; border: 1px solid var(--border-strong); border-radius: var(--radius-md);
@@ -279,7 +322,7 @@
     /* Two-ID specificity so the world-pixel size set inline always wins over the
        responsive `#stage { max-height }` rules further down (those assumed the
        canvas was laid out by the stage grid; it no longer is). */
-    #board-world > #stage {
+    #active-project-frame > #stage {
       height: auto; max-height: none; min-height: 0;
       width: auto; max-width: none; aspect-ratio: auto;
     }
@@ -1630,8 +1673,15 @@
     .topbar .menu-button { min-height: 28px; padding: 4px 7px; }
     .topbar .file-menu { top: calc(100% + 7px); }
     .topbar-menus .menu-wrap:last-child .file-menu { left: auto; right: 0; }
-    .stage-wrap { height: 100vh; padding: 48px 16px 16px; }
-    #stage { max-height: calc(100vh - 64px); }
+    .stage-wrap {
+      position: fixed; inset: 0; height: auto; padding: 0; display: block;
+    }
+    .stage-area { position: absolute; inset: 0; }
+    #breadcrumb {
+      position: fixed; top: 52px; left: 50%; z-index: var(--z-sticky);
+      transform: translateX(-50%); pointer-events: auto;
+    }
+    #stage { max-height: none; }
     .toolbox-panel, .left-sidebar, .timeline-panel, .right-sidebar { top: 52px; }
 
     /* Photoshop-like vertical toolbox with modular settings beside it. */
@@ -2090,6 +2140,8 @@
         title="Fit every project into view">Fit all</button>
       <button id="board-organize" class="menu-button board-tool" type="button"
         title="Arrange all projects in a tidy grid">Organize</button>
+      <button id="board-move-canvas" class="menu-button board-tool" type="button"
+        aria-pressed="false" title="Pick up and move a canvas">Move</button>
       <span id="file-name">Untitled</span>
       <span id="dirty-dot">●</span>
     </div>
@@ -2404,7 +2456,9 @@
       <div id="breadcrumb"></div>
       <div class="stage-area" id="stage-area">
         <div id="board-world">
-          <canvas id="stage"></canvas>
+          <div id="active-project-frame">
+            <canvas id="stage"></canvas>
+          </div>
         </div>
         <div id="canvas-hint" class="canvas-hint" hidden>
           <div class="canvas-hint-mark" aria-hidden="true">
