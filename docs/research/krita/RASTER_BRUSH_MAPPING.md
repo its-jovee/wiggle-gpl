@@ -105,9 +105,11 @@ and appear only while a raster layer is active.
 
 | Krita preset / engine | Source | Wiggle key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
-| `hairybrush.kpp` | `plugins/paintops/hairy/` | `krita.bristle` | approximated | Fixed bristle count; no connected-path ink |
+| `hairybrush.kpp` | `plugins/paintops/hairy/` | `krita.bristle` | approximated | Fixed bristle count; no connected-path ink, shear physics, or mouse-pressure bristle dynamics |
 | Bundle bristles (`f)_Bristles-*`) | mostly `paintbrush` tips | — | skipped | Tip-bitmap family; one simplified hairy stamp covers the ask |
-| `tangentnormal.kpp` / `w)_Texture_Normal_Map` | `plugins/paintops/tangentnormal/` | `krita.tangentNormal` | approximated | Encodes stroke direction in RGB; no pen tilt/elevation |
+| `tangentnormal.kpp` / `w)_Texture_Normal_Map` | `plugins/paintops/tangentnormal/` | `krita.tangentNormal` | approximated | Encodes stroke **heading** in RGB; fixed Z stand-in — no pen tilt/elevation channel mix |
+
+**Shipped material differences (Phase 6):** Krita’s hairy brush maintains per-bristle state along a stroke (ink, connectivity, shear). Wiggle stamps independent seeded strands each dab. Krita’s tangent normal mixes tilt sensors into channel swizzles; Wiggle only maps `atan2(delta)` into a unit normal with constant elevation.
 
 ### Explicitly skipped families (do not implement)
 

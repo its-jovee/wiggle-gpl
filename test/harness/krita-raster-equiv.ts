@@ -226,6 +226,66 @@ function runKritaRasterTests(): string[] {
   const gridB = paintStroke("krita.gridBasic");
   if (hashCanvas(gridA) !== hashCanvas(gridB)) failures.push("gridBasic not deterministic");
 
+  // Phase 6 bristle / tangent normal
+  for (const key of ["krita.bristle", "krita.tangentNormal"]) {
+    const brush = BRUSHES.find((b) => b.key === key);
+    if (!brush?.rasterOnly) failures.push(`${key} missing or not rasterOnly`);
+  }
+  const bristleA = paintStroke("krita.bristle");
+  const bristleB = paintStroke("krita.bristle");
+  if (hashCanvas(bristleA) !== hashCanvas(bristleB)) failures.push("bristle not deterministic");
+
+  // Bristle work stays bounded at large size
+  {
+    let strokes = 0;
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext("2d")!;
+    const orig = ctx.stroke.bind(ctx);
+    ctx.stroke = (...args: Parameters<CanvasRenderingContext2D["stroke"]>) => {
+      strokes++;
+      return orig(...args);
+    };
+    brushByKey("krita.bristle").stamp({
+      ctx,
+      pos: { x: 64, y: 64 },
+      delta: { x: 1, y: 0.2 },
+      color: "#321",
+      size: 30,
+      tick: 2,
+      seed: 5,
+      bg: "#fff",
+      pressure: 1,
+      flow: 1,
+    });
+    if (strokes > 18) failures.push(`bristle unbounded at large size: ${strokes}`);
+  }
+
+  // Tangent normal encodes direction into RGB (not stroke color)
+  {
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext("2d")!;
+    brushByKey("krita.tangentNormal").stamp({
+      ctx,
+      pos: { x: 16, y: 16 },
+      delta: { x: 1, y: 0 },
+      color: "#ff00ff",
+      size: 4,
+      tick: 1,
+      seed: 1,
+      bg: "#000",
+      pressure: 1,
+      flow: 1,
+    });
+    const px = ctx.getImageData(16, 16, 1, 1).data;
+    // Heading 0 → +X normal → R high, G mid, B mid-high
+    if (px[0] < 180) failures.push(`tangentNormal expected high R for +X, got ${px[0]}`);
+    if (Math.abs(px[0] - px[2]) < 10) failures.push("tangentNormal RGB channels look flat");
+  }
+
   // Eraser compositing punches existing pixels
   const erased = paintStroke("krita.eraserHard", { eraseOverlay: true });
   const mid = erased.getContext("2d")!.getImageData(40, 20, 16, 8).data;

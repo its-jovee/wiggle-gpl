@@ -480,10 +480,95 @@ const KRITA_HATCH_GRID_BRUSHES: Brush[] = [
   },
 ];
 
+/**
+ * Phase 6: simplified Bristle + Tangent Normal.
+ *
+ * Material differences vs Krita (hairybrush / tangentnormal paintops):
+ * - Bristle: fixed per-dab strand count from seeded offsets; no connected-path
+ *   ink depletion, mouse-pressure shear physics, or anti-aliased bristle compositing
+ *   from plugins/paintops/hairy/.
+ * - Tangent Normal: encodes stroke heading into RGB as a tangent-space normal
+ *   approximation; ignores pen tilt/elevation channel swizzle and mix from
+ *   plugins/paintops/tangentnormal/. Output is useful for direction-aware maps,
+ *   not a pixel-identical Krita normal bake.
+ */
+const KRITA_BRISTLE_NORMAL_BRUSHES: Brush[] = [
+  {
+    // Inspired by hairybrush.kpp — deterministic per-dab bristles only.
+    key: "krita.bristle",
+    label: "Bristle",
+    spacing: 3,
+    group: "Krita Bristle",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, color, size } = b;
+      const heading = tipAngle(b, "heading");
+      const count = Math.min(18, 6 + Math.floor(size * 2));
+      const p = b.pressure ?? 1;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(0.4, 0.35 * size);
+      for (let i = 0; i < count; i++) {
+        const side = (unit01(b.tick + i * 11, b.seed + i * 7, 2.2) - 0.5) * 2.8 * size;
+        const len =
+          (3.5 + 3.5 * unit01(b.tick + i * 19, b.seed + i * 13, 4.4)) * size * (0.55 + 0.45 * p);
+        const ang =
+          heading + (unit01(b.tick + i * 23, b.seed + i * 17, 6.1) - 0.5) * 0.35;
+        const ox = Math.cos(heading + Math.PI / 2) * side;
+        const oy = Math.sin(heading + Math.PI / 2) * side;
+        ctx.globalAlpha =
+          0.55 *
+          (b.flow ?? 1) *
+          (0.4 + 0.6 * unit01(b.tick + i * 3, b.seed + i * 5, 8.8)) *
+          (0.35 + 0.65 * p);
+        ctx.beginPath();
+        ctx.moveTo(pos.x + ox, pos.y + oy);
+        ctx.lineTo(pos.x + ox + Math.cos(ang) * len, pos.y + oy + Math.sin(ang) * len);
+        ctx.stroke();
+      }
+      // Optional fan tip mask for body density without stateful ink.
+      stampGeneratedTip(b, "bristleFan", 2.2 * size, 0.18 * (0.4 + 0.6 * p), {
+        angle: heading,
+      });
+      ctx.restore();
+    },
+  },
+  {
+    // Inspired by tangentnormal.kpp / w)_Texture_Normal_Map — direction → RGB.
+    key: "krita.tangentNormal",
+    label: "Tangent Normal",
+    spacing: 2,
+    group: "Krita Normal",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, size } = b;
+      const heading = tipAngle(b, "heading");
+      // Map heading to a tangent-space normal: X/Y from direction, Z up.
+      const nx = Math.cos(heading);
+      const ny = Math.sin(heading);
+      const nz = 0.65; // fixed elevation stand-in (no tilt sensor)
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const r = Math.round(((nx / len) * 0.5 + 0.5) * 255);
+      const g = Math.round(((ny / len) * 0.5 + 0.5) * 255);
+      const bl = Math.round(((nz / len) * 0.5 + 0.5) * 255);
+      const radius = Math.max(1, 2.6 * size);
+      ctx.save();
+      ctx.globalAlpha = 0.95 * (b.flow ?? 1);
+      ctx.fillStyle = `rgb(${r},${g},${bl})`;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    },
+  },
+];
+
 /** All Krita-inspired raster registry entries (phases accumulate here). */
 export const KRITA_RASTER_BRUSHES: Brush[] = [
   ...KRITA_EVERYDAY_BRUSHES,
   ...KRITA_CHALK_BRUSHES,
   ...KRITA_SPRAY_BRUSHES,
   ...KRITA_HATCH_GRID_BRUSHES,
+  ...KRITA_BRISTLE_NORMAL_BRUSHES,
 ];
