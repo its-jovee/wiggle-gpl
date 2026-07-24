@@ -60,7 +60,10 @@ import { AudioPreview } from "./core/audioPreview";
 import { audioBridge } from "./core/electronAudio";
 import { menuBridge } from "./core/electronMenu";
 import { audioDurationMs, drawWaveform, waveformPeaks } from "./core/waveform";
-import { FONT_OPTIONS, DEFAULT_FONT } from "./core/fonts";
+import {
+  FONT_OPTIONS, DEFAULT_FONT, FontOption, fontFamilyCss,
+  queryInstalledFontOptions, supportsInstalledFontAccess,
+} from "./core/fonts";
 import { hashId, isInsideBounds, shapePoints, pointsToPath, strokeBorder } from "./core/subpanel";
 import { easeProgress } from "./core/anim";
 import { timelineScrollAfterRebuild } from "./core/timelineScroll";
@@ -198,6 +201,8 @@ let toneToolActive = false;
 let toneToolPrevLayerIndex: number | null = null;
 let currentPalette: Palette = BUILTIN_PALETTES[0];
 let currentFont = DEFAULT_FONT.family;
+let availableFontOptions: FontOption[] = [...FONT_OPTIONS];
+let installedFontsLoaded = false;
 let currentFontSize = 64;
 let currentTextWiggle = 1.5;
 let currentFillTolerance = 0;
@@ -1799,8 +1804,11 @@ function applyPerspectiveSnap(pos: Vec2): Vec2 {
 const _measureCanvas = document.createElement("canvas");
 const _measureCtx = _measureCanvas.getContext("2d")!;
 function measureText(t: TextElement): { width: number; height: number } {
-  _measureCtx.font = `${t.fontSize}px "${t.fontFamily}", sans-serif`;
-  return { width: _measureCtx.measureText(t.content || " ").width, height: t.fontSize * 1.2 };
+  _measureCtx.font = `${t.fontSize}px ${fontFamilyCss(t.fontFamily)}`;
+  const lines = t.content.split("\n");
+  let width = 0;
+  for (const line of lines) width = Math.max(width, _measureCtx.measureText(line || " ").width);
+  return { width, height: Math.max(1, lines.length) * t.fontSize * 1.2 };
 }
 
 function hitTestText(pos: { x: number; y: number }): TextRef | null {
@@ -3590,45 +3598,62 @@ function openTextInputAt(pos: { x: number; y: number }) {
   const r = canvas.getBoundingClientRect();
   const sx = r.left + ((pos.x + overscanX) / canvas.width) * r.width;
   const sy = r.top + ((pos.y + overscanY) / canvas.height) * r.height;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "type · Enter ok · Esc cancel";
+  const left = Math.max(8, Math.min(sx, window.innerWidth - 196));
+  const width = Math.max(180, Math.min(320, window.innerWidth - left - 16));
+  const input = document.createElement("textarea");
+  input.rows = 1;
+  input.placeholder = "Type text…  ⌘/Ctrl+Enter to finish";
   input.autocomplete = "off";
   input.spellcheck = false;
   input.style.cssText = `
-    position: fixed; left: ${sx}px; top: ${sy}px; z-index: 70;
-    font-family: "${currentFont}", sans-serif;
+    position: fixed; left: ${left}px; top: ${Math.min(sy, window.innerHeight - 64)}px; z-index: 70;
+    font-family: ${fontFamilyCss(currentFont)};
     font-size: ${Math.max(12, currentFontSize * (r.width / canvas.width))}px;
+    line-height: 1.2; white-space: pre-wrap; resize: none; overflow: hidden;
     color: ${currentColor};
     background: rgba(26,21,18,0.94);
     border: 2px solid var(--accent);
     border-radius: 6px; padding: 4px 8px;
-    outline: none; min-width: 140px;
+    outline: none; width: ${width}px;
+    min-width: 180px; min-height: 1.2em; max-width: 560px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   `;
   document.body.appendChild(input);
 
+  const resize = () => {
+    input.style.height = "auto";
+    const availableHeight = window.innerHeight - input.getBoundingClientRect().top - 16;
+    input.style.height = `${Math.max(32, Math.min(input.scrollHeight, availableHeight))}px`;
+    input.style.overflowY = input.scrollHeight > input.clientHeight ? "auto" : "hidden";
+  };
   let committed = false;
   const cleanup = () => { if (input.parentNode) input.remove(); };
   const commit = () => {
     if (committed) return;
     committed = true;
-    const content = input.value.trim();
+    const content = input.value;
     cleanup();
-    if (content) addTextElement(pos, content);
+    if (content.trim()) addTextElement(pos, content);
   };
 
   // Defer focus past the originating click so the just-completed pointerup
   // doesn't blur us out before the user can type. Without this, Electron in
   // particular tends to refocus the canvas after the click, blur-committing
   // the empty input.
-  setTimeout(() => input.focus(), 0);
+  setTimeout(() => {
+    input.focus();
+    resize();
+  }, 0);
 
   input.addEventListener("keydown", (ev) => {
     ev.stopPropagation();
-    if (ev.key === "Enter") commit();
+    if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault();
+      commit();
+    }
     else if (ev.key === "Escape") { committed = true; cleanup(); }
   });
+  input.addEventListener("input", resize);
   // Only commit on blur if the user actually typed something. An empty-input
   // blur is treated as a silent cancel — covers the "click again to dismiss"
   // case without losing what you were about to type.
@@ -7321,22 +7346,31 @@ function appendTextInspector(host: HTMLElement, ref: TextRef) {
   };
 
   // Content
-  const content = document.createElement("input");
-  content.type = "text"; content.value = t.content;
-  content.style.cssText = "width:100%;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:4px;font-size:12px;font-family:inherit;";
+  const content = document.createElement("textarea");
+  content.rows = 3; content.value = t.content;
+  content.style.cssText = "width:100%;resize:vertical;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:4px;font-size:12px;line-height:1.35;font-family:inherit;";
   content.oninput = () => { t.content = content.value; };
   content.onchange = () => commitHistory();
   row("Content", content);
 
   // Font
-  const font = document.createElement("select");
-  for (const f of FONT_OPTIONS) {
-    const o = document.createElement("option");
-    o.value = f.family; o.textContent = f.label;
-    if (f.family === t.fontFamily) o.selected = true;
-    font.appendChild(o);
-  }
-  font.onchange = () => { t.fontFamily = font.value; commitHistory(); };
+  const font = document.createElement("input");
+  font.type = "text";
+  font.setAttribute("list", "font-options");
+  font.autocomplete = "off";
+  font.spellcheck = false;
+  font.value = t.fontFamily;
+  font.style.fontFamily = fontFamilyCss(t.fontFamily);
+  font.oninput = () => {
+    const family = font.value.trim();
+    if (!family) return;
+    t.fontFamily = family;
+    font.style.fontFamily = fontFamilyCss(family);
+  };
+  font.onchange = () => {
+    if (!font.value.trim()) font.value = t.fontFamily;
+    commitHistory();
+  };
   row("Font", font);
 
   // Size
@@ -8376,17 +8410,66 @@ function updatePlayheadChrome() {
 
 // ---- text controls --------------------------------------------------------
 
-function buildFontPicker() {
-  const sel = $("font-picker") as HTMLSelectElement;
-  sel.innerHTML = "";
-  for (const f of FONT_OPTIONS) {
-    const o = document.createElement("option");
-    o.value = f.family; o.textContent = f.label;
-    o.style.fontFamily = `"${f.family}", sans-serif`;
-    if (f.family === currentFont) o.selected = true;
-    sel.appendChild(o);
+function refreshFontDatalist() {
+  const list = $("font-options") as HTMLDataListElement;
+  list.innerHTML = "";
+  for (const f of availableFontOptions) {
+    const option = document.createElement("option");
+    option.value = f.family;
+    option.label = f.label;
+    list.appendChild(option);
   }
-  sel.onchange = () => { currentFont = sel.value; };
+}
+
+async function loadInstalledFonts() {
+  const button = $("load-installed-fonts") as HTMLButtonElement;
+  if (installedFontsLoaded) {
+    ($("font-picker") as HTMLInputElement).focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Loading…";
+  try {
+    const installed = await queryInstalledFontOptions();
+    const byFamily = new Map<string, FontOption>();
+    for (const option of [...FONT_OPTIONS, ...installed]) {
+      const key = option.family.toLocaleLowerCase();
+      if (!byFamily.has(key)) byFamily.set(key, option);
+    }
+    availableFontOptions = [...byFamily.values()];
+    installedFontsLoaded = true;
+    refreshFontDatalist();
+    button.textContent = "Installed";
+    button.title = `${installed.length} installed font families available`;
+    setStatus(`${installed.length} installed font families are now available`);
+    ($("font-picker") as HTMLInputElement).focus();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Installed…";
+    const message = error instanceof DOMException && error.name === "NotAllowedError"
+      ? "Installed font access was not allowed"
+      : "Installed fonts are unavailable in this browser";
+    showToast(message, "info");
+  }
+}
+
+function buildFontPicker() {
+  const input = $("font-picker") as HTMLInputElement;
+  const button = $("load-installed-fonts") as HTMLButtonElement;
+  input.value = currentFont;
+  input.style.fontFamily = fontFamilyCss(currentFont);
+  input.oninput = () => {
+    const family = input.value.trim();
+    if (!family) return;
+    currentFont = family;
+    input.style.fontFamily = fontFamilyCss(family);
+  };
+  input.onchange = () => {
+    if (!input.value.trim()) input.value = currentFont;
+  };
+  refreshFontDatalist();
+  button.hidden = !supportsInstalledFontAccess();
+  button.onclick = () => { void loadInstalledFonts(); };
 }
 
 ($("font-size") as HTMLInputElement).oninput = (e) => {
