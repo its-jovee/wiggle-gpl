@@ -656,6 +656,7 @@ function applyViewport() {
 /** Fit the active project's frame into the board surface (with margin). */
 function fitViewport() {
   const rect = surfaceRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   viewport = fitCamera({ width: rect.width, height: rect.height }, activeWorldRect(), 40);
   applyViewport();
 }
@@ -663,6 +664,7 @@ function fitViewport() {
 /** Frame the active project at exactly 1:1 (100%), centred in the surface. */
 function resetViewport() {
   const rect = surfaceRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   const frame = activeWorldRect();
   viewport = {
     scale: 1,
@@ -676,9 +678,10 @@ function resetViewport() {
  *  With more than one project we pull back a little further so the view clearly
  *  reads as the board (chrome faded) rather than a near-focused single frame. */
 function fitAllProjects() {
+  const rect = surfaceRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   const rects = boardWorldRects();
   const bounds = boundingRect(rects) ?? activeWorldRect();
-  const rect = surfaceRect();
   const surface = { width: rect.width, height: rect.height };
   viewport = fitCamera(surface, bounds, 72);
   if (projectBoardRecords.length > 1) {
@@ -4299,11 +4302,23 @@ function requestLoopFrame() {
 // often the loop is woken, not how it computes time.
 let wiggleIntervalId: ReturnType<typeof setInterval> | null = null;
 let wiggleIntervalFps = -1;
+// When surveying the board (the active project is a distant thumbnail and we're
+// not playing or drawing), the live wiggle is barely perceptible, so we wake the
+// render loop far less often — the loop still derives the tick from `now`, so
+// only the redraw cadence changes, not playback timing or determinism.
+const BOARD_OVERVIEW_FPS = 4;
+function effectiveWiggleFps(): number {
+  if (boardOverview && !playing && !drawing) {
+    return Math.min(project.wiggleFps, BOARD_OVERVIEW_FPS);
+  }
+  return project.wiggleFps;
+}
 function ensureWiggleInterval() {
-  if (wiggleIntervalFps === project.wiggleFps) return;
+  const fps = effectiveWiggleFps();
+  if (wiggleIntervalFps === fps) return;
   if (wiggleIntervalId !== null) clearInterval(wiggleIntervalId);
-  wiggleIntervalFps = project.wiggleFps;
-  wiggleIntervalId = setInterval(() => requestLoopFrame(), 1000 / project.wiggleFps);
+  wiggleIntervalFps = fps;
+  wiggleIntervalId = setInterval(() => requestLoopFrame(), 1000 / fps);
 }
 
 function loop(now: number) {
@@ -8975,6 +8990,9 @@ function nextWorldPosition(): { x: number; y: number } {
 // the --chrome-fade variable onto the sidebars/toolbox/timeline; the top bar
 // stays put so navigation controls remain reachable.
 let chromeFaded = false;
+// True once the active project is a small thumbnail on the board; throttles the
+// wiggle redraw (see effectiveWiggleFps).
+let boardOverview = false;
 
 // Scale at which the active project's frame just fits the surface. Fading is
 // measured relative to this so it means the same thing ("zoomed out past the
@@ -9004,6 +9022,8 @@ function updateChromeFade() {
     chromeFaded = faded;
     document.body.classList.toggle("chrome-faded", faded);
   }
+  // Deep board-overview zoom throttles the live wiggle redraw.
+  boardOverview = ratio < 0.4;
 }
 
 function saveProjectBoardMetaSoon() {
@@ -9184,7 +9204,10 @@ async function organizeProjects() {
     cellW = Math.max(cellW, info.width);
     cellH = Math.max(cellH, info.height);
   }
-  const positions = organizeGrid(ordered.length, { width: cellW, height: cellH }, 4, 260);
+  // A roughly square grid reads best and, being 2-D, actually shrinks on zoom
+  // so "fit all" lands in board mode.
+  const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+  const positions = organizeGrid(ordered.length, { width: cellW, height: cellH }, columns, 260);
   for (let i = 0; i < ordered.length; i++) {
     ordered[i].x = positions[i].x;
     ordered[i].y = positions[i].y;
@@ -9198,6 +9221,7 @@ async function organizeProjects() {
 // into the surface at a comfortable size.
 function cameraForRecord(record: Pick<ProjectLibraryRecord, "x" | "y">, width: number, height: number): Camera {
   const rect = surfaceRect();
+  if (rect.width <= 0 || rect.height <= 0) return { ...viewport };
   return fitCamera({ width: rect.width, height: rect.height }, {
     x: record.x, y: record.y, width, height,
   }, 40);
