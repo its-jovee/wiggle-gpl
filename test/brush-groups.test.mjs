@@ -95,3 +95,17 @@ test("missing brush keys fall back safely for saved-project compatibility", () =
   assert.equal(resolved.changed, true);
   assert.equal(resolved.brush.key, "round");
 });
+
+test("phase-2 krita brushes stay raster-gated and map into tool chrome", () => {
+  assert.equal(groups.brushToolForKey("krita.quick"), "classic");
+  assert.equal(groups.brushToolForKey("krita.paintTextured"), "texture");
+  assert.equal(groups.brushToolForKey("krita.eraserHard"), "eraser");
+  assert.equal(groups.isBrushKeyAvailable("krita.pixelHard", "draw"), false);
+  assert.equal(groups.isBrushKeyAvailable("krita.pixelHard", "raster"), true);
+  assert.ok(
+    groups.brushesForTool("classic", "raster").some((b) => b.key === "krita.quick")
+  );
+  assert.ok(
+    !groups.brushesForTool("classic", "draw").some((b) => b.key.startsWith("krita."))
+  );
+});

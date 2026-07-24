@@ -35,7 +35,13 @@ export function brushToolForBrush(brush: Brush): BrushToolKey {
   // Krita-inspired family groups still map into the nearest tool chrome.
   if (brush.group?.startsWith("Krita")) {
     if (brush.group.includes("Spray") || brush.group.includes("FX")) return "scatter";
-    if (brush.group.includes("Chalk") || brush.group.includes("Dry")) return "texture";
+    if (
+      brush.group.includes("Chalk") ||
+      brush.group.includes("Dry") ||
+      brush.group.includes("Paint")
+    ) {
+      return "texture";
+    }
     return "classic";
   }
   return "classic";

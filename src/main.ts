@@ -4790,7 +4790,16 @@ function buildBrushBar() {
     closePicker();
   });
 
+  let lastGroup: string | null = null;
   for (const b of activeBrushes) {
+    const groupName = b.group ?? (activeTool === "classic" ? "Classic" : activeToolLabel);
+    if (groupName !== lastGroup) {
+      lastGroup = groupName;
+      const header = document.createElement("div");
+      header.className = "brush-menu-group";
+      header.textContent = groupName;
+      menu.appendChild(header);
+    }
     const option = document.createElement("button");
     option.type = "button";
     option.className = "brush-option" + (b.key === activeBrush.key ? " active" : "");
@@ -5837,6 +5846,8 @@ function buildTimeline() {
   if (timelineMode === "tracks") { buildTrackView(tl); return; }
 
   // Draw mode — make the element timing tracks reachable from the filmstrip.
+  tl.appendChild(buildTransportBar());
+
   const tabRow = document.createElement("div");
   tabRow.className = "timeline-tabs";
   const panelsTab = document.createElement("button");
@@ -5853,8 +5864,6 @@ function buildTimeline() {
   };
   tabRow.append(panelsTab, tracksTab);
   tl.appendChild(tabRow);
-
-  tl.appendChild(buildTransportBar());
 
   // Filmstrip scroll area
   const filmstrip = document.createElement("div");
@@ -6267,7 +6276,9 @@ function buildTrackView(tl: HTMLElement) {
   const wiggleFps = project.wiggleFps;
   const totalTicks = Math.max(1, Math.round((panel.durationMs / 1000) * wiggleFps));
 
-  // Tab header
+  // Transport above tabs so playback stays visible while switching views.
+  tl.appendChild(buildTransportBar());
+
   const tabRow = document.createElement("div");
   tabRow.className = "timeline-tabs";
   const panelsTab = document.createElement("button");
@@ -6279,9 +6290,6 @@ function buildTrackView(tl: HTMLElement) {
   tracksTab.className = "timeline-tab active";
   tabRow.append(panelsTab, tracksTab);
   tl.appendChild(tabRow);
-
-  // Transport bar
-  tl.appendChild(buildTransportBar());
 
   const header = document.createElement("div");
   header.className = "track-header";

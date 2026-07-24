@@ -17,6 +17,7 @@
 import { Vec2 } from "../core/types";
 import { pickIndex, noise } from "../core/rng";
 import { stampTexture } from "./textures";
+import { KRITA_RASTER_BRUSHES } from "./kritaRaster";
 
 export type BrushContext = {
   ctx: CanvasRenderingContext2D;
@@ -517,6 +518,9 @@ export const BRUSHES: Brush[] = [
     key: "eraser_grain", label: "Grainy Eraser", spacing: 3, erase: true, group: "Scatter & FX",
     stamp: (b) => stampTexture(b, "charcoalGrain", 5 * b.size, 0.7),
   },
+
+  // Krita-inspired raster-only presets (see kritaRaster.ts / RASTER_BRUSH_MAPPING.md).
+  ...KRITA_RASTER_BRUSHES,
 ];
 
 export const brushByKey = (k: string): Brush =>
