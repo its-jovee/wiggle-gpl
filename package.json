@@ -2,55 +2,107 @@
   "name": "wiggle-gpl",
   "private": true,
   "version": "0.1.1",
+  "description": "A local-first GPLv3 animation editor for hand-drawn, wiggly video.",
+  "author": "its-jovee",
   "license": "GPL-3.0-only",
+  "homepage": "https://github.com/its-jovee/wiggle-gpl#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/its-jovee/wiggle-gpl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/its-jovee/wiggle-gpl/issues"
+  },
   "type": "module",
   "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "vite",
     "postinstall": "node scripts/copy-ffmpeg.mjs",
+    "prebuild": "npm run notices:check",
     "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
     "build": "node scripts/copy-ffmpeg.mjs && tsc && vite build",
+    "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
+    "verify": "npm run typecheck && npm run build && npm test",
+    "notices": "node scripts/generate-third-party-notices.mjs",
+    "notices:check": "node scripts/generate-third-party-notices.mjs --check",
+    "release:validate": "node scripts/validate-release.mjs",
+    "release:checksums": "node scripts/write-release-checksums.mjs",
     "preview": "vite preview",
     "perf:project": "node scripts/perf-project.mjs",
     "electron:dev": "VITE_DEV_URL=http://localhost:5173 electron .",
     "electron:build": "npm run build && electron-builder --mac",
-    "electron:release": "npm run build && electron-builder --mac --publish always"
+    "electron:release": "npm run build && electron-builder --mac --publish always -c.forceCodeSigning=true -c.mac.notarize=true"
   },
   "devDependencies": {
-    "electron": "^32.3.3",
-    "electron-builder": "^25.1.8",
-    "playwright": "^1.60.0",
-    "typescript": "^5.4.0",
-    "vite": "^5.4.16"
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "playwright": "^1.61.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
   },
   "dependencies": {
     "@ffmpeg/core": "0.12.6",
     "@ffmpeg/ffmpeg": "0.12.15",
     "@ffmpeg/util": "0.12.2",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "reicon": "^1.1.103"
   },
   "build": {
     "appId": "com.wigglegpl.app",
     "productName": "Wiggle GPL",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "LICENSE",
+      "NOTICE.md",
+      "THIRD_PARTY_NOTICES.md",
+      "docs/licenses/**/*"
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.graphics-design",
-      "icon": "build/wiggle-gpl.icns"
+      "icon": "build/wiggle-gpl.icns",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "hardenedRuntime": true
     },
-    "publish": [{
-      "provider": "github",
-      "owner": "its-jovee",
-      "repo": "wiggle-gpl",
-      "releaseType": "release"
-    }],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "its-jovee",
+        "repo": "wiggle-gpl",
+        "releaseType": "release"
+      }
+    ],
     "directories": {
       "buildResources": "build",
       "output": "release"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICE.md",
+        "to": "NOTICE.md"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "docs/licenses",
+        "to": "licenses"
+      }
+    ]
   }
 }

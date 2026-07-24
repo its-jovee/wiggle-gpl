@@ -11,9 +11,9 @@ function compileSequence() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -81,6 +81,28 @@ test("sequenceAtTime maps boundaries within expanded timeline", () => {
   assert.deepEqual(sequence.sequenceAtTime(project, 3999), {
     index: 1, localMs: 999, groupId: "g1", iteration: 1, entryIndex: 3,
   });
+});
+
+test("sequenceTransitionAtTime overlaps the tail with the next entry", () => {
+  const project = makeProject([1000, 1000]);
+  project.wiggleFps = 8;
+  project.panels[0].transitionToNext = { kind: "crossfade", durationTicks: 4 };
+
+  assert.equal(sequence.sequenceTransitionAtTime(project, 499).transition, undefined);
+  assert.deepEqual(sequence.sequenceTransitionAtTime(project, 750).transition, {
+    nextIndex: 1,
+    nextEntryIndex: 1,
+    progress: 0.5,
+    durationMs: 500,
+  });
+  assert.equal(sequence.sequenceTransitionAtTime(project, 1000).transition, undefined);
+});
+
+test("the final expanded entry does not crossfade back to the first", () => {
+  const project = makeProject([1000, 1000]);
+  project.wiggleFps = 8;
+  project.panels[1].transitionToNext = { kind: "crossfade", durationTicks: 4 };
+  assert.equal(sequence.sequenceTransitionAtTime(project, 1750).transition, undefined);
 });
 
 test("mixed grouped and ungrouped panels expand correctly", () => {

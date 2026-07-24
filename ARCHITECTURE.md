@@ -9,14 +9,30 @@ Project { version, width=1080, height=1920, wiggleFps, panels[] }
 Panel   { id, durationMs, bg, paletteId, strokes[] }
 Stroke  { brush, color, size, points[] }   // points are RAW, un-jittered
 ```
-The entire app state is one serializable `Project` object. Save/load is just
-JSON in/out — no hidden state lives outside it (the only transient things are
-the current tool selection and the clocks, which are UI state, not document
-state).
+The entire document state is one serializable `Project` object. Save/load is
+JSON in/out. Application-level library state lives separately in IndexedDB:
+the spatial Project Board stores project JSON records, cached static previews,
+card positions, and the last active panel/viewport. Board state is never
+embedded in exported project JSON.
 
 Why raw points: storing un-jittered points means the wiggle can be recomputed at
 any time, at any scale, deterministically. If we stored jittered points we'd
 lose re-wiggling, clean rescale, and reproducible export — so this is fixed.
+
+## Project Board and autosave (`src/core/projectLibrary.ts`, `src/core/autosave.ts`)
+The Project Board is an infinite spatial navigator above the single active
+`Project`. Every item is presented as a finite canvas using the project's own
+aspect ratio, arranged on one continuous lightly darker dotted drafting
+workspace. These canvases use cached image previews; only the focused project
+is loaded into the editor and render caches. Switching first awaits a durable
+save of the current project, then restores the selected project's active panel
+and viewport.
+
+IndexedDB records are keyed by a stable library project id and overwritten in
+place. Autosave tracks an edit revision and serializes at most once per revision;
+the same canonical JSON string is reused for the local library and external
+file handle. Untitled projects therefore coexist without creating download
+files or competing for a single recovery slot.
 
 ## The three clocks (`src/main.ts`)
 Three independent time sources, deliberately not synced:

@@ -1,7 +1,10 @@
-/** Longer steady-state playback sample for acougue.json */
+/** Longer steady-state playback sample for a caller-supplied project. */
 import { chromium } from "playwright";
+import { resolve } from "node:path";
 
-const projectUrl = encodeURIComponent("/@fs/Users/jovidepinedaluz/Documents/acougue.json");
+if (!process.argv[2]) throw new Error("usage: node scripts/browser-perf-playback.mjs <projectPath>");
+const absolutePath = resolve(process.argv[2]).replaceAll("\\", "/");
+const projectUrl = encodeURIComponent(`/@fs/${absolutePath.replace(/^\/+/, "")}`);
 const appUrl = `http://localhost:5173/?perf=1&project=${projectUrl}`;
 
 const browser = await chromium.launch({ headless: true });

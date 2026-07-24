@@ -173,6 +173,7 @@ export function rawLayerCacheKey(state: RawLayerCacheState): string {
 }
 
 function layerHasPlaybackContinuity(layer: Layer): boolean {
+  if (layer.fadeIn || layer.fadeOut) return true;
   if (layer.animation?.enabled) return true;
   return (layer.texts ?? []).some(
     (t) => hasAnimSpec(t.enter) || hasAnimSpec(t.exit)

@@ -28,7 +28,15 @@ function bundleHarness() {
 function startStaticServer(dir) {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
-      const rel = req.url === "/" ? "index.html" : (req.url || "").replace(/^\//, "");
+      const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+      let rel;
+      if (pathname === "/" || pathname === "/index.html") rel = "index.html";
+      else if (pathname === "/harness.js") rel = "harness.js";
+      else {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       try {
         const body = readFileSync(join(dir, rel));
         res.writeHead(200, { "Content-Type": rel.endsWith(".js") ? "text/javascript" : "text/html" });

@@ -49,7 +49,7 @@ const RECENTS_KEY = "wigglestudio.recents";
 const RECOVERY_KEY = "wigglestudio.recovery";
 
 const PROJECT_TYPES: PickerAccept[] = [{
-  description: "WiggleStudio project",
+  description: "Wiggle GPL project",
   accept: { "application/json": [".wiggle.json", ".json"] },
 }];
 
@@ -91,12 +91,17 @@ export async function writeHandle(handle: FileSystemFileHandle, project: Project
   await writeHandleString(handle, serializeProject(project));
 }
 
-export async function saveAsProject(project: Project, suggestedName = "wigglestudio-project.wiggle.json") {
+export async function saveAsProject(
+  project: Project,
+  suggestedName = "wigglestudio-project.wiggle.json",
+  serialized?: string
+) {
+  const json = serialized ?? serializeProject(project);
   if (!canUseFileSystemAccess()) {
-    downloadProject(project, suggestedName);
+    downloadProjectString(json, suggestedName);
     persistenceState.currentFileHandle = null;
     persistenceState.currentFileName = suggestedName;
-    persistenceState.lastSavedHash = projectHash(project);
+    persistenceState.lastSavedHash = projectHashFromString(json);
     pushRecent(suggestedName);
     return { fileName: suggestedName, mode: "download" as const };
   }
@@ -105,18 +110,21 @@ export async function saveAsProject(project: Project, suggestedName = "wigglestu
     suggestedName,
     types: PROJECT_TYPES,
   });
-  await writeHandle(handle, project);
+  await writeHandleString(handle, json);
   persistenceState.currentFileHandle = handle;
   persistenceState.currentFileName = handle.name;
-  persistenceState.lastSavedHash = projectHash(project);
+  persistenceState.lastSavedHash = projectHashFromString(json);
   pushRecent(handle.name);
   return { fileName: handle.name, mode: "file" as const };
 }
 
-export async function saveProject(project: Project) {
-  if (!persistenceState.currentFileHandle) return saveAsProject(project, persistenceState.currentFileName ?? undefined);
-  await writeHandle(persistenceState.currentFileHandle, project);
-  persistenceState.lastSavedHash = projectHash(project);
+export async function saveProject(project: Project, serialized?: string) {
+  const json = serialized ?? serializeProject(project);
+  if (!persistenceState.currentFileHandle) {
+    return saveAsProject(project, persistenceState.currentFileName ?? undefined, json);
+  }
+  await writeHandleString(persistenceState.currentFileHandle, json);
+  persistenceState.lastSavedHash = projectHashFromString(json);
   pushRecent(persistenceState.currentFileName ?? persistenceState.currentFileHandle.name);
   return { fileName: persistenceState.currentFileName ?? persistenceState.currentFileHandle.name, mode: "file" as const };
 }
@@ -148,14 +156,20 @@ export async function readFallbackFile(file: File) {
   return project;
 }
 
-export function resetCurrentFile(project: Project) {
+export function resetCurrentFile(project: Project, serialized?: string) {
   persistenceState.currentFileHandle = null;
   persistenceState.currentFileName = null;
-  persistenceState.lastSavedHash = projectHash(project);
+  persistenceState.lastSavedHash = serialized
+    ? projectHashFromString(serialized)
+    : projectHash(project);
 }
 
 export function downloadProject(project: Project, filename: string) {
-  const blob = new Blob([serializeProject(project)], { type: "application/json" });
+  downloadProjectString(serializeProject(project), filename);
+}
+
+export function downloadProjectString(json: string, filename: string) {
+  const blob = new Blob([json], { type: "application/json" });
   downloadBlob(blob, filename);
 }
 

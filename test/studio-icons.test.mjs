@@ -1,30 +1,29 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
 const outDir = join(tmpdir(), "wigglestudio-studio-icons-test");
+const outFile = join(outDir, "studio.mjs");
 
 function compileIcons() {
   rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
   execFileSync("npx", [
-    "tsc",
-    "--outDir", outDir,
-    "--module", "commonjs",
-    "--moduleResolution", "node",
-    "--target", "ES2020",
-    "--lib", "ES2020,DOM",
-    "--skipLibCheck",
-    "--esModuleInterop",
-    "--noEmit", "false",
+    "esbuild",
     "src/icons/studio.ts",
+    "--bundle",
+    "--format=esm",
+    "--platform=node",
+    `--outfile=${outFile}`,
   ], { stdio: "inherit" });
 }
 
 compileIcons();
-const icons = await import(`${outDir}/studio.js`);
+const icons = await import(pathToFileURL(outFile).href);
 
 const expectedIcons = [
   "BrushClassic",
@@ -36,36 +35,41 @@ const expectedIcons = [
   "Clip",
   "Copy",
   "CopyCheck",
+  "DragGrip",
   "Eraser",
+  "Add",
   "FrameInsertAfter",
   "FrameInsertBefore",
   "Layers",
   "Move",
   "Perspective",
+  "Pause",
+  "Play",
   "Pointer",
+  "Redo",
+  "Repeat",
   "Scale",
   "Selection",
+  "Sparkle",
   "SubPanel",
   "Text",
   "Tone",
   "Timer",
   "Timelapse",
   "Trash",
+  "Undo",
 ];
 
 test("studio icon catalog exposes every app toolbar icon", () => {
   assert.deepEqual(Object.keys(icons.StudioIcons).sort(), expectedIcons.sort());
 });
 
-test("studio icons use the local IconNode tuple shape", () => {
-  for (const [name, node] of Object.entries(icons.StudioIcons)) {
-    assert.ok(Array.isArray(node), `${name} is an array`);
-    assert.ok(node.length > 0, `${name} has shapes`);
-    for (const shape of node) {
-      assert.ok(Array.isArray(shape), `${name} shape is tuple`);
-      assert.equal(shape.length, 2, `${name} shape tuple has tag and attrs`);
-      assert.equal(typeof shape[0], "string", `${name} tag is string`);
-      assert.equal(typeof shape[1], "object", `${name} attrs is object`);
-    }
+test("studio icons expose Reicon functions with server-renderable SVG", () => {
+  for (const [name, icon] of Object.entries(icons.StudioIcons)) {
+    assert.equal(typeof icon, "function", `${name} is an icon function`);
+    assert.equal(typeof icon.toSvg, "function", `${name} supports toSvg`);
+    const markup = icon.toSvg({ size: 16, color: "currentColor", weight: "Outline" });
+    assert.match(markup, /^<svg\b/, `${name} renders an SVG`);
+    assert.match(markup, /width="16"/, `${name} honors icon size`);
   }
 });

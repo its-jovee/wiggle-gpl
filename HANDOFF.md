@@ -36,21 +36,27 @@ stop and flag it rather than "fixing" it:
 4. A brush is the registry shape `(BrushContext) => void`. Every brush is the
    same shape; new brushes are new registry entries, never engine changes.
 
-This GPL fork may eventually decide that a Krita-derived raster/tile model is
-worth replacing part of that architecture. That is a product-level fork decision
-and must be proposed explicitly before implementation.
+This GPL fork now has a parallel raster engine for raster layers; it does not
+replace the vector-first draw-layer architecture. Raster paint/erase commits
+live pixel dabs, while draw layers preserve raw strokes and render-time wiggle.
+Replacing either model wholesale remains a product-level fork decision that
+must be proposed explicitly before implementation.
 
 ## Shipped in v8 (do not re-implement)
-- **31 brushes** — full Decker directional/soft/stipple family plus texture/scatter variants.
+- **40 brushes** — Decker directional/soft/stipple family plus texture/scatter variants.
 - **Onion skinning** — toggle + opacity while editing; export path ignores it.
 - **Project save/load** — JSON via File System Access, download fallback, autosave recovery.
+- **Spatial Project Board** — IndexedDB-backed finite project canvases on one
+  continuous light dotted drafting workspace, with cached previews,
+  per-project panel/viewport restoration, and revision-aware autosave.
 - **Layers** — per-panel stack, blend modes, masks, animation, merge/duplicate.
 - **Audio timeline** — clip placement with fades; MP4 mixdown via Electron desktop bridge.
 - **Electron shell** — COOP/COEP headers, local asset server, macOS build target.
 - **Bundled ffmpeg** — `@ffmpeg/core` copied to `public/ffmpeg/` at install/build;
   MP4 export loads same-origin (no unpkg.com dependency).
 - **CI** — GitHub Actions runs `npm ci`, `tsc`, build, and tests.
-- **MIT LICENSE** — with Decker attribution block.
+- **GPLv3-only licensing** — with Decker and bundled dependency notices retained
+  in `NOTICE.md` and `THIRD_PARTY_NOTICES.md`.
 
 ## GPL fork tasks (prioritized, one PR-sized commit each)
 

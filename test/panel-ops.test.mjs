@@ -11,9 +11,9 @@ function compilePanelOps() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -37,6 +37,7 @@ function panel() {
   return {
     id: "panel-a",
     durationMs: 750,
+    annotation: "Hero: We go at dawn.",
     bg: "#123456",
     paletteId: "pal",
     kind: "normal",
@@ -91,6 +92,7 @@ test("blank panels inherit timing and background without drawable content", () =
   assert.equal(blank.kind, "normal");
   assert.deepEqual(blank.layers, []);
   assert.deepEqual(blank.subPanels, []);
+  assert.equal(blank.annotation, undefined);
   assert.equal(blank.enter, undefined);
 });
 
@@ -103,6 +105,7 @@ test("panel duplicate regenerates panel and nested ids", () => {
   assert.equal(copy.subPanels[0].layers[0].id, "new-5");
   assert.equal(copy.guides[0].id, "new-6");
   assert.equal(copy.durationMs, 750);
+  assert.equal(copy.annotation, "Hero: We go at dawn.");
   assert.equal(copy.enter.kind, "fade");
 });
 
@@ -111,6 +114,7 @@ test("panel content paste replaces drawable content but preserves target timing 
     ...panel(),
     id: "target",
     durationMs: 2000,
+    annotation: "Keep this target note.",
     bg: "#000000",
     paletteId: null,
     enter: { kind: "jump", durationTicks: 3 },
@@ -125,6 +129,7 @@ test("panel content paste replaces drawable content but preserves target timing 
 
   assert.equal(target.id, "target");
   assert.equal(target.durationMs, 2000);
+  assert.equal(target.annotation, "Keep this target note.");
   assert.equal(target.enter.kind, "jump");
   assert.equal(target.bg, "#123456");
   assert.equal(target.paletteId, "pal");

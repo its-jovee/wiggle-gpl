@@ -1,12 +1,13 @@
 /**
- * Browser smoke test: load acougue.json and exercise marquee selection.
- * Run: node scripts/browser-test-acougue.mjs [path-to-json]
+ * Browser smoke test: load a project and exercise marquee selection.
+ * Run: node scripts/browser-test-acougue.mjs <path-to-json>
  */
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const projectPath = resolve(process.argv[2] ?? `${process.env.HOME}/Documents/acougue.json`);
+if (!process.argv[2]) throw new Error("usage: node scripts/browser-test-acougue.mjs <path-to-json>");
+const projectPath = resolve(process.argv[2]);
 const url = process.env.VITE_DEV_URL ?? "http://localhost:5173/";
 
 async function main() {
@@ -28,7 +29,7 @@ async function main() {
 
   // Wait for load — large file may take a while.
   await page.waitForFunction(
-    () => document.getElementById("status")?.textContent?.includes("opened acougue.json"),
+    () => document.getElementById("status")?.textContent?.includes("opened "),
     { timeout: 120000 }
   );
   const statusAfterLoad = await page.locator("#status").textContent();

@@ -45,6 +45,16 @@ export type AnimationSpec = {
 
 export const NONE_ANIM: AnimationSpec = { kind: "none", durationTicks: 4 };
 
+export type FadeSpec = {
+  durationTicks: number;
+  startTick?: number;
+};
+
+export type PanelTransition = {
+  kind: "crossfade";
+  durationTicks: number;
+};
+
 export type EasingKind = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type LayerLoopKind = "none" | "repeat" | "pingpong";
 
@@ -66,11 +76,30 @@ export type LayerAnimation = {
   loop?: LayerLoopKind;
 };
 
+/**
+ * Render-time pixel warp for raster / tone layers. Stored bitmaps stay static;
+ * faux movement is applied during renderPanel from seeded noise, like stroke
+ * jitter. Independent of LayerAnimation transforms.
+ */
+export type LayerNoiseDisplace = {
+  enabled: boolean;
+  /** Max cell offset in px (typical 2–16). */
+  amplitude: number;
+  /** Grid cell size in px — smaller = finer waves. */
+  cellSize: number;
+  /** Multiplier on wiggle tick for how fast the field evolves. */
+  speed: number;
+};
+
 // ---- Strokes / Fills / Text -----------------------------------------------
 
 export type Stroke = {
   brush: string;
   color: string;
+  /** Paint this stroke by removing pixels instead of adding color. This keeps
+   *  erasing independent of the brush registry, so any brush can be used as
+   *  an eraser while preserving its stamp shape, spacing, and pressure. */
+  erase?: boolean;
   size: number;
   brushSettings?: BrushSettings;
   points: Vec2[];
@@ -189,7 +218,13 @@ export type Layer = {
    *  the live pixels are held in `core/rasterStore.ts`, keyed by layer.id. */
   raster?: { data: string; width: number; height: number };
   clipToBelow?: boolean;
+  /** Independent opacity envelopes for a drawing/layer. These compose with
+   *  the layer's static opacity and transform animation at render time. */
+  fadeIn?: FadeSpec;
+  fadeOut?: FadeSpec;
   animation?: LayerAnimation;
+  /** Optional noise-displacement wiggle for raster / tone layers only. */
+  noiseDisplace?: LayerNoiseDisplace;
   strokes: Stroke[];
   fills: Fill[];
   texts?: TextElement[];
@@ -281,6 +316,8 @@ export type PanelKind = "normal" | "timelapse";
 export type Panel = {
   id: string;
   durationMs: number;
+  /** Editor-only dialogue, narration, or sequencing note for this frame. */
+  annotation?: string;
   bg: string;
   paletteId: string | null;
   layers: Layer[];
@@ -291,6 +328,9 @@ export type Panel = {
   guides?: PerspectiveGuide[];
   enter?: AnimationSpec;
   exit?: AnimationSpec;
+  /** Overlap transition owned by this panel and leading into the next
+   *  expanded timeline entry. It does not change either panel's exposure. */
+  transitionToNext?: PanelTransition;
 };
 
 /** Contiguous run of panels played repeat times during sequence playback. */

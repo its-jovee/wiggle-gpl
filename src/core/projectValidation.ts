@@ -12,6 +12,7 @@ import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
 export const MAX_PROJECT_DIMENSION = 4096;
 export const MIN_PROJECT_DIMENSION = 1;
 export const MAX_PANELS = 200;
+export const MAX_PANEL_ANNOTATION_CHARS = 4000;
 export const MAX_LAYERS_PER_PANEL = 256;
 export const MAX_SUBPANELS_PER_PANEL = 64;
 export const MAX_TEXTS_PER_LAYER = 10_000;
@@ -112,6 +113,11 @@ export function capProjectDrawingSettings(project: Project): void {
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
+  for (const [name, fade] of [["fadeIn", layer.fadeIn], ["fadeOut", layer.fadeOut]] as const) {
+    if (fade && (!Number.isFinite(fade.durationTicks) || fade.durationTicks < 1)) {
+      errors.push(`${path}: ${name} durationTicks must be a positive finite number`);
+    }
+  }
   if (layer.strokes.length > MAX_STROKES_PER_LAYER) {
     errors.push(`${path}: ${layer.strokes.length} strokes exceeds max ${MAX_STROKES_PER_LAYER}`);
   }
@@ -166,6 +172,15 @@ export function validateProject(project: Project): ProjectValidationResult {
     const panel = project.panels[pi];
     if (!Number.isFinite(panel.durationMs) || panel.durationMs < 1) {
       errors.push(`panel ${pi + 1}: durationMs must be a positive finite number`);
+    }
+    if (panel.transitionToNext &&
+        (!Number.isFinite(panel.transitionToNext.durationTicks) ||
+         panel.transitionToNext.durationTicks < 1)) {
+      errors.push(`panel ${pi + 1}: transition durationTicks must be a positive finite number`);
+    }
+    if (panel.annotation !== undefined &&
+        (typeof panel.annotation !== "string" || panel.annotation.length > MAX_PANEL_ANNOTATION_CHARS)) {
+      errors.push(`panel ${pi + 1}: annotation must be a string of at most ${MAX_PANEL_ANNOTATION_CHARS} characters`);
     }
     if (panel.layers.length > MAX_LAYERS_PER_PANEL) {
       errors.push(`panel ${pi + 1}: ${panel.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);

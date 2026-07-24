@@ -11,9 +11,9 @@ function compileHistory() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",

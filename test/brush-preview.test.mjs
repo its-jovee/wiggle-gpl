@@ -11,9 +11,9 @@ function compilePreview() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -103,4 +103,30 @@ test("drawBrushPreview stamps deterministic samples across the preview", () => {
   assert.deepEqual(ctx.calls[0], ["clearRect", 0, 0, 48, 28]);
   assert.deepEqual(ctx.calls[1], ["save"]);
   assert.deepEqual(ctx.calls.at(-1), ["restore"]);
+});
+
+test("drawBrushPreview can preview any paint brush as an eraser", () => {
+  const ctx = fakeCtx();
+  const composites = [];
+  const brush = {
+    key: "paint",
+    label: "Paint",
+    spacing: 4,
+    stamp(b) {
+      composites.push(b.ctx.globalCompositeOperation);
+      assert.equal(b.color, "#ffffff");
+    },
+  };
+
+  preview.drawBrushPreview(ctx, brush, {
+    width: 32,
+    height: 20,
+    color: "#fedc7a",
+    bg: "#171720",
+    size: 2,
+    erase: true,
+  });
+
+  assert.ok(composites.length > 0);
+  assert.ok(composites.every((mode) => mode === "destination-out"));
 });

@@ -14,6 +14,8 @@ export type BrushPreviewOptions = {
   color: string;
   bg: string;
   size: number;
+  /** Preview this paint brush as an eraser without changing its registry entry. */
+  erase?: boolean;
 };
 
 const PREVIEW_TICK = 0;
@@ -36,6 +38,8 @@ export function drawBrushPreview(
   ctx.save();
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
+  const erases = brush.erase === true || opts.erase === true;
+  if (erases) ctx.globalCompositeOperation = "destination-out";
 
   let sampleIndex = 0;
   for (let dist = 0; dist <= endX - startX + 1e-6; dist += step) {
@@ -43,7 +47,7 @@ export function drawBrushPreview(
       ctx,
       pos: { x: startX + dist, y },
       delta: PREVIEW_DELTA,
-      color: brush.erase ? "#f7f3df" : color,
+      color: erases ? "#ffffff" : color,
       size,
       tick: PREVIEW_TICK,
       seed: PREVIEW_SEED + sampleIndex,

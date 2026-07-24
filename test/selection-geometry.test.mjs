@@ -11,9 +11,9 @@ function compileSelection() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -96,6 +96,7 @@ test("splitStrokeAtShape copies brushSettings to split segments", () => {
   const settings = { spacingScale: 1.2, flow: 0.8, pressureSize: true, pressureFlow: false };
   const stroke = {
     brush: "pen", color: "#fff", size: 2,
+    erase: true,
     brushSettings: settings,
     points: [{ x: 0, y: 50 }, { x: 100, y: 50 }],
   };
@@ -104,11 +105,35 @@ test("splitStrokeAtShape copies brushSettings to split segments", () => {
   assert.deepEqual(inside[0].brushSettings, settings);
   assert.deepEqual(outside[0].brushSettings, settings);
   assert.deepEqual(outside[1].brushSettings, settings);
+  assert.equal(inside[0].erase, true);
+  assert.equal(outside[0].erase, true);
+  assert.equal(outside[1].erase, true);
 });
 
 test("shapeMeetsMinSize", () => {
   assert.equal(sel.shapeMeetsMinSize({ kind: "rect", x: 0, y: 0, w: 5, h: 5 }), false);
   assert.equal(sel.shapeMeetsMinSize({ kind: "rect", x: 0, y: 0, w: 20, h: 20 }), true);
+});
+
+test("marquee drag modifiers constrain shape and draw from center", () => {
+  assert.deepEqual(
+    sel.rectFromDrag({ x: 50, y: 50 }, { x: 70, y: 60 }, true, false),
+    { kind: "rect", x: 50, y: 50, w: 20, h: 20 }
+  );
+  assert.deepEqual(
+    sel.rectFromDrag({ x: 50, y: 50 }, { x: 70, y: 60 }, false, true),
+    { kind: "rect", x: 30, y: 40, w: 40, h: 20 }
+  );
+  assert.deepEqual(
+    sel.ellipseFromDrag({ x: 50, y: 50 }, { x: 30, y: 60 }, true, true),
+    { kind: "ellipse", cx: 50, cy: 50, rx: 20, ry: 20 }
+  );
+});
+
+test("marquee ants use a stable time-based phase", () => {
+  assert.equal(sel.marqueeAntsOffset(0), 0);
+  assert.equal(sel.marqueeAntsOffset(250), 6);
+  assert.equal(sel.marqueeAntsOffset(500), 0);
 });
 
 test("transformPoint scales around pivot", () => {
@@ -160,6 +185,33 @@ test("transform round-trip halves bounds", () => {
   sel.applyTransformToSnapshot(snap, pivot, 0.5, 0.5, 0, false);
   assert.equal(snap.ref.stroke.points[1].x, 75);
   assert.equal(snap.ref.stroke.size, 2);
+});
+
+test("raster selection snapshots move, scale, and rotate pixel frames", () => {
+  const selection = {
+    layer: { id: "raster", kind: "raster", strokes: [], fills: [] },
+    pixels: {},
+    base: {},
+    frame: { x: 10, y: 20, w: 40, h: 20 },
+    rotation: 0,
+  };
+  const ref = { kind: "raster", layer: selection.layer, selection };
+  const [snap] = sel.snapshotItems([ref]);
+
+  sel.applyTransformToSnapshot(snap, { x: 30, y: 30 }, 2, 0.5, Math.PI / 2, true);
+
+  assert.deepEqual(selection.frame, { x: -10, y: 25, w: 80, h: 10 });
+  assert.equal(selection.rotation, Math.PI / 2);
+  const rotatedBounds = sel.boundsFromItems([ref]);
+  assert.ok(Math.abs(rotatedBounds.x - 25) < 1e-9);
+  assert.equal(rotatedBounds.y, -10);
+  assert.ok(Math.abs(rotatedBounds.w - 10) < 1e-9);
+  assert.equal(rotatedBounds.h, 80);
+
+  sel.restoreFromSnapshot(snap);
+  sel.moveMarqueeItems([ref], 7, -3);
+  assert.deepEqual(selection.frame, { x: 17, y: 17, w: 40, h: 20 });
+  assert.equal(selection.rotation, 0);
 });
 
 test("simplifyLassoPath reduces noisy path", () => {

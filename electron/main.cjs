@@ -10,7 +10,7 @@
 //
 // CommonJS so Electron doesn't trip over our root `"type": "module"`.
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const fs = require("fs");
 const http = require("http");
@@ -196,7 +196,7 @@ function createWindow() {
     height: 1000,
     minWidth: 900,
     minHeight: 700,
-    title: "WiggleStudio",
+    title: "Wiggle GPL",
     backgroundColor: "#0e0e16",
     webPreferences: {
       contextIsolation: true,
@@ -213,6 +213,13 @@ function createWindow() {
   } else {
     win.loadURL(productionAppUrl);
   }
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === "https://github.com/its-jovee/wiggle-gpl") {
+      void shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
 
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;

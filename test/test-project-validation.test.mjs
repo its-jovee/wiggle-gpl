@@ -11,9 +11,9 @@ function compileProjectValidation() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -173,6 +173,19 @@ test("validateProject rejects too many panels", () => {
   const result = validation.validateProject(project);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /panels exceeds max/);
+});
+
+test("panel annotations survive JSON and enforce a bounded string value", () => {
+  const project = baseProject();
+  project.panels[0].annotation = "Narrator: Meanwhile…";
+  const roundTripped = JSON.parse(JSON.stringify(project));
+  assert.equal(roundTripped.panels[0].annotation, "Narrator: Meanwhile…");
+  assert.deepEqual(validation.validateProject(roundTripped), { ok: true });
+
+  roundTripped.panels[0].annotation = "x".repeat(validation.MAX_PANEL_ANNOTATION_CHARS + 1);
+  const result = validation.validateProject(roundTripped);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /annotation/);
 });
 
 test("validateProject rejects too many stroke points", () => {

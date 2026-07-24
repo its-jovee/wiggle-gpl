@@ -1,10 +1,12 @@
 /**
  * Headless browser perf smoke test.
- * Usage: node scripts/browser-perf.mjs [projectPath]
+ * Usage: node scripts/browser-perf.mjs <projectPath>
  */
 import { chromium } from "playwright";
+import { resolve } from "node:path";
 
-const projectPath = process.argv[2] ?? `${process.env.HOME}/Documents/acougue.json`;
+if (!process.argv[2]) throw new Error("usage: node scripts/browser-perf.mjs <projectPath>");
+const projectPath = resolve(process.argv[2]);
 const projectUrl = `/@fs${projectPath.startsWith("/") ? projectPath : `/${projectPath}`}`;
 const appUrl = `http://localhost:5173/?perf=1&project=${encodeURIComponent(projectUrl)}`;
 

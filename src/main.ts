@@ -7,29 +7,35 @@
 
 import {
   Project, Stroke, Panel, Layer, Fill, SubPanel, TextElement, Vec2, SelectionShape,
-  AnimationSpec, AnimationKind, SubPanelShape, LayerAnimation,
+  AnimationSpec, AnimationKind, SubPanelShape, LayerAnimation, FadeSpec,
   EasingKind, LayerLoopKind, LayerAnimTransform, FrameGroup, BrushPreset,
   PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings, ToneStyle,
+  LayerNoiseDisplace,
   newProject as createProject, newPanel, newLayer, newSubPanel, newPerspectiveGuide, migrateProject,
 } from "./core/types";
 import {
+  defaultNoiseDisplace,
+  layerSupportsNoiseDisplace,
+} from "./core/noiseDisplace";
+import {
   activeRegionContains, activeRegionShape, applyTransformToSnapshot, boundsFromItems, computeTransformFromHandle,
   ellipseFromDrag, growSelectionShape, hitTestTransformHandle, isObjectSelectionIdle, ItemSnapshot,
-  MarqueeRef, MarqueeToolKind, moveMarqueeItems, pointInRegionSelection, Rect, rectCenter, rectFromDrag,
-  restoreFromSnapshot, SelectionState, segmentShapeIntersections, shapeBounds, shapeMeetsMinSize,
+  marqueeAntsOffset, MarqueeRef, MarqueeToolKind, moveMarqueeItems, pointInRegionSelection, Rect, rectCenter, rectFromDrag,
+  rasterizeShapeMask, restoreFromSnapshot, SelectionState, segmentShapeIntersections, shapeBounds, shapeMeetsMinSize,
   simplifyLassoPath, snapshotItems, splitStrokeAtShape, traceShapePath, translateShape,
   TransformHandleId, transformCursorForHandle, transformHandleVisualHalfSize, transformRotateHandleCenter,
 } from "./core/selection";
 import {
   clearRenderCache, clearTimelapseCache, createRenderCache, renderCacheStats, renderPanel, renderStroke,
-  stampStrokeToCanvas,
   resetRenderCacheStats, computeTotalLength, trimFramePool, setAsyncRenderInvalidate,
 } from "./core/render";
+import { renderSequenceFrame } from "./core/sequenceRender";
 import {
   baseFrameCacheKey, editorPreviewPasses, panelHasPlaybackContinuity, shouldRefreshThumbnail,
-  shouldRenderIdleFrame, shouldRenderPlaybackFrame, timelapseProgressQuantized,
+  shouldRenderIdleFrame, shouldRenderPlaybackFrame,
 } from "./core/renderSchedule";
-import { StudioIcons, type IconNode } from "./icons/studio";
+import { drawTikTokOverlay } from "./core/tiktokOverlay";
+import { StudioIcons, type StudioIcon } from "./icons/studio";
 import { BRUSHES, brushByKey } from "./brushes/registry";
 import { BUILTIN_PALETTES, loadLospecPalette, Palette } from "./core/palette";
 import { exportWebM, exportMP4, downloadBlob } from "./core/export";
@@ -46,7 +52,7 @@ import {
   addPanelToGroup, applySanitizedGroups, createFrameGroup, expandedDurationMs,
   findGroupForPanel, formatSequenceCounter, groupAtPanelIndex,
   groupsForProject, moveGroup, movePanelBlock, onPanelDeleted, onPanelDuplicated,
-  sequenceAtTime, setGroupRepeat, syncGroupPanelIds, ungroup,
+  sequenceTransitionAtTime, setGroupRepeat, syncGroupPanelIds, ungroup,
   type SequencePosition,
 } from "./core/sequence";
 import { AudioPreview } from "./core/audioPreview";
@@ -73,19 +79,36 @@ import {
 } from "./core/viewport";
 import {
   canUseFileSystemAccess, clearRecoverySnapshot, openProjectFromPicker,
-  persistenceState, projectHash, projectHashFromString, readFallbackFile,
+  persistenceState, projectHashFromString, readFallbackFile,
   readRecoverySnapshot, recoverProject, resetCurrentFile, saveAsProject,
   saveProject as persistSaveProject, serializeProject, writeHandleString,
   writeRecoverySnapshotString,
 } from "./core/persistence";
+import { AutosaveSerializationCache } from "./core/autosave";
+import {
+  ProjectBoardMeta, ProjectLibraryRecord,
+  defaultProjectBoardMeta, getProjectLibraryRecord,
+  listProjectLibraryRecords, nextProjectBoardPosition, projectLibraryAvailable,
+  projectBoardCanvasSize, putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
+  zoomBoardCamera,
+} from "./core/projectLibrary";
 import {
   CANVAS_PRESETS, canvasPresetByKey, defaultCanvasPreset, formatCanvasDimensions,
 } from "./core/canvasPresets";
 import * as history from "./core/history";
 import {
   commitRasterPreparation, getRasterCanvas, installRasterCanvas, markRasterEdited,
-  nextRasterStrokeIndex, onRasterReady, prepareRasterCanvases, pruneRasterStore, syncRasterToLayer,
+  nextRasterStrokeIndex, onRasterReady, prepareRasterCanvases, pruneRasterStore,
+  rasterPixelVersion, syncRasterToLayer,
 } from "./core/rasterStore";
+import {
+  cloneRasterCanvas, createRasterSelectionFromPixels, extractRasterSelection,
+  flattenRasterSelection, rasterContentBounds, RasterStrokeSession,
+  renderRasterSelection,
+} from "./core/rasterEditing";
+import {
+  containRasterImage, isSupportedRasterImageFile, rasterLayerName,
+} from "./core/rasterImport";
 import { drawBrushPreview } from "./brushes/preview";
 import { drawEraserTracePreview, isErasePreviewBrush } from "./core/eraserPreview";
 import { floodFillImageData } from "./core/fill";
@@ -109,6 +132,8 @@ import {
   regenerateSubPanelIds,
   type PanelContentsClipboard,
 } from "./core/panelOps";
+import { MAX_PANEL_ANNOTATION_CHARS } from "./core/projectValidation";
+import { APP_NAME, APP_VERSION } from "./core/appMeta";
 
 const BUCKET_KEY = "__bucket__";
 const TEXT_KEY = "__text__";
@@ -123,6 +148,8 @@ const TOOL_KEYS = new Set([BUCKET_KEY, TEXT_KEY, SUBPANEL_KEY, SELECT_KEY, MARQU
 type TextRef = { layer: Layer; text: TextElement };
 
 let project: Project = createProject();
+const autosaveSerialization = new AutosaveSerializationCache<Project>(serializeProject);
+autosaveSerialization.reset(project);
 let activePanelIndex = 0;
 let rangeAnchorIndex: number | null = null;
 let rangeEndIndex: number | null = null;
@@ -133,11 +160,6 @@ let selectedText: TextRef | null = null;
 let selectionState: SelectionState | null = null;
 let marqueeToolKind: MarqueeToolKind = "rect";
 let transformSnapshots: ItemSnapshot[] | null = null;
-let pendingRegionTransform: {
-  pointerId: number;
-  handle: TransformHandleId;
-  startPos: Vec2;
-} | null = null;
 let lastCanvasPointerPos: Vec2 | null = null;
 let antsOffset = 0;
 
@@ -154,6 +176,9 @@ let scaleToolDrag: ScaleToolDragState | null = null;
 
 let currentBrush = BRUSHES[0].key;
 let currentColor = BUILTIN_PALETTES[0].colors[5];
+/** Virtual transparent palette swatch. The last real color stays selected
+ *  underneath so color inputs remain valid and switching back is instant. */
+let transparentPaintSelected = false;
 let currentSize = 2;
 let currentBrushSettings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
 let activeBrushPresetId: string | null = null;
@@ -175,7 +200,10 @@ let pressureEnabled = true;
 let jitterEnabled = true;
 let layerClipboard: Layer | null = null;
 let animationClipboard: LayerAnimation | null = null;
-let selectionClipboard: { strokes: Stroke[]; fills: Fill[]; texts: TextElement[] } | null = null;
+type SelectionClipboard =
+  | { kind: "vector"; strokes: Stroke[]; fills: Fill[]; texts: TextElement[] }
+  | { kind: "raster"; pixels: HTMLCanvasElement; x: number; y: number };
+let selectionClipboard: SelectionClipboard | null = null;
 let lastEditClipboardKind: "selection" | "layer" | null = null;
 let maskOverlayLayerId: string | null = null;
 
@@ -183,10 +211,14 @@ let maskOverlayLayerId: string | null = null;
 // projectHash() call that was running every 500ms via updateFileChrome().
 let _isDirty = false;
 let _autosaveInFlight = false;
-let _recoveryClean = false; // set after recovery write, cleared on any edit
 const dirtyThumbnailPanelIds = new Set<string>();
 
-function markDirty() { _isDirty = true; _recoveryClean = false; updateFileChrome(); requestLoopFrame(); }
+function markDirty() {
+  autosaveSerialization.markChanged();
+  _isDirty = true;
+  updateFileChrome();
+  requestLoopFrame();
+}
 function markClean() { _isDirty = false; updateFileChrome(); }
 let keyframeArm: "from" | "to" | null = null;
 let animHintShown = false;
@@ -272,6 +304,8 @@ function setStrokeSmoothingSettings(update: Partial<Project["drawingSettings"]["
 function updateBrushSizeControl() {
   const size = $("size") as HTMLInputElement | null;
   if (size) size.value = String(currentSize);
+  const sizeVal = document.getElementById("size-val");
+  if (sizeVal) sizeVal.textContent = String(currentSize);
 }
 
 function activeBrushPreset(): BrushPreset | null {
@@ -354,6 +388,8 @@ let onionEnabled = false;
 let onionPrevCount = 1;
 let onionNextCount = 0;
 let onionOpacity = 0.25;
+let tiktokOverlayEnabled = false;
+let editorPreviewInvalidated = false;
 let panelContentClipboard: PanelContentsClipboard | null = null;
 const recentSlugs: string[] = [];
 const audioPreview = new AudioPreview();
@@ -384,10 +420,23 @@ const LAYER_BLEND_MODES: LayerBlendMode[] = [
 ];
 
 const $ = (id: string) => document.getElementById(id)!;
+
+function mountAppMetadata() {
+  document.title = APP_NAME;
+  $("about-title").textContent = APP_NAME;
+  $("about-version").textContent = `Local-first · Version ${APP_VERSION} · GPL-3.0-only`;
+  const aboutMenuLabel = $("help-about").querySelector("span");
+  if (aboutMenuLabel) aboutMenuLabel.textContent = `About ${APP_NAME}`;
+}
+
+mountAppMetadata();
 const canvas = $("stage") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 const stageArea = $("stage-area") as HTMLElement;
 const loadProjectFile = $("load-project-file") as HTMLInputElement;
+const projectBoard = $("project-board") as HTMLElement;
+const projectBoardSurface = $("project-board-surface") as HTMLElement;
+const projectBoardWorld = $("project-board-world") as HTMLElement;
 
 let overscanX = 0;
 let overscanY = 0;
@@ -397,6 +446,13 @@ const displayRenderCache = createRenderCache(64);
 const perfEnabled = new URLSearchParams(location.search).has("perf");
 const perfProjectUrl = new URLSearchParams(location.search).get("project");
 const historyCheckEnabled = new URLSearchParams(location.search).has("historycheck");
+let projectBoardRecords: ProjectLibraryRecord[] = [];
+let projectBoardMeta: ProjectBoardMeta = defaultProjectBoardMeta();
+let activeLibraryProjectId: string | null = null;
+let projectLibraryReady = false;
+let projectBoardOpen = false;
+const projectFileHandles = new Map<string, FileSystemFileHandle>();
+let projectBoardMetaSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 type PerfBucket = { count: number; totalMs: number; maxMs: number };
 type PerfReport = {
@@ -510,29 +566,16 @@ function resizeCanvasForProject() {
 
 resizeCanvasForProject();
 
-function svgIcon(node: IconNode, size = 15): SVGSVGElement {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", String(size));
-  svg.setAttribute("height", String(size));
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "2");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
+function svgIcon(icon: StudioIcon, size = 15): SVGSVGElement {
+  const svg = icon({ size, color: "currentColor", weight: "Outline" });
   svg.setAttribute("aria-hidden", "true");
-  for (const [tag, attrs] of node) {
-    const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (v !== undefined) el.setAttribute(k, String(v));
-    }
-    svg.appendChild(el);
-  }
+  svg.style.display = "block";
+  svg.style.flex = "0 0 auto";
   return svg;
 }
 
 function iconButton(
-  node: IconNode,
+  icon: StudioIcon,
   title: string,
   onClick: (e: MouseEvent) => void,
   className = "cellbtn iconbtn"
@@ -542,7 +585,7 @@ function iconButton(
   btn.className = className;
   btn.title = title;
   btn.setAttribute("aria-label", title);
-  btn.appendChild(svgIcon(node));
+  btn.appendChild(svgIcon(icon));
   btn.onclick = onClick;
   return btn;
 }
@@ -747,6 +790,20 @@ function updateUndoRedoButtons() {
   if (redoBtn) redoBtn.disabled = !history.canRedo();
 }
 
+function mountChromeIcons() {
+  const undoBtn = document.getElementById("undo-btn");
+  const redoBtn = document.getElementById("redo-btn");
+  if (undoBtn && !undoBtn.querySelector("svg")) undoBtn.appendChild(svgIcon(StudioIcons.Undo, 16));
+  if (redoBtn && !redoBtn.querySelector("svg")) redoBtn.appendChild(svgIcon(StudioIcons.Redo, 16));
+  const railDraw = document.getElementById("rail-draw");
+  const railEdit = document.getElementById("rail-edit");
+  if (railDraw && !railDraw.querySelector("svg")) railDraw.appendChild(svgIcon(StudioIcons.BrushClassic, 18));
+  if (railEdit && !railEdit.querySelector("svg")) railEdit.appendChild(svgIcon(StudioIcons.Pointer, 18));
+}
+
+mountChromeIcons();
+updateUndoRedoButtons();
+
 /** Cleanly terminate any live pointer interaction before an undo/redo swaps
  *  `project` out from under it — the interaction's in-flight state (live
  *  stroke, drag snapshots) points at Layer/Panel objects from the project
@@ -754,15 +811,19 @@ function updateUndoRedoButtons() {
  *  drop the in-flight edit rather than committing it. */
 function cancelLiveInteractionsForUndo() {
   if (drawing) {
-    finishLiveStrokeSmoothing();
+    if (liveRasterStroke) rollbackLiveRasterStroke();
     drawing = false;
     drawingPointerId = null;
     clearLiveStrokeState();
   }
+  if (selectionState?.mode === "object" && transformSnapshots) {
+    for (const snapshot of transformSnapshots) restoreFromSnapshot(snapshot);
+    bumpMarqueeItemLayers(selectionState.items);
+    transformSnapshots = null;
+  }
   layerMoveDrag = null;
   perspectiveDrag = null;
   selectDrag = null;
-  pendingRegionTransform = null;
   subPanelDrag = null;
   transformSnapshots = null;
   keyframeArm = null;
@@ -773,6 +834,7 @@ function panelTimelineSignature(panel: Panel): string {
   return JSON.stringify({
     kind: panel.kind,
     durationMs: panel.durationMs,
+    annotation: panel.annotation,
     enter: panel.enter,
     exit: panel.exit,
   });
@@ -868,8 +930,38 @@ function bumpMarqueeItemLayers(items: MarqueeRef[]) {
   for (const ref of items) {
     if (ref.kind === "stroke" || ref.kind === "fill" || ref.kind === "text") {
       bumpLayerVersion(ref.layer);
+    } else if (ref.kind === "raster") {
+      const rasterCanvas = getRasterCanvas(ref.layer);
+      if (!rasterCanvas) continue;
+      renderRasterSelection(ref.selection, rasterCanvas);
+      markRasterEdited(ref.layer);
+      invalidateBaseFrameCache();
     }
   }
+}
+
+function rasterMarqueeItems(items: MarqueeRef[]) {
+  return items.filter((item): item is Extract<MarqueeRef, { kind: "raster" }> =>
+    item.kind === "raster"
+  );
+}
+
+function syncRasterMarqueeItems(items: MarqueeRef[]) {
+  for (const ref of rasterMarqueeItems(items)) syncRasterToLayer(ref.layer);
+}
+
+const rasterContentBoundsCache = new Map<string, {
+  version: number;
+  bounds: Rect | null;
+}>();
+
+function cachedRasterContentBounds(layer: Layer, canvas: HTMLCanvasElement): Rect | null {
+  const version = rasterPixelVersion(layer);
+  const cached = rasterContentBoundsCache.get(layer.id);
+  if (cached?.version === version) return cached.bounds ? { ...cached.bounds } : null;
+  const bounds = rasterContentBounds(canvas);
+  rasterContentBoundsCache.set(layer.id, { version, bounds });
+  return bounds ? { ...bounds } : null;
 }
 
 function scaleToolItems(): { items: MarqueeRef[]; bounds: Rect } | null {
@@ -878,6 +970,11 @@ function scaleToolItems(): { items: MarqueeRef[]; bounds: Rect } | null {
   }
   const layer = activeLayer();
   if (!layer || !layer.visible) return null;
+  if (layer.kind === "raster") {
+    const rasterCanvas = getRasterCanvas(layer);
+    const bounds = rasterCanvas ? cachedRasterContentBounds(layer, rasterCanvas) : null;
+    return bounds ? { items: [], bounds } : null;
+  }
   const items: MarqueeRef[] = [
     ...layer.strokes.map(stroke => ({ kind: "stroke" as const, layer, stroke })),
     ...layer.fills.map(fill => ({ kind: "fill" as const, layer, fill })),
@@ -890,6 +987,20 @@ function scaleToolItems(): { items: MarqueeRef[]; bounds: Rect } | null {
 
 function copySelection() {
   if (!selectionState || selectionState.mode !== "object") return;
+  const rasterRef = rasterMarqueeItems(selectionState.items)[0];
+  if (rasterRef) {
+    const bounds = boundsFromItems([rasterRef], measureText);
+    selectionClipboard = {
+      kind: "raster",
+      pixels: flattenRasterSelection(rasterRef.selection),
+      x: bounds.x,
+      y: bounds.y,
+    };
+    lastEditClipboardKind = "selection";
+    buildEditContext();
+    setStatus("Selected pixels copied");
+    return;
+  }
   const strokes: Stroke[] = [];
   const fills: Fill[] = [];
   const texts: TextElement[] = [];
@@ -898,7 +1009,7 @@ function copySelection() {
     else if (ref.kind === "fill") fills.push(JSON.parse(JSON.stringify(ref.fill)));
     else if (ref.kind === "text") texts.push(JSON.parse(JSON.stringify(ref.text)));
   }
-  selectionClipboard = { strokes, fills, texts };
+  selectionClipboard = { kind: "vector", strokes, fills, texts };
   lastEditClipboardKind = "selection";
   const count = strokes.length + fills.length + texts.length;
   buildEditContext();
@@ -910,8 +1021,58 @@ function pasteSelection() {
   if (activePanel().kind === "timelapse") { setStatus("Cannot paste onto a timelapse panel"); return; }
   let layer = activeLayer();
   if (!layer) return;
+
+  if (selectionClipboard.kind === "raster") {
+    if (layer.kind !== "raster") {
+      const container = activeContainer();
+      const raster = newLayer("Pasted pixels", "raster", {
+        width: project.width,
+        height: project.height,
+      });
+      const index = container.getActiveLayerIndex() + 1;
+      container.layers.splice(index, 0, raster);
+      container.setActiveLayerIndex(index);
+      const blank = document.createElement("canvas");
+      blank.width = project.width;
+      blank.height = project.height;
+      installRasterCanvas(raster, blank);
+      layer = raster;
+      buildLayers();
+    }
+    const rasterCanvas = getRasterCanvas(layer);
+    if (!rasterCanvas) {
+      showToast("Raster layer still loading", "info");
+      return;
+    }
+    const pixels = selectionClipboard.pixels;
+    const x = Math.max(0, Math.min(
+      rasterCanvas.width - pixels.width,
+      selectionClipboard.x + 24
+    ));
+    const y = Math.max(0, Math.min(
+      rasterCanvas.height - pixels.height,
+      selectionClipboard.y + 24
+    ));
+    const payload = createRasterSelectionFromPixels(layer, rasterCanvas, pixels, x, y);
+    renderRasterSelection(payload, rasterCanvas);
+    markRasterEdited(layer);
+    syncRasterToLayer(layer);
+    selectionState = {
+      mode: "object",
+      phase: "idle",
+      shape: { kind: "rect", x, y, w: pixels.width, h: pixels.height },
+      bounds: { x, y, w: pixels.width, h: pixels.height },
+      items: [{ kind: "raster", layer, selection: payload }],
+    };
+    commitHistory([layer]);
+    lastEditClipboardKind = "selection";
+    buildEditContext();
+    setStatus("Pasted pixels · drag or transform to position");
+    return;
+  }
+
   if (layer.kind === "raster") {
-    showToast("Object copy/paste doesn't work on raster layers yet", "info");
+    showToast("Vector objects need a draw layer; paste selected pixels into raster layers", "info");
     return;
   }
   // Redirect away from text layers (same restriction as brush drawing).
@@ -1010,9 +1171,83 @@ function growActiveSelection(amount: number) {
   buildEditContext();
 }
 
+function copyRasterRegionSelection(): boolean {
+  if (selectionState?.mode !== "region" || selectionState.phase !== "idle") return false;
+  const layer = activeLayer();
+  if (layer?.kind !== "raster") return false;
+  const rasterCanvas = getRasterCanvas(layer);
+  if (!rasterCanvas) {
+    showToast("Raster layer still loading", "info");
+    return false;
+  }
+  const payload = extractRasterSelection(
+    layer,
+    rasterCanvas,
+    selectionState.shape,
+    !!selectionState.inverted
+  );
+  if (!payload) {
+    setStatus("Nothing to copy in selection");
+    return false;
+  }
+  const bounds = boundsFromItems([{ kind: "raster", layer, selection: payload }], measureText);
+  selectionClipboard = {
+    kind: "raster",
+    pixels: flattenRasterSelection(payload),
+    x: bounds.x,
+    y: bounds.y,
+  };
+  lastEditClipboardKind = "selection";
+  buildEditContext();
+  setStatus("Selected pixels copied");
+  return true;
+}
+
+function clipRasterContextToRegion(
+  rasterCtx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  state: Extract<SelectionState, { mode: "region" }>
+) {
+  rasterCtx.beginPath();
+  if (state.inverted) rasterCtx.rect(0, 0, width, height);
+  traceShapePath(rasterCtx, state.shape);
+  rasterCtx.clip(state.inverted ? "evenodd" : "nonzero");
+}
+
+function deleteRasterRegionSelection(): boolean {
+  if (selectionState?.mode !== "region" || selectionState.phase !== "idle") return false;
+  const layer = activeLayer();
+  if (layer?.kind !== "raster") return false;
+  const rasterCanvas = getRasterCanvas(layer);
+  if (!rasterCanvas) {
+    showToast("Raster layer still loading", "info");
+    return false;
+  }
+  const rasterCtx = rasterCanvas.getContext("2d")!;
+  rasterCtx.save();
+  clipRasterContextToRegion(
+    rasterCtx,
+    rasterCanvas.width,
+    rasterCanvas.height,
+    selectionState
+  );
+  rasterCtx.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+  rasterCtx.restore();
+  markRasterEdited(layer);
+  syncRasterToLayer(layer);
+  commitHistory([layer]);
+  setStatus("Selected pixels deleted");
+  return true;
+}
+
 function cutSelection() {
   if (!selectionState) return;
   if (selectionState.mode === "region" && selectionState.phase === "idle") {
+    if (activeLayer()?.kind === "raster") {
+      if (copyRasterRegionSelection()) deleteRasterRegionSelection();
+      return;
+    }
     extractSelection();
     return;
   }
@@ -1025,6 +1260,45 @@ function duplicateSelection() {
   if (!selectionState || selectionState.mode !== "object" || !isObjectSelectionIdle(selectionState)) return;
   const layer = activeLayer();
   if (!layer) return;
+  const rasterRef = rasterMarqueeItems(selectionState.items)[0];
+  if (rasterRef) {
+    const rasterCanvas = getRasterCanvas(rasterRef.layer);
+    if (!rasterCanvas) {
+      showToast("Raster layer still loading", "info");
+      return;
+    }
+    const pixels = flattenRasterSelection(rasterRef.selection);
+    // The current selected pixels become part of the base; the duplicate is
+    // the new floating selection, matching raster-editor duplicate semantics.
+    const bounds = boundsFromItems([rasterRef], measureText);
+    const payload = createRasterSelectionFromPixels(
+      rasterRef.layer,
+      rasterCanvas,
+      pixels,
+      bounds.x + 24,
+      bounds.y + 24
+    );
+    renderRasterSelection(payload, rasterCanvas);
+    markRasterEdited(rasterRef.layer);
+    syncRasterToLayer(rasterRef.layer);
+    selectionState = {
+      mode: "object",
+      phase: "idle",
+      shape: {
+        kind: "rect",
+        x: payload.frame.x,
+        y: payload.frame.y,
+        w: payload.frame.w,
+        h: payload.frame.h,
+      },
+      bounds: { ...payload.frame },
+      items: [{ kind: "raster", layer: rasterRef.layer, selection: payload }],
+    };
+    commitHistory([rasterRef.layer]);
+    buildEditContext();
+    setStatus("Selected pixels duplicated");
+    return;
+  }
   const newItems: MarqueeRef[] = [];
   const dx = 24;
   const dy = 24;
@@ -1116,10 +1390,81 @@ function clearLiveStrokeState() {
   liveStrokeSubPanelId = null;
   liveSmoothingSession = null;
   perspectiveSnapLock = null;
+  liveRasterStroke = null;
+}
+
+function beginLiveRasterStroke(
+  layer: Layer,
+  stroke: Stroke,
+  firstPoint: Vec2,
+  firstPressure: number
+): boolean {
+  const rasterCanvas = getRasterCanvas(layer);
+  if (!rasterCanvas) {
+    showToast("Raster layer still loading", "info");
+    return false;
+  }
+  const rasterCtx = rasterCanvas.getContext("2d")!;
+  const before = cloneRasterCanvas(rasterCanvas);
+  rasterCtx.save();
+  const region = selectionState?.mode === "region" && selectionState.phase !== "creating"
+    ? selectionState
+    : null;
+  if (region) {
+    clipRasterContextToRegion(rasterCtx, rasterCanvas.width, rasterCanvas.height, region);
+  }
+  const painter = new RasterStrokeSession(
+    rasterCtx,
+    brushByKey(stroke.brush),
+    stroke,
+    liveStrokeLayerIndex,
+    nextRasterStrokeIndex(layer),
+    activePanel().bg,
+    firstPoint,
+    firstPressure
+  );
+  liveRasterStroke = {
+    layer,
+    canvas: rasterCanvas,
+    before,
+    ctx: rasterCtx,
+    painter,
+    contextSaved: true,
+  };
+  markRasterEdited(layer);
+  invalidateBaseFrameCache();
+  return true;
+}
+
+function closeLiveRasterStrokeContext() {
+  if (!liveRasterStroke?.contextSaved) return;
+  liveRasterStroke.ctx.restore();
+  liveRasterStroke.contextSaved = false;
+}
+
+function rollbackLiveRasterStroke() {
+  if (!liveRasterStroke) return;
+  closeLiveRasterStrokeContext();
+  const { canvas, before, layer } = liveRasterStroke;
+  const rasterCtx = canvas.getContext("2d")!;
+  rasterCtx.clearRect(0, 0, canvas.width, canvas.height);
+  rasterCtx.drawImage(before, 0, 0);
+  markRasterEdited(layer);
+  invalidateBaseFrameCache();
 }
 
 function commitLiveStroke() {
   if (!liveStroke || !liveStrokeLayer) return;
+  if (liveStrokeLayer.kind === "raster") {
+    if (!liveRasterStroke) return;
+    closeLiveRasterStrokeContext();
+    if (liveRasterStroke.painter.touched) {
+      markRasterEdited(liveStrokeLayer);
+      syncRasterToLayer(liveStrokeLayer);
+      commitHistory([liveStrokeLayer]);
+    }
+    return;
+  }
   simplifyStroke(liveStroke);
   const clipShape = activeRegionShape(selectionState);
   const segments: Stroke[] = [];
@@ -1129,30 +1474,6 @@ function commitLiveStroke() {
     segments.push(...(inverted ? outside : inside).filter((seg) => seg.points.length >= 1));
   } else {
     segments.push(liveStroke);
-  }
-
-  if (liveStrokeLayer.kind === "raster") {
-    const rasterCanvas = getRasterCanvas(liveStrokeLayer);
-    if (!rasterCanvas) {
-      showToast("Layer still loading", "info");
-      return;
-    }
-    let strokeIndex = nextRasterStrokeIndex(liveStrokeLayer);
-    for (const segment of segments) {
-      stampStrokeToCanvas(
-        rasterCanvas.getContext("2d")!,
-        segment,
-        liveStrokeLayerIndex,
-        strokeIndex++,
-        activePanel().bg
-      );
-    }
-    if (segments.length > 0) {
-      markRasterEdited(liveStrokeLayer);
-      syncRasterToLayer(liveStrokeLayer);
-      commitHistory([liveStrokeLayer]);
-    }
-    return;
   }
 
   for (const segment of segments) liveStrokeLayer.strokes.push(segment);
@@ -1194,6 +1515,14 @@ let liveStrokeSubPanelId: string | null = null;
 let drawingPointerId: number | null = null;
 let liveStrokeHasRealPressure = false;
 let liveSmoothingSession: StrokeSmoothingSession | null = null;
+let liveRasterStroke: {
+  layer: Layer;
+  canvas: HTMLCanvasElement;
+  before: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  painter: RasterStrokeSession;
+  contextSaved: boolean;
+} | null = null;
 let layerMoveDrag: {
   pointerId: number;
   layer: Layer;
@@ -1423,24 +1752,12 @@ function hitTestText(pos: { x: number; y: number }): TextRef | null {
 function clearSelection() {
   selectionState = null;
   transformSnapshots = null;
-  pendingRegionTransform = null;
   canvas.style.cursor = "";
 }
 
-function shapeFromCreating(state: SelectionState & { mode: "region"; phase: "creating" }): SelectionShape {
-  const path = state.lassoPath ?? [];
-  if (state.tool === "lasso") {
-    return { kind: "polygon", points: simplifyLassoPath(path) };
-  }
-  const start = path[0] ?? { x: 0, y: 0 };
-  const end = path[path.length - 1] ?? start;
-  if (state.tool === "ellipse") return ellipseFromDrag(start, end);
-  return rectFromDrag(start, end);
-}
-
 function marqueeTransformBounds(state: SelectionState): Rect | null {
-  if (state.phase === "creating") return null;
-  return state.mode === "object" ? state.bounds : shapeBounds(state.shape);
+  if (state.mode !== "object") return null;
+  return state.bounds;
 }
 
 function pointInBounds(pos: Vec2, b: Rect): boolean {
@@ -1463,7 +1780,7 @@ function updateCanvasCursor(pos?: Vec2) {
   if (currentBrush === MARQUEE_KEY && selectionState) {
     const at = pos ?? lastCanvasPointerPos;
     const bounds = marqueeTransformBounds(selectionState);
-    if (at && bounds && selectionState.phase === "idle") {
+    if (at && bounds && selectionState.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(at, bounds, viewport.scale);
       if (handle) {
         canvas.style.cursor = transformCursorForHandle(handle);
@@ -1487,8 +1804,9 @@ function updateCanvasCursor(pos?: Vec2) {
   }
 }
 
-function isEraseBrushKey(key: string): boolean {
-  return isErasePreviewBrush(brushByKey(key));
+function isEraseBrushKey(key: string, eraseWithColor = transparentPaintSelected): boolean {
+  if (TOOL_KEYS.has(key)) return false;
+  return eraseWithColor || isErasePreviewBrush(brushByKey(key));
 }
 
 function cutAtShape(shape: SelectionShape, inverted = false): MarqueeRef[] {
@@ -1560,11 +1878,44 @@ function cutAtShape(shape: SelectionShape, inverted = false): MarqueeRef[] {
   return items;
 }
 
+function rasterSelectionAtShape(
+  layer: Layer,
+  shape: SelectionShape,
+  inverted: boolean
+): Extract<MarqueeRef, { kind: "raster" }> | null {
+  const rasterCanvas = getRasterCanvas(layer);
+  if (!rasterCanvas) {
+    showToast("Raster layer still loading", "info");
+    return null;
+  }
+  const payload = extractRasterSelection(layer, rasterCanvas, shape, inverted);
+  if (!payload) return null;
+  renderRasterSelection(payload, rasterCanvas);
+  markRasterEdited(layer);
+  invalidateBaseFrameCache();
+  return { kind: "raster", layer, selection: payload };
+}
+
+function rasterContentSelection(layer: Layer): Extract<MarqueeRef, { kind: "raster" }> | null {
+  const rasterCanvas = getRasterCanvas(layer);
+  if (!rasterCanvas) {
+    showToast("Raster layer still loading", "info");
+    return null;
+  }
+  const bounds = cachedRasterContentBounds(layer, rasterCanvas);
+  if (!bounds) return null;
+  return rasterSelectionAtShape(layer, { kind: "rect", ...bounds }, false);
+}
+
 function extractSelection() {
   if (!selectionState || selectionState.mode !== "region" || selectionState.phase !== "idle") return;
   const shape = selectionState.shape;
   const inverted = !!selectionState.inverted;
-  const items = cutAtShape(shape, inverted);
+  const layer = activeLayer();
+  const rasterRef = layer?.kind === "raster"
+    ? rasterSelectionAtShape(layer, shape, inverted)
+    : null;
+  const items = rasterRef ? [rasterRef] : layer?.kind === "raster" ? [] : cutAtShape(shape, inverted);
   if (items.length === 0) {
     clearSelection();
     setStatus("Nothing to extract in selection");
@@ -1578,9 +1929,16 @@ function extractSelection() {
     bounds,
     items,
   };
-  commitHistory();
+  if (rasterRef) {
+    syncRasterToLayer(rasterRef.layer);
+    commitHistory([rasterRef.layer]);
+  } else {
+    commitHistory();
+  }
   buildEditContext();
-  setStatus(`${items.length} extracted · drag to move · Del to remove`);
+  setStatus(rasterRef
+    ? "Pixels extracted · drag to move · handles scale/rotate · Del removes"
+    : `${items.length} extracted · drag to move · Del to remove`);
 }
 
 function beginObjectSelectionTransform(handle: TransformHandleId, pos: Vec2): boolean {
@@ -1594,7 +1952,13 @@ function beginObjectSelectionTransform(handle: TransformHandleId, pos: Vec2): bo
     bounds = selectionState.bounds;
     items = selectionState.items;
   } else if (selectionState.mode === "region" && selectionState.phase === "idle") {
-    items = cutAtShape(selectionState.shape, !!selectionState.inverted);
+    const layer = activeLayer();
+    const rasterRef = layer?.kind === "raster"
+      ? rasterSelectionAtShape(layer, selectionState.shape, !!selectionState.inverted)
+      : null;
+    items = rasterRef ? [rasterRef] : layer?.kind === "raster"
+      ? []
+      : cutAtShape(selectionState.shape, !!selectionState.inverted);
     if (items.length === 0) {
       setStatus("Nothing to transform in selection");
       return false;
@@ -1677,6 +2041,15 @@ function deleteSelection() {
       const arr = panel.subPanels ?? [];
       const idx = arr.indexOf(ref.subPanel);
       if (idx >= 0) arr.splice(idx, 1);
+    } else if (ref.kind === "raster") {
+      const rasterCanvas = getRasterCanvas(ref.layer);
+      if (rasterCanvas) {
+        const rasterCtx = rasterCanvas.getContext("2d")!;
+        rasterCtx.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+        rasterCtx.drawImage(ref.selection.base, 0, 0);
+        markRasterEdited(ref.layer);
+        syncRasterToLayer(ref.layer);
+      }
     }
   }
   clearSelection();
@@ -1862,6 +2235,117 @@ function pasteLayerAboveActive() {
   buildLayers();
   buildInspector();
   setStatus(`pasted ${pasted.name}`);
+}
+
+function clipboardRasterFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const itemFiles = [...data.items]
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file && isSupportedRasterImageFile(file));
+  if (itemFiles.length > 0) return itemFiles;
+  return [...data.files].filter(isSupportedRasterImageFile);
+}
+
+function clipboardContainsImage(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  return [...data.items].some((item) => item.type.toLowerCase().startsWith("image/"))
+    || [...data.files].some((file) => file.type.toLowerCase().startsWith("image/"));
+}
+
+function loadClipboardImage(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    const finish = () => URL.revokeObjectURL(url);
+    image.onload = () => {
+      finish();
+      resolve(image);
+    };
+    image.onerror = () => {
+      finish();
+      reject(new Error("clipboard image could not be decoded"));
+    };
+    image.src = url;
+  });
+}
+
+async function pasteRasterImages(files: File[]) {
+  if (activePanel().kind === "timelapse" && !activeSubPanelId) {
+    setStatus("Cannot paste images onto a timelapse panel");
+    return;
+  }
+
+  const targetProject = project;
+  const targetPanel = activePanel();
+  const targetContainer = activeContainer();
+  const targetIndex = targetContainer.getActiveLayerIndex();
+  setStatus(files.length === 1 ? "Pasting image…" : `Pasting ${files.length} images…`);
+
+  const decoded = await Promise.all(files.map(async (file) => {
+    try {
+      const image = await loadClipboardImage(file);
+      const placement = containRasterImage(
+        image.naturalWidth,
+        image.naturalHeight,
+        targetProject.width,
+        targetProject.height
+      );
+      const rasterCanvas = document.createElement("canvas");
+      rasterCanvas.width = targetProject.width;
+      rasterCanvas.height = targetProject.height;
+      const rasterCtx = rasterCanvas.getContext("2d");
+      if (!rasterCtx) throw new Error("raster canvas is unavailable");
+      rasterCtx.drawImage(
+        image,
+        placement.x,
+        placement.y,
+        placement.width,
+        placement.height
+      );
+      return { file, rasterCanvas };
+    } catch (error) {
+      console.error("Clipboard image paste failed", error);
+      return null;
+    }
+  }));
+
+  // A project load while image decoding was in flight invalidates the target.
+  if (project !== targetProject || !targetProject.panels.includes(targetPanel)) {
+    setStatus("Image paste cancelled because the project changed");
+    return;
+  }
+
+  const successful = decoded.filter(
+    (item): item is NonNullable<typeof item> => item !== null
+  );
+  if (successful.length === 0) {
+    showToast("PNG/JPEG paste failed", "error");
+    return;
+  }
+
+  const pastedLayers = successful.map(({ file, rasterCanvas }) => {
+    const layer = newLayer(rasterLayerName(file), "raster", {
+      width: targetProject.width,
+      height: targetProject.height,
+    });
+    installRasterCanvas(layer, rasterCanvas);
+    return layer;
+  });
+  targetContainer.layers.splice(targetIndex + 1, 0, ...pastedLayers);
+  targetContainer.setActiveLayerIndex(targetIndex + pastedLayers.length);
+  selectedText = null;
+  selectedSubPanelId = null;
+  clearSelection();
+  commitHistory(pastedLayers);
+  buildLayers();
+  buildInspector();
+
+  const failedCount = files.length - successful.length;
+  const pastedLabel = pastedLayers.length === 1
+    ? `pasted ${pastedLayers[0].name} as a raster layer`
+    : `pasted ${pastedLayers.length} images as raster layers`;
+  setStatus(failedCount > 0 ? `${pastedLabel} · ${failedCount} failed` : pastedLabel);
 }
 
 function duplicateActiveLayer() {
@@ -2056,6 +2540,11 @@ function ensureLayerAnimation(layer: Layer): LayerAnimation {
   return layer.animation;
 }
 
+function ensureNoiseDisplace(layer: Layer): LayerNoiseDisplace {
+  if (!layer.noiseDisplace) layer.noiseDisplace = defaultNoiseDisplace();
+  return layer.noiseDisplace;
+}
+
 function armLayerKeyframe(which: "from" | "to") {
   const layer = activeLayer();
   if (!layer) return;
@@ -2074,6 +2563,7 @@ type WorkspaceMode = "draw" | "edit";
 
 let workspaceMode: WorkspaceMode = "draw";
 let timelineMode: "cells" | "tracks" = "cells";
+const expandedPanelAnnotations = new Set<string>();
 
 function canvasPos(e: PointerEvent | MouseEvent) {
   const raw = screenToCanvas(canvas, e.clientX, e.clientY);
@@ -2111,6 +2601,11 @@ function appendSmoothedStrokeSamples(samples: StrokeSmoothingSample[]) {
     if (last && Math.hypot(pos.x - last.x, pos.y - last.y) < 1.0) continue;
     liveStroke.points.push(pos);
     liveStroke.pressures!.push(sample.pressure);
+    if (liveRasterStroke) {
+      liveRasterStroke.painter.append(pos, sample.pressure);
+      markRasterEdited(liveRasterStroke.layer);
+      invalidateBaseFrameCache();
+    }
   }
 }
 
@@ -2179,10 +2674,6 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Marquee tool — region mask (clip draw/fill) or extracted object group.
   if (currentBrush === MARQUEE_KEY) {
-    if (activeLayer()?.kind === "raster") {
-      showToast("Selection tools don't work on raster layers yet", "info");
-      return;
-    }
     if (selectionState?.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
       if (handle) {
@@ -2192,6 +2683,7 @@ canvas.addEventListener("pointerdown", (e) => {
       }
       const b = selectionState.bounds;
       if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
+        transformSnapshots = snapshotItems(selectionState.items);
         selectionState = { ...selectionState, phase: "moving", lastPos: pos };
         try { canvas.setPointerCapture(e.pointerId); } catch {}
         return;
@@ -2201,13 +2693,6 @@ canvas.addEventListener("pointerdown", (e) => {
       buildEditContext();
     }
     if (selectionState?.mode === "region" && selectionState.phase === "idle") {
-      const bounds = shapeBounds(selectionState.shape);
-      const handle = hitTestTransformHandle(pos, bounds, viewport.scale);
-      if (handle) {
-        pendingRegionTransform = { pointerId: e.pointerId, handle, startPos: pos };
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        return;
-      }
       if (activeRegionContains(selectionState, pos)) {
         selectionState = { ...selectionState, phase: "moving", lastPos: pos };
         try { canvas.setPointerCapture(e.pointerId); } catch {}
@@ -2216,8 +2701,8 @@ canvas.addEventListener("pointerdown", (e) => {
       }
     }
     const startShape = marqueeToolKind === "ellipse"
-      ? ellipseFromDrag(pos, pos, e.shiftKey)
-      : rectFromDrag(pos, pos);
+      ? ellipseFromDrag(pos, pos, e.shiftKey, e.altKey)
+      : rectFromDrag(pos, pos, e.shiftKey, e.altKey);
     selectionState = {
       mode: "region",
       phase: "creating",
@@ -2231,14 +2716,27 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Scale tool — resize/rotate the active layer's content (or the current selection).
   if (currentBrush === SCALE_KEY) {
-    if (activeLayer()?.kind === "raster") {
-      showToast("Selection tools don't work on raster layers yet", "info");
-      return;
-    }
-    const target = scaleToolItems();
+    let target = scaleToolItems();
     if (!target) return;
     const handle = hitTestTransformHandle(pos, target.bounds, viewport.scale);
     if (!handle) return;
+    const rasterLayer = activeLayer()?.kind === "raster" ? activeLayer()! : null;
+    if (rasterLayer && target.items.length === 0) {
+      const rasterRef = rasterContentSelection(rasterLayer);
+      if (!rasterRef) return;
+      const bounds = boundsFromItems([rasterRef], measureText);
+      selectionState = {
+        mode: "object",
+        phase: "idle",
+        shape: { kind: "rect", ...bounds },
+        bounds,
+        items: [rasterRef],
+      };
+      target = { items: [rasterRef], bounds };
+      beginObjectSelectionTransform(handle, pos);
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      return;
+    }
     const pivot = rectCenter(target.bounds);
     scaleToolDrag = {
       items: target.items,
@@ -2379,7 +2877,21 @@ canvas.addEventListener("pointerdown", (e) => {
       if (!rasterCanvas) { showToast("Layer still loading", "info"); return; }
       const rasterCtx = rasterCanvas.getContext("2d")!;
       const image = rasterCtx.getImageData(0, 0, rasterCanvas.width, rasterCanvas.height);
+      const beforeFill = new Uint8ClampedArray(image.data);
       if (floodFillImageData(image, pos.x, pos.y, currentColor, rasterCanvas.width, rasterCanvas.height, currentFillTolerance)) {
+        if (regionClip) {
+          const mask = rasterizeShapeMask(regionClip, rasterCanvas.width, rasterCanvas.height);
+          const inverted = selectionState?.mode === "region" && !!selectionState.inverted;
+          for (let pixel = 0; pixel < mask.length; pixel++) {
+            const selected = inverted ? mask[pixel] === 0 : mask[pixel] !== 0;
+            if (selected) continue;
+            const offset = pixel * 4;
+            image.data[offset] = beforeFill[offset];
+            image.data[offset + 1] = beforeFill[offset + 1];
+            image.data[offset + 2] = beforeFill[offset + 2];
+            image.data[offset + 3] = beforeFill[offset + 3];
+          }
+        }
         rasterCtx.putImageData(image, 0, 0);
         markRasterEdited(layer2);
         syncRasterToLayer(layer2);
@@ -2434,9 +2946,21 @@ canvas.addEventListener("pointerdown", (e) => {
   );
   liveStroke = {
     brush: currentBrush, color: currentColor, size: currentSize,
+    erase: transparentPaintSelected || brushByKey(currentBrush).erase === true,
     brushSettings: { ...currentBrushSettings },
     points: [applyPerspectiveSnap(pos)], pressures: [firstPressure],
   };
+  if (layer.kind === "raster" && !beginLiveRasterStroke(
+    layer,
+    liveStroke,
+    liveStroke.points[0],
+    firstPressure
+  )) {
+    drawing = false;
+    drawingPointerId = null;
+    clearLiveStrokeState();
+    return;
+  }
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -2453,19 +2977,6 @@ canvas.addEventListener("pointermove", (e) => {
     };
     applyViewport();
     e.preventDefault();
-    return;
-  }
-  if (pendingRegionTransform) {
-    if (e.pointerId !== pendingRegionTransform.pointerId) return;
-    const pos = hoverPos;
-    if (Math.hypot(pos.x - pendingRegionTransform.startPos.x, pos.y - pendingRegionTransform.startPos.y) < 0.5) {
-      return;
-    }
-    const pending = pendingRegionTransform;
-    pendingRegionTransform = null;
-    if (beginObjectSelectionTransform(pending.handle, pending.startPos)) {
-      applyActiveSelectionTransform(pos, e.shiftKey, e.altKey);
-    }
     return;
   }
   if (perspectiveDrag) {
@@ -2535,8 +3046,8 @@ canvas.addEventListener("pointermove", (e) => {
       } else {
         const start = path[0] ?? pos;
         const shape = selectionState.tool === "ellipse"
-          ? ellipseFromDrag(start, pos, e.shiftKey)
-          : rectFromDrag(start, pos);
+          ? ellipseFromDrag(start, pos, e.shiftKey, e.altKey)
+          : rectFromDrag(start, pos, e.shiftKey, e.altKey);
         selectionState = { ...selectionState, lassoPath: [start, pos], shape };
       }
       return;
@@ -2546,27 +3057,11 @@ canvas.addEventListener("pointermove", (e) => {
       const dy = pos.y - selectionState.lastPos.y;
       if (selectionState.mode === "region") {
         if (dx === 0 && dy === 0) return;
-        const shape = selectionState.shape;
-        const items = cutAtShape(shape, !!selectionState.inverted);
-        if (items.length > 0) {
-          moveMarqueeItems(items, dx, dy);
-          bumpMarqueeItemLayers(items);
-          selectionState = {
-            mode: "object",
-            phase: "moving",
-            shape: translateShape(shape, dx, dy),
-            bounds: boundsFromItems(items, measureText),
-            items,
-            lastPos: pos,
-          };
-          buildEditContext();
-        } else {
-          selectionState = {
-            ...selectionState,
-            shape: translateShape(shape, dx, dy),
-            lastPos: pos,
-          };
-        }
+        selectionState = {
+          ...selectionState,
+          shape: translateShape(selectionState.shape, dx, dy),
+          lastPos: pos,
+        };
       } else {
         moveMarqueeItems(selectionState.items, dx, dy);
         bumpMarqueeItemLayers(selectionState.items);
@@ -2678,13 +3173,6 @@ window.addEventListener("pointerup", (e) => {
     buildInspector();
     return;
   }
-  if (pendingRegionTransform) {
-    if (e.pointerId === pendingRegionTransform.pointerId) {
-      pendingRegionTransform = null;
-      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
-    }
-    return;
-  }
   if (selectionState) {
     if (selectionState.mode === "region" && selectionState.phase === "creating") {
       let shape = selectionState.shape;
@@ -2698,7 +3186,7 @@ window.addEventListener("pointerup", (e) => {
       }
       selectionState = { mode: "region", phase: "idle", shape, tool: selectionState.tool };
       buildEditContext();
-      setStatus("Selection active · drag or use handles to cut · paint inside · Esc to clear");
+      setStatus("Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
       return;
     }
     if (selectionState.phase === "moving") {
@@ -2706,6 +3194,8 @@ window.addEventListener("pointerup", (e) => {
         const touchedLayers = [...new Set(
           selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
         )];
+        syncRasterMarqueeItems(selectionState.items);
+        transformSnapshots = null;
         selectionState = {
           mode: "object",
           phase: "idle",
@@ -2730,6 +3220,7 @@ window.addEventListener("pointerup", (e) => {
       const touchedLayers = [...new Set(
         selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
       )];
+      syncRasterMarqueeItems(selectionState.items);
       transformSnapshots = null;
       selectionState = {
         mode: "object",
@@ -2748,6 +3239,7 @@ window.addEventListener("pointerup", (e) => {
     const touchedLayers = [...new Set(
       scaleToolDrag.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
     )];
+    syncRasterMarqueeItems(scaleToolDrag.items);
     scaleToolDrag = null;
     commitHistory(touchedLayers);
     updateCanvasCursor(lastCanvasPointerPos ?? undefined);
@@ -2799,13 +3291,25 @@ window.addEventListener("pointerup", (e) => {
 });
 
 window.addEventListener("pointercancel", (e) => {
-  if (pendingRegionTransform && e.pointerId === pendingRegionTransform.pointerId) {
-    pendingRegionTransform = null;
-    return;
-  }
   if (perspectiveDrag && e.pointerId === perspectiveDrag.pointerId) {
     perspectiveDrag = null;
     commitHistory([]);
+    return;
+  }
+  if (selectionState?.mode === "object" &&
+      selectionState.phase !== "idle" &&
+      transformSnapshots) {
+    for (const snapshot of transformSnapshots) restoreFromSnapshot(snapshot);
+    bumpMarqueeItemLayers(selectionState.items);
+    transformSnapshots = null;
+    selectionState = {
+      mode: "object",
+      phase: "idle",
+      shape: selectionState.shape,
+      bounds: boundsFromItems(selectionState.items, measureText),
+      items: selectionState.items,
+    };
+    buildEditContext();
     return;
   }
   if (scaleToolDrag) {
@@ -2816,8 +3320,12 @@ window.addEventListener("pointercancel", (e) => {
   }
   if (!drawing) return;
   if (drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
-  finishLiveStrokeSmoothing();
-  if (liveStroke) commitLiveStroke();
+  if (liveRasterStroke) {
+    rollbackLiveRasterStroke();
+  } else {
+    finishLiveStrokeSmoothing();
+    if (liveStroke) commitLiveStroke();
+  }
   drawing = false;
   drawingPointerId = null;
   liveStrokeHasRealPressure = false;
@@ -2885,7 +3393,6 @@ canvas.addEventListener("click", (e) => {
 // ---- viewport controls ----------------------------------------------------
 
 stageArea.addEventListener("wheel", (e) => {
-  if (!e.metaKey && !e.ctrlKey) return;
   e.preventDefault();
   const nextScale = viewport.scale * Math.exp(-e.deltaY * 0.0015);
   viewport = zoomAboutPoint(canvas, stageArea, nextScale, e.clientX, e.clientY);
@@ -2908,8 +3415,10 @@ function zoomStep(multiplier: number) {
 ($("zoom-in") as HTMLButtonElement).onclick = () => zoomStep(1.25);
 ($("zoom-label") as HTMLButtonElement).onclick = () => resetViewport();
 ($("zoom-fit") as HTMLButtonElement).onclick = () => fitViewport();
+($("tiktok-overlay-toggle") as HTMLButtonElement).onclick = toggleTikTokOverlay;
+syncTikTokOverlayToggle();
 
-for (const id of ["zoom-out", "zoom-label", "zoom-in", "zoom-fit"]) {
+for (const id of ["tiktok-overlay-toggle", "zoom-out", "zoom-label", "zoom-in", "zoom-fit"]) {
   const btn = $(id) as HTMLButtonElement;
   let pointerActivated = false;
   btn.addEventListener("pointerdown", () => { pointerActivated = true; });
@@ -3328,7 +3837,7 @@ function drawStabilizerLeashOverlay(targetCtx: CanvasRenderingContext2D) {
 }
 
 function drawEraserCursorOverlay(targetCtx: CanvasRenderingContext2D) {
-  const points = drawing && liveStroke && isEraseBrushKey(liveStroke.brush)
+  const points = drawing && liveStroke && isEraseBrushKey(liveStroke.brush, liveStroke.erase === true)
     ? liveStroke.points
     : !drawing && lastCanvasPointerPos && isEraseBrushKey(currentBrush)
     ? [lastCanvasPointerPos]
@@ -3508,7 +4017,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   let shape: SelectionShape;
   let b: Rect;
   if (selectionState.mode === "region" && selectionState.phase === "creating") {
-    shape = shapeFromCreating(selectionState as SelectionState & { mode: "region"; phase: "creating" });
+    shape = selectionState.shape;
     b = shapeBounds(shape);
   } else if (selectionState.mode === "object") {
     b = selectionState.bounds;
@@ -3519,8 +4028,14 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   }
 
   ctx.save();
-  ctx.strokeStyle = "rgba(255,205,117,0.95)";
-  ctx.setLineDash([8, 8]);
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.setLineDash([]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  traceShapePath(ctx, shape);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,0.95)";
+  ctx.setLineDash([6, 6]);
   ctx.lineDashOffset = -antsOffset;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -3528,7 +4043,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  if (currentBrush === MARQUEE_KEY && selectionState.phase !== "creating" &&
+  if (currentBrush === MARQUEE_KEY && selectionState.mode === "object" &&
       (selectionState.phase === "idle" || selectionState.phase === "transforming")) {
     const hs = transformHandleVisualHalfSize(viewport.scale);
     const corners = [
@@ -3551,19 +4066,6 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
     ctx.stroke();
   }
 
-  if (selectionState.phase !== "creating") {
-    ctx.fillStyle = "#ffcd75";
-    ctx.font = "24px ui-monospace, monospace";
-    let label: string;
-    if (selectionState.mode === "object") {
-      label = `${selectionState.items.length} extracted · Del to remove · Esc to clear`;
-    } else if (currentBrush === MARQUEE_KEY) {
-      label = "Region · drag/handle to cut · Esc to clear";
-    } else {
-      label = "Painting inside selection · Esc to clear";
-    }
-    ctx.fillText(label, b.x + 8, Math.max(36, b.y - 10));
-  }
   ctx.restore();
 }
 
@@ -3603,6 +4105,14 @@ function drawScaleToolOverlay(ctx: CanvasRenderingContext2D) {
   ctx.fillStyle = "#ffcd75";
   ctx.font = "24px ui-monospace, monospace";
   ctx.fillText("Scale · drag handles · Shift = constrain · Alt = from center", b.x + 8, Math.max(36, b.y - 10));
+  ctx.restore();
+}
+
+function drawTikTokOverlayInCanvasSpace() {
+  if (!tiktokOverlayEnabled) return;
+  ctx.save();
+  if (overscanX > 0 || overscanY > 0) ctx.translate(overscanX, overscanY);
+  drawTikTokOverlay(ctx, project.width, project.height);
   ctx.restore();
 }
 
@@ -3669,31 +4179,28 @@ function loop(now: number) {
       playheadMs = e;
       lastPlaybackMs = e;
       const visualMs = Math.min(e, Math.max(0, projectVisualDuration() - 1));
-      const seqPos = sequenceAtTime(project, visualMs);
+      const seqPos = sequenceTransitionAtTime(project, visualMs);
       lastSequencePosition = seqPos;
       const { index, localMs } = seqPos;
       activePanelIndex = index;
       const panel = project.panels[index];
       const seqTick = Math.floor((localMs / 1000) * project.wiggleFps);
-      if (shouldRenderPlaybackFrame({
+      if (editorPreviewInvalidated || shouldRenderPlaybackFrame({
         panelIndex: index,
         seqTick,
         lastPanelIndex: lastPlaybackRenderPanelIndex,
         lastSeqTick: lastPlaybackRenderSeqTick,
-        continuous: panelHasPlaybackContinuity(panel),
+        continuous: panelHasPlaybackContinuity(panel) || !!seqPos.transition,
       })) {
-        profileRender("playback-main", () => renderPanel(ctx, panel, seqTick, project.width, project.height, {
-          allPanels: project.panels,
-          timelapseProgress: panel.kind === "timelapse"
-            ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+        profileRender("playback-main", () => renderSequenceFrame(ctx, project, visualMs, {
           skipJitter: !jitterEnabled,
-          localMs,
-          wiggleFps: project.wiggleFps,
           overscan: { x: overscanX, y: overscanY },
           overscanDim: 1,
           renderCache: displayRenderCache,
           contentVersion: renderContentVersion,
-        }));
+        }, seqPos));
+        drawTikTokOverlayInCanvasSpace();
+        editorPreviewInvalidated = false;
         lastPlaybackRenderPanelIndex = index;
         lastPlaybackRenderSeqTick = seqTick;
       }
@@ -3702,10 +4209,20 @@ function loop(now: number) {
     }
   }
   const liveInteraction = hasLiveEditorInteraction();
-  if (!playing && shouldRenderIdleFrame({ tickChanged, interacting: liveInteraction })) {
+  if (!playing && shouldRenderIdleFrame({
+    tickChanged,
+    interacting: liveInteraction || !!selectionState || editorPreviewInvalidated,
+  })) {
     const panel = activePanel();
     if (drawing && liveStroke) {
-      if (isEraseBrushKey(liveStroke.brush)) {
+      if (liveRasterStroke) {
+        if (onionEnabled && panel.kind !== "timelapse") {
+          drawEditorPanelWithOnion(panel, "live-raster-active");
+        } else {
+          paintEditorPanelBackground(panel);
+          drawEditorActiveContent(panel, "live-raster");
+        }
+      } else if (isEraseBrushKey(liveStroke.brush, liveStroke.erase === true)) {
         profileRender("live-erase", () => drawLiveErasePreviewFrame());
       } else {
         if (onionEnabled && panel.kind !== "timelapse") {
@@ -3756,7 +4273,7 @@ function loop(now: number) {
       );
       ctx.restore();
     }
-    antsOffset = (antsOffset + 0.6) % 16;
+    antsOffset = marqueeAntsOffset(now);
     drawPerspectiveOverlay(ctx);
     drawMaskOverlay(ctx);
     drawSelectionOverlay(ctx);
@@ -3807,7 +4324,11 @@ function loop(now: number) {
     // Keyframe overlay: A/B handles + motion path for animated layers.
     drawKeyframeOverlay(ctx);
 
+    // Platform chrome is drawn last so it matches how TikTok covers the post.
+    if (tiktokOverlayEnabled) drawTikTokOverlay(ctx, project.width, project.height);
+
     if (overscanX > 0 || overscanY > 0) ctx.restore();
+    editorPreviewInvalidated = false;
   }
 
   // Timeline thumbnails are static previews; refresh only when content changed.
@@ -3832,7 +4353,8 @@ requestLoopFrame();
 // ---- UI: brushes / palette / layers / timeline / inspector / breadcrumb ---
 
 function buildBrushBar() {
-  canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MARQUEE_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
+  canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
+  canvas.classList.toggle("marquee-cursor", currentBrush === MARQUEE_KEY);
   const drawTools = $("tools-draw");
   const editTools = $("tools-edit");
   const insertTools = $("tools-insert");
@@ -3858,7 +4380,6 @@ function buildBrushBar() {
     currentBrush = k;
     if (!TOOL_KEYS.has(k)) lastBrushByTool[brushToolForKey(k)] = k;
     selectDrag = null;
-    pendingRegionTransform = null;
     if (scaleToolDrag) {
       for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
       bumpMarqueeItemLayers(scaleToolDrag.items);
@@ -3882,7 +4403,7 @@ function buildBrushBar() {
     buildInspector();
     buildBrushBar();
   };
-  const addTool = (host: HTMLElement, key: string, label: string, icon: IconNode) => {
+  const addTool = (host: HTMLElement, key: string, label: string, icon: StudioIcon) => {
     const btn = document.createElement("button");
     btn.className = "chip tool" + (currentBrush === key ? " active" : "");
     btn.title = label;
@@ -3891,7 +4412,7 @@ function buildBrushBar() {
     btn.onclick = () => switchTo(key);
     host.appendChild(btn);
   };
-  const addBrushTool = (tool: BrushToolKey, label: string, icon: IconNode) => {
+  const addBrushTool = (tool: BrushToolKey, label: string, icon: StudioIcon) => {
     const active = !TOOL_KEYS.has(currentBrush) && brushToolForKey(currentBrush) === tool;
     const btn = document.createElement("button");
     btn.className = "chip tool" + (active ? " active" : "");
@@ -3905,7 +4426,7 @@ function buildBrushBar() {
     drawTools.appendChild(btn);
   };
 
-  const brushToolIcons: Record<BrushToolKey, IconNode> = {
+  const brushToolIcons: Record<BrushToolKey, StudioIcon> = {
     classic: StudioIcons.BrushClassic,
     texture: StudioIcons.BrushTexture,
     scatter: StudioIcons.BrushScatter,
@@ -3956,6 +4477,7 @@ function buildBrushBar() {
       color: currentColor,
       bg: "#171720",
       size: currentSize,
+      erase: transparentPaintSelected,
     });
     host.appendChild(preview);
   };
@@ -4132,7 +4654,8 @@ function updateToolContext() {
   const currentRegistryBrush = TOOL_KEYS.has(currentBrush)
     ? null
     : BRUSHES.find((b) => b.key === currentBrush) ?? null;
-  const isEraser = currentRegistryBrush?.erase === true;
+  const isEraser = !!currentRegistryBrush &&
+    (currentRegistryBrush.erase === true || transparentPaintSelected);
   const isBrushLike = !!currentRegistryBrush && !isEraser;
   const hasSelection = !!selectionState;
   const contexts = [
@@ -4146,6 +4669,17 @@ function updateToolContext() {
   for (const [id, active] of contexts) {
     $(id).classList.toggle("active", active);
   }
+  const showBrushSettings = isBrushLike || isEraser;
+  document.querySelectorAll<HTMLElement>(".draw-setting-module").forEach((module) => {
+    module.hidden = !showBrushSettings;
+  });
+  document.querySelectorAll<HTMLElement>(".inspector-module-panel").forEach((group) => {
+    const modules = directInspectorModules(group);
+    group.hidden = modules.length > 0 && modules.every((module) =>
+      module.hidden
+      || (module.classList.contains("tool-context") && !module.classList.contains("active")),
+    );
+  });
   if (currentBrush === PERSPECTIVE_KEY) buildPerspectiveInspector();
 }
 
@@ -4327,7 +4861,7 @@ function buildEditContext() {
     if (currentBrush === MARQUEE_KEY) {
       const hint = document.createElement("div");
       hint.className = "context-hint";
-      hint.textContent = "Marquee: drag a region to clip brush/bucket. Drag inside to move items.";
+      hint.textContent = "Drag to select. Shift constrains; Alt draws from center. Drag inside to move the boundary.";
       host.appendChild(hint);
     }
     if (selectionClipboard) {
@@ -4340,17 +4874,23 @@ function buildEditContext() {
   info.className = "context-hint";
   info.style.marginBottom = "8px";
   if (selectionState.mode === "region") {
-    info.textContent = `Region selection (${selectionState.tool}). Paint inside; drag or handle-transform to cut.`;
+    info.textContent = `Region selection (${selectionState.tool}). Paint is clipped; drag inside to move the boundary.`;
   } else {
-    info.textContent = `${selectionState.items.length} item(s) extracted. Drag to move; handles to scale/rotate.`;
+    info.textContent = rasterMarqueeItems(selectionState.items).length > 0
+      ? "Selected pixels. Drag to move; handles scale/rotate."
+      : `${selectionState.items.length} item(s) extracted. Drag to move; handles to scale/rotate.`;
   }
   host.appendChild(info);
 
   if (selectionState.mode === "region" && selectionState.phase === "idle") {
-    mkBtn("Extract", () => extractSelection(), "Enter");
+    mkBtn("Extract", () => extractSelection());
     mkBtn(selectionState.inverted ? "Uninvert" : "Invert", () => invertActiveSelection());
     mkBtn("Grow", () => growActiveSelection(8));
     mkBtn("Shrink", () => growActiveSelection(-8));
+    if (activeLayer()?.kind === "raster") {
+      mkBtn("Copy", () => copyRasterRegionSelection(), "Copy selected pixels (Ctrl+C)");
+      mkBtn("Delete", () => deleteRasterRegionSelection(), "Delete selected pixels");
+    }
     mkBtn("Cut", () => cutSelection());
     mkBtn("Reveal Mask", () => setLayerMaskFromSelection("reveal"), "Mask active layer to show this selection");
     mkBtn("Hide Mask", () => setLayerMaskFromSelection("hide"), "Mask active layer to hide this selection");
@@ -4376,11 +4916,35 @@ function buildEditContext() {
 function buildPalette() {
   const bar = $("palette");
   bar.innerHTML = "";
+  const transparent = document.createElement("button");
+  transparent.type = "button";
+  transparent.className = "swatch swatch-transparent" + (transparentPaintSelected ? " active" : "");
+  transparent.title = "Erase with the current brush";
+  transparent.setAttribute("aria-label", "Transparent — erase with current brush");
+  transparent.setAttribute("aria-pressed", String(transparentPaintSelected));
+  transparent.onclick = () => {
+    transparentPaintSelected = true;
+    buildPalette();
+    buildBrushBar();
+    rebuildInspector();
+    updateCanvasCursor();
+    setStatus("Transparent paint · erase with the current brush");
+  };
+  bar.appendChild(transparent);
   for (const c of currentPalette.colors) {
     const sw = document.createElement("button");
-    sw.className = "swatch" + (c === currentColor ? " active" : "");
+    sw.className = "swatch" + (!transparentPaintSelected && c === currentColor ? " active" : "");
     sw.style.background = c;
-    sw.onclick = () => { currentColor = c; buildPalette(); buildBrushBar(); rebuildInspector(); };
+    sw.title = c;
+    sw.setAttribute("aria-label", `Paint color ${c}`);
+    sw.onclick = () => {
+      currentColor = c;
+      transparentPaintSelected = false;
+      buildPalette();
+      buildBrushBar();
+      rebuildInspector();
+      updateCanvasCursor();
+    };
     bar.appendChild(sw);
   }
   // "+" — add a custom color to the current palette (in-memory; persists for
@@ -4395,6 +4959,7 @@ function buildPalette() {
       currentPalette.colors.push(add.value);
     }
     currentColor = add.value;
+    transparentPaintSelected = false;
     buildPalette();
     buildBrushBar();
     rebuildInspector();
@@ -4424,6 +4989,24 @@ function renderThumb(c: HTMLCanvasElement, p: Panel) {
     deferFillMasks: true,
   }));
   tctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function renderProjectPreview(source: Project, panelIndex: number): string {
+  const preview = document.createElement("canvas");
+  preview.width = 360;
+  preview.height = Math.max(180, Math.round(preview.width * source.height / source.width));
+  const previewCtx = preview.getContext("2d")!;
+  const panel = source.panels[Math.max(0, Math.min(panelIndex, source.panels.length - 1))];
+  previewCtx.scale(preview.width / source.width, preview.height / source.height);
+  renderPanel(previewCtx, panel, 0, source.width, source.height, {
+    allPanels: source.panels,
+    timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+    skipAnim: true,
+    skipJitter: false,
+    skipFillMaskCache: true,
+  });
+  previewCtx.setTransform(1, 0, 0, 1, 0, 0);
+  return preview.toDataURL("image/jpeg", 0.82);
 }
 
 // Budget thumbnail re-renders per frame so undo/redo on a big project (every
@@ -4563,8 +5146,10 @@ function buildTransportBar(): HTMLElement {
 
   const playBtn = document.createElement("button");
   playBtn.id = "play";
-  playBtn.className = "transport-primary";
-  playBtn.textContent = playing ? "Stop" : "Play";
+  playBtn.className = "transport-primary transport-icon";
+  playBtn.title = playing ? "Stop" : "Play";
+  playBtn.setAttribute("aria-label", playing ? "Stop" : "Play");
+  playBtn.appendChild(svgIcon(playing ? StudioIcons.Pause : StudioIcons.Play, 16));
   playBtn.onclick = () => {
     if (playing) void stopPlayback(playheadMs);
     else void startPlayback(playheadMs);
@@ -4573,23 +5158,28 @@ function buildTransportBar(): HTMLElement {
 
   const loopBtn = document.createElement("button");
   loopBtn.id = "loop-toggle";
-  loopBtn.textContent = loopPlayback ? "Loop: On" : "Loop: Off";
-  loopBtn.className = "transport-toggle" + (loopPlayback ? " active" : "");
+  loopBtn.title = loopPlayback ? "Loop on" : "Loop off";
+  loopBtn.setAttribute("aria-label", loopBtn.title);
+  loopBtn.className = "transport-toggle transport-icon" + (loopPlayback ? " active" : "");
+  loopBtn.appendChild(svgIcon(StudioIcons.Repeat, 15));
   loopBtn.onclick = () => {
     loopPlayback = !loopPlayback;
-    loopBtn.textContent = loopPlayback ? "Loop: On" : "Loop: Off";
+    loopBtn.title = loopPlayback ? "Loop on" : "Loop off";
+    loopBtn.setAttribute("aria-label", loopBtn.title);
     loopBtn.classList.toggle("active", loopPlayback);
   };
   bar.appendChild(loopBtn);
 
   const jitterBtn = document.createElement("button");
   jitterBtn.id = "jitter-toggle";
-  jitterBtn.textContent = jitterEnabled ? "Stroke wiggle: On" : "Stroke wiggle: Off";
-  jitterBtn.title = "Toggle render-time stroke wiggle on/off (does not change saved points)";
-  jitterBtn.className = "transport-toggle" + (jitterEnabled ? " active" : "");
+  jitterBtn.title = jitterEnabled ? "Stroke wiggle on" : "Stroke wiggle off";
+  jitterBtn.setAttribute("aria-label", jitterBtn.title);
+  jitterBtn.className = "transport-toggle transport-icon" + (jitterEnabled ? " active" : "");
+  jitterBtn.appendChild(svgIcon(StudioIcons.Sparkle, 15));
   jitterBtn.onclick = () => {
     jitterEnabled = !jitterEnabled;
-    jitterBtn.textContent = jitterEnabled ? "Stroke wiggle: On" : "Stroke wiggle: Off";
+    jitterBtn.title = jitterEnabled ? "Stroke wiggle on" : "Stroke wiggle off";
+    jitterBtn.setAttribute("aria-label", jitterBtn.title);
     jitterBtn.classList.toggle("active", jitterEnabled);
     invalidateBaseFrameCache();
     refreshThumbnails();
@@ -4603,6 +5193,7 @@ function buildTransportBar(): HTMLElement {
   groupBtn.title = "Group selected frames (Shift-click to select range)";
   const range = selectedPanelRange();
   groupBtn.disabled = !range;
+  groupBtn.hidden = !range;
   groupBtn.onclick = () => {
     const sel = selectedPanelRange();
     if (!sel) return;
@@ -4624,17 +5215,33 @@ function buildTransportBar(): HTMLElement {
 }
 
 function buildOnionSkinBar(): HTMLElement {
-  const bar = document.createElement("div");
+  const bar = document.createElement("details");
   bar.className = "onion-skin-bar";
+
+  const summary = document.createElement("summary");
+  summary.className = "onion-skin-summary";
+  const title = document.createElement("span");
+  title.textContent = "Onion skin";
+  const state = document.createElement("span");
+  state.className = "onion-skin-state";
+  state.textContent = onionEnabled ? "On" : "Off";
+  summary.append(title, state);
+  bar.appendChild(summary);
+
+  const controls = document.createElement("div");
+  controls.className = "onion-skin-controls";
 
   const toggleLabel = document.createElement("label");
   const toggleCb = document.createElement("input");
   toggleCb.type = "checkbox";
   toggleCb.id = "onion-toggle";
   toggleCb.checked = onionEnabled;
-  toggleCb.onchange = () => { onionEnabled = toggleCb.checked; };
-  toggleLabel.append(toggleCb, " Onion Skin");
-  bar.appendChild(toggleLabel);
+  toggleCb.onchange = () => {
+    onionEnabled = toggleCb.checked;
+    state.textContent = onionEnabled ? "On" : "Off";
+  };
+  toggleLabel.append(toggleCb, " Enable");
+  controls.appendChild(toggleLabel);
 
   const prevLabel = document.createElement("label");
   const prevSelect = document.createElement("select");
@@ -4648,7 +5255,7 @@ function buildOnionSkinBar(): HTMLElement {
   prevSelect.value = String(onionPrevCount);
   prevSelect.onchange = () => { onionPrevCount = +prevSelect.value; };
   prevLabel.append(prevSelect);
-  bar.appendChild(prevLabel);
+  controls.appendChild(prevLabel);
 
   const nextLabel = document.createElement("label");
   const nextSelect = document.createElement("select");
@@ -4662,7 +5269,7 @@ function buildOnionSkinBar(): HTMLElement {
   nextSelect.value = String(onionNextCount);
   nextSelect.onchange = () => { onionNextCount = +nextSelect.value; };
   nextLabel.append(nextSelect);
-  bar.appendChild(nextLabel);
+  controls.appendChild(nextLabel);
 
   const opSlider = document.createElement("input");
   opSlider.type = "range";
@@ -4672,7 +5279,8 @@ function buildOnionSkinBar(): HTMLElement {
   opSlider.step = "0.05";
   opSlider.value = String(onionOpacity);
   opSlider.oninput = () => { onionOpacity = +opSlider.value; };
-  bar.appendChild(opSlider);
+  controls.appendChild(opSlider);
+  bar.appendChild(controls);
 
   return bar;
 }
@@ -4711,6 +5319,12 @@ function buildPanelCell(
     const tag = document.createElement("div");
     tag.textContent = `▶ ${p.enter.kind}`;
     tag.style.cssText = "font-size:9px;color:#a7f070;text-align:center;";
+    cell.appendChild(tag);
+  }
+  if (p.transitionToNext?.kind === "crossfade") {
+    const tag = document.createElement("div");
+    tag.textContent = `⇄ crossfade ${p.transitionToNext.durationTicks}fr`;
+    tag.style.cssText = "font-size:9px;color:#8fd3ff;text-align:center;";
     cell.appendChild(tag);
   }
 
@@ -4761,6 +5375,54 @@ function buildPanelCell(
   dur.onchange = () => { setPanelDurationMs(i, Math.max(100, +dur.value || 100)); };
   msDetails.appendChild(dur);
   cell.appendChild(msDetails);
+
+  const annotationToggle = document.createElement("button");
+  annotationToggle.type = "button";
+  annotationToggle.className = "panel-annotation-toggle";
+  annotationToggle.classList.toggle("has-note", !!p.annotation?.trim());
+  annotationToggle.textContent = "Note";
+  annotationToggle.title = `Show or hide frame ${i + 1} annotation`;
+  annotationToggle.setAttribute("aria-label", `Toggle frame ${i + 1} annotation`);
+
+  const annotation = document.createElement("textarea");
+  annotation.className = "panel-annotation";
+  annotation.id = `panel-annotation-${p.id}`;
+  annotation.rows = 2;
+  annotation.maxLength = MAX_PANEL_ANNOTATION_CHARS;
+  annotation.value = p.annotation ?? "";
+  annotation.placeholder = "Dialogue / narration…";
+  annotation.title = `Frame ${i + 1} annotation`;
+  annotation.setAttribute("aria-label", `Frame ${i + 1} annotation`);
+  annotation.draggable = false;
+  annotation.hidden = !expandedPanelAnnotations.has(p.id);
+  annotationToggle.setAttribute("aria-controls", annotation.id);
+  annotationToggle.setAttribute("aria-expanded", String(!annotation.hidden));
+  annotationToggle.onclick = (e) => {
+    e.stopPropagation();
+    annotation.hidden = !annotation.hidden;
+    annotationToggle.setAttribute("aria-expanded", String(!annotation.hidden));
+    if (annotation.hidden) {
+      expandedPanelAnnotations.delete(p.id);
+    } else {
+      expandedPanelAnnotations.add(p.id);
+      annotation.focus();
+    }
+  };
+  let committedAnnotation = annotation.value;
+  annotation.oninput = () => {
+    p.annotation = annotation.value;
+    annotationToggle.classList.toggle("has-note", !!annotation.value.trim());
+    markDirty();
+  };
+  annotation.onchange = () => {
+    if (annotation.value === committedAnnotation) return;
+    p.annotation = annotation.value;
+    commitHistory();
+    committedAnnotation = annotation.value;
+    setStatus(`Frame ${i + 1} annotation updated`);
+  };
+  annotation.addEventListener("dragstart", (e) => e.stopPropagation());
+  cell.append(annotationToggle, annotation);
 
   const tools = document.createElement("div");
   tools.className = "panel-cell-actions";
@@ -4846,7 +5508,7 @@ function buildPanelCell(
 
   cell.onclick = (e) => {
     const t = e.target as HTMLElement;
-    if (t.tagName === "INPUT" || t.tagName === "BUTTON") return;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "BUTTON") return;
     if (e.shiftKey) {
       rangeEndIndex = i;
     } else {
@@ -4947,7 +5609,24 @@ function buildTimeline() {
   if (workspaceMode === "edit") { buildEditTimeline(tl); return; }
   if (timelineMode === "tracks") { buildTrackView(tl); return; }
 
-  // Draw mode — transport + filmstrip + onion skin, no tab row
+  // Draw mode — make the element timing tracks reachable from the filmstrip.
+  const tabRow = document.createElement("div");
+  tabRow.className = "timeline-tabs";
+  const panelsTab = document.createElement("button");
+  panelsTab.type = "button";
+  panelsTab.textContent = "Panels";
+  panelsTab.className = "timeline-tab active";
+  const tracksTab = document.createElement("button");
+  tracksTab.type = "button";
+  tracksTab.textContent = "Tracks";
+  tracksTab.className = "timeline-tab";
+  tracksTab.onclick = () => {
+    timelineMode = "tracks";
+    buildTimeline();
+  };
+  tabRow.append(panelsTab, tracksTab);
+  tl.appendChild(tabRow);
+
   tl.appendChild(buildTransportBar());
 
   // Filmstrip scroll area
@@ -5453,6 +6132,15 @@ function buildTrackView(tl: HTMLElement) {
   });
 
   panel.layers.forEach((l) => {
+    if (l.fadeIn || l.fadeOut) {
+      addRow(
+        `Layer fade: ${l.name}`,
+        () => l.fadeIn ? { kind: "fade", ...l.fadeIn } : undefined,
+        (a) => { l.fadeIn = { durationTicks: a.durationTicks, startTick: a.startTick }; commitHistory(); },
+        () => l.fadeOut ? { kind: "fade", ...l.fadeOut } : undefined,
+        (a) => { l.fadeOut = { durationTicks: a.durationTicks, startTick: a.startTick }; commitHistory(); },
+      );
+    }
     if (l.animation?.enabled) {
       const row = document.createElement("div");
       row.className = "track-row";
@@ -5493,7 +6181,7 @@ function buildTrackView(tl: HTMLElement) {
   const hasAny = (panel.enter && panel.enter.kind !== "none") ||
                  (panel.exit && panel.exit.kind !== "none") ||
                  (panel.subPanels ?? []).some(sp => (sp.enter?.kind ?? "none") !== "none" || (sp.exit?.kind ?? "none") !== "none") ||
-                 panel.layers.some(l => !!l.animation?.enabled) ||
+                 panel.layers.some(l => !!l.animation?.enabled || !!l.fadeIn || !!l.fadeOut) ||
                  panel.layers.some(l => (l.texts ?? []).some(t => (t.enter?.kind ?? "none") !== "none" || (t.exit?.kind ?? "none") !== "none"));
   if (!hasAny) {
     const hint = document.createElement("div");
@@ -6002,21 +6690,68 @@ function buildLayers() {
     vis.onchange = () => { layer.visible = vis.checked; commitHistory(); };
     row.appendChild(vis);
 
-    // Name: show as label, double-click to rename
+    // Name: begin editing on the first click and defer the layer-list rebuild
+    // until editing finishes. Rebuilding while a double-click is in progress
+    // replaces and moves the label, so the second click can miss it entirely.
     const nameEl = document.createElement("span");
     nameEl.className = "layer-label";
     nameEl.textContent = layer.name;
-    nameEl.title = "Double-click to rename";
-    nameEl.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
+    nameEl.title = "Click to rename";
+    nameEl.tabIndex = 0;
+    nameEl.setAttribute("role", "button");
+    nameEl.setAttribute("aria-label", `Rename layer ${layer.name}`);
+    const beginRename = () => {
+      if (!nameEl.isConnected) return;
+      if (!isActive) {
+        toneToolActive = false;
+        toneToolPrevLayerIndex = null;
+        cont.setActiveLayerIndex(li);
+        host.querySelectorAll(".layer-row.active").forEach((activeRow) =>
+          activeRow.classList.remove("active"));
+        row.classList.add("active");
+        buildInspector();
+        buildBrushBar();
+      }
+      const originalName = layer.name;
       const nm = document.createElement("input");
       nm.type = "text"; nm.value = layer.name; nm.className = "layer-name";
-      nm.onchange = () => { layer.name = nm.value; commitHistory(); buildLayers(); };
-      nm.onblur = () => buildLayers();
-      nm.onkeydown = (ke) => { if (ke.key === "Enter") nm.blur(); if (ke.key === "Escape") { nm.value = layer.name; nm.blur(); } };
+      nm.setAttribute("aria-label", `Layer name for ${layer.name}`);
+      let finished = false;
+      const finishRename = (commit: boolean) => {
+        if (finished) return;
+        finished = true;
+        if (commit && nm.value !== originalName) {
+          layer.name = nm.value;
+          commitHistory();
+        }
+        buildLayers();
+        buildInspector();
+      };
+      nm.addEventListener("click", (e) => e.stopPropagation());
+      nm.addEventListener("keydown", (ke) => {
+        ke.stopPropagation();
+        if (ke.key === "Enter") {
+          ke.preventDefault();
+          finishRename(true);
+        } else if (ke.key === "Escape") {
+          ke.preventDefault();
+          finishRename(false);
+        }
+      });
+      nm.addEventListener("blur", () => finishRename(true));
       nameEl.replaceWith(nm);
       nm.focus();
       nm.select();
+    };
+    nameEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      beginRename();
+    });
+    nameEl.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== "F2") return;
+      e.preventDefault();
+      e.stopPropagation();
+      beginRename();
     });
     row.appendChild(nameEl);
     const badge = layerMaskBadge(layer);
@@ -6266,7 +7001,7 @@ function buildInspector() {
   const summaryEl = document.getElementById("inspector-heading");
 
   if (workspaceMode === "edit") {
-    if (summaryEl) summaryEl.textContent = "Edit";
+    if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Edit");
     appendEditInspector(host);
     return;
   }
@@ -6279,18 +7014,18 @@ function buildInspector() {
       ? selectedText.text.content.slice(0, 18) + "…"
       : selectedText.text.content;
     heading.textContent = `Selected: Text "${preview}"`;
-    if (summaryEl) summaryEl.textContent = "Text Properties";
+    if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Text Properties");
   } else if (selectedSubPanelId) {
     heading.textContent = "Selected: Sub-Panel";
-    if (summaryEl) summaryEl.textContent = "Sub-Panel Properties";
+    if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Sub-Panel Properties");
   } else {
     const layer = activeLayer();
     if (layer) {
       heading.textContent = `Active: ${layer.name} · Panel ${activePanelIndex + 1}`;
-      if (summaryEl) summaryEl.textContent = "Layer Properties";
+      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Clip & Layer");
     } else {
       heading.textContent = `Active: Panel ${activePanelIndex + 1}`;
-      if (summaryEl) summaryEl.textContent = "Panel Properties";
+      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Entire Clip");
     }
   }
   host.appendChild(heading);
@@ -6566,9 +7301,52 @@ function appendSubPanelInspector(host: HTMLElement, sp: SubPanel) {
 }
 
 function appendPanelAnimInspector(host: HTMLElement, p: Panel) {
-  appendColorRow(host, "Background", () => p.bg, (c) => { p.bg = c; });
-  appendAnimPicker(host, "Panel Enter", () => p.enter, (a) => { p.enter = a; commitHistory(); buildTimeline(); });
-  appendAnimPicker(host, "Panel Exit",  () => p.exit,  (a) => { p.exit  = a; commitHistory(); buildTimeline(); });
+  const section = document.createElement("div");
+  section.className = "inspector-section";
+  const title = document.createElement("div");
+  title.className = "inspector-section-title";
+  title.textContent = "Entire Clip";
+  section.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "property-note";
+  note.textContent = "Applies to the complete frame: background, drawings, layers, text, and sub-panels.";
+  section.appendChild(note);
+
+  appendColorRow(section, "Background", () => p.bg, (c) => { p.bg = c; });
+  const fadeShortcuts = document.createElement("div");
+  fadeShortcuts.className = "inspector-buttons";
+  const fadeTicks = () => Math.max(1, Math.min(
+    4,
+    Math.round((p.durationMs / 1000) * project.wiggleFps / 2)
+  ));
+  const shortcut = (label: string, action: () => void) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cellbtn";
+    button.textContent = label;
+    button.onclick = action;
+    fadeShortcuts.appendChild(button);
+  };
+  shortcut("Fade clip in", () => {
+    p.enter = { kind: "fade", durationTicks: fadeTicks() };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  shortcut("Fade clip out", () => {
+    p.exit = { kind: "fade", durationTicks: fadeTicks() };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  shortcut("Fade clip in + out", () => {
+    const durationTicks = fadeTicks();
+    p.enter = { kind: "fade", durationTicks };
+    p.exit = { kind: "fade", durationTicks };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  section.appendChild(fadeShortcuts);
+  appendAnimPicker(section, "Clip enter", () => p.enter, (a) => { p.enter = a; commitHistory(); buildTimeline(); });
+  appendAnimPicker(section, "Clip exit",  () => p.exit,  (a) => { p.exit  = a; commitHistory(); buildTimeline(); });
+  appendPanelTransitionPicker(section, p);
+  host.appendChild(section);
 }
 
 function appendLayerInspector(host: HTMLElement, layer: Layer) {
@@ -6591,6 +7369,17 @@ function appendLayerInspector(host: HTMLElement, layer: Layer) {
     wrap.appendChild(child);
     section.appendChild(wrap);
   };
+
+  appendFadePicker(section, "Fade in", () => layer.fadeIn, (fade) => {
+    layer.fadeIn = fade;
+    commitHistory();
+    buildTimeline();
+  });
+  appendFadePicker(section, "Fade out", () => layer.fadeOut, (fade) => {
+    layer.fadeOut = fade;
+    commitHistory();
+    buildTimeline();
+  });
 
   if (layer.kind === "tone" && layer.tone) {
     const tone = layer.tone;
@@ -6644,6 +7433,44 @@ function appendLayerInspector(host: HTMLElement, layer: Layer) {
       buildLayers();
     };
     row("Cover entire layer", coverAll);
+  }
+
+  if (layerSupportsNoiseDisplace(layer)) {
+    const displaceOn = !!layer.noiseDisplace?.enabled;
+    const displaceChk = document.createElement("input");
+    displaceChk.type = "checkbox";
+    displaceChk.checked = displaceOn;
+    displaceChk.title = "Warp this layer’s pixels with seeded noise each wiggle tick";
+    displaceChk.onchange = () => {
+      const displace = ensureNoiseDisplace(layer);
+      displace.enabled = displaceChk.checked;
+      commitHistory([layer]);
+      buildInspector();
+    };
+    row("Noise displace", displaceChk);
+    if (displaceOn && layer.noiseDisplace) {
+      const displace = layer.noiseDisplace;
+      const amp = document.createElement("input");
+      amp.type = "range"; amp.min = "1"; amp.max = "32"; amp.step = "1";
+      amp.value = String(displace.amplitude);
+      amp.oninput = () => { displace.amplitude = +amp.value; };
+      amp.onchange = () => commitHistory([layer]);
+      row("Displace amt", amp);
+
+      const cell = document.createElement("input");
+      cell.type = "range"; cell.min = "8"; cell.max = "128"; cell.step = "4";
+      cell.value = String(displace.cellSize);
+      cell.oninput = () => { displace.cellSize = +cell.value; };
+      cell.onchange = () => commitHistory([layer]);
+      row("Cell size", cell);
+
+      const speed = document.createElement("input");
+      speed.type = "range"; speed.min = "0.25"; speed.max = "3"; speed.step = "0.25";
+      speed.value = String(displace.speed);
+      speed.oninput = () => { displace.speed = +speed.value; };
+      speed.onchange = () => commitHistory([layer]);
+      row("Displace spd", speed);
+    }
   }
 
   const clip = document.createElement("input");
@@ -6968,6 +7795,101 @@ function appendAnimPicker(
   host.appendChild(wrap);
 }
 
+function appendFadePicker(
+  host: HTMLElement,
+  label: string,
+  read: () => FadeSpec | undefined,
+  write: (fade: FadeSpec | undefined) => void
+) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:grid;grid-template-columns:80px 1fr 1fr;gap:4px;align-items:center;margin-top:4px;";
+  const lab = document.createElement("span");
+  lab.textContent = label;
+  lab.style.cssText = "font-size:11px;color:var(--dim);";
+  wrap.appendChild(lab);
+
+  const current = read();
+  const mode = document.createElement("select");
+  for (const [value, text] of [["none", "Off"], ["fade", "Fade"]] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = value === (current ? "fade" : "none");
+    mode.appendChild(option);
+  }
+
+  const ticks = document.createElement("input");
+  ticks.type = "number";
+  ticks.min = "1";
+  ticks.max = "32";
+  ticks.step = "1";
+  ticks.value = String(current?.durationTicks ?? 4);
+  ticks.title = "Duration in animation frames";
+  ticks.setAttribute("aria-label", `${label} duration in frames`);
+  ticks.disabled = !current;
+  ticks.style.cssText = "width:100%;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:2px;font-size:11px;";
+
+  mode.onchange = () => {
+    ticks.disabled = mode.value === "none";
+    write(mode.value === "none"
+      ? undefined
+      : { durationTicks: Math.max(1, +ticks.value || 4) });
+  };
+  ticks.onchange = () => {
+    if (mode.value === "none") return;
+    write({
+      durationTicks: Math.max(1, +ticks.value || 4),
+      startTick: read()?.startTick,
+    });
+  };
+  wrap.append(mode, ticks);
+  host.appendChild(wrap);
+}
+
+function appendPanelTransitionPicker(host: HTMLElement, panel: Panel) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:grid;grid-template-columns:80px 1fr 1fr;gap:4px;align-items:center;margin-top:4px;";
+  const label = document.createElement("span");
+  label.textContent = "To next";
+  label.style.cssText = "font-size:11px;color:var(--dim);";
+
+  const mode = document.createElement("select");
+  const cut = document.createElement("option");
+  cut.value = "cut";
+  cut.textContent = "Cut";
+  const crossfade = document.createElement("option");
+  crossfade.value = "crossfade";
+  crossfade.textContent = "Crossfade";
+  mode.append(cut, crossfade);
+  mode.value = panel.transitionToNext?.kind ?? "cut";
+  mode.disabled = project.panels.length < 2;
+  mode.title = mode.disabled ? "Add another panel to create a transition" : "Blend this panel into the next timeline frame";
+
+  const ticks = document.createElement("input");
+  ticks.type = "number";
+  ticks.min = "1";
+  ticks.max = "32";
+  ticks.step = "1";
+  ticks.value = String(panel.transitionToNext?.durationTicks ?? 4);
+  ticks.disabled = mode.disabled || mode.value === "cut";
+  ticks.title = "Crossfade duration in animation frames";
+  ticks.setAttribute("aria-label", "Crossfade duration in frames");
+  ticks.style.cssText = "width:100%;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:2px;font-size:11px;";
+
+  const commit = () => {
+    panel.transitionToNext = mode.value === "crossfade"
+      ? { kind: "crossfade", durationTicks: Math.max(1, +ticks.value || 4) }
+      : undefined;
+    ticks.disabled = mode.disabled || mode.value === "cut";
+    commitHistory();
+    buildTimeline();
+  };
+  mode.onchange = commit;
+  ticks.onchange = commit;
+  wrap.append(label, mode, ticks);
+  host.appendChild(wrap);
+}
+
 // ---- panel ops ------------------------------------------------------------
 
 function rebuildAfterPanelTimingChange() {
@@ -7156,6 +8078,7 @@ function updatePlayheadChrome() {
 // Play, loop, and jitter handlers are now in buildTransportBar().
 ($("size") as HTMLInputElement).oninput = (e) => {
   currentSize = +(e.target as HTMLInputElement).value;
+  updateBrushSizeControl();
   buildBrushBar();
 };
 ($("pen-pressure") as HTMLInputElement).onchange = (e) => {
@@ -7293,6 +8216,7 @@ async function applyPaletteById(id: string) {
   activePanel().paletteId = currentPalette.id;
   commitHistory();
   currentColor = currentPalette.colors[0];
+  transparentPaintSelected = false;
   buildPalette();
   rebuildPalettePicker();
 }
@@ -7535,6 +8459,23 @@ function setStatus(s: string, durationMs = 3500) {
   }
 }
 
+function syncTikTokOverlayToggle() {
+  const button = $("tiktok-overlay-toggle") as HTMLButtonElement;
+  button.classList.toggle("active", tiktokOverlayEnabled);
+  button.setAttribute("aria-pressed", String(tiktokOverlayEnabled));
+  button.title = tiktokOverlayEnabled
+    ? "Hide TikTok UI preview"
+    : "Show TikTok UI and safe-area preview";
+}
+
+function toggleTikTokOverlay() {
+  tiktokOverlayEnabled = !tiktokOverlayEnabled;
+  editorPreviewInvalidated = true;
+  syncTikTokOverlayToggle();
+  requestLoopFrame();
+  setStatus(`TikTok preview ${tiktokOverlayEnabled ? "on" : "off"}`);
+}
+
 type Command = {
   id: string;
   label: string;
@@ -7555,6 +8496,7 @@ function commandList(): Command[] {
     { id: "view-edit", label: "Switch to Edit", group: "View", run: () => setWorkspaceMode("edit") },
     { id: "view-fit", label: "Fit Canvas", group: "View", run: fitViewport },
     { id: "view-actual", label: "Actual Size", group: "View", run: resetViewport },
+    { id: "view-tiktok-overlay", label: "Toggle TikTok UI Preview", group: "View", run: toggleTikTokOverlay },
     { id: "view-onion", label: "Toggle Onion Skin", group: "Draw", run: () => {
       onionEnabled = !onionEnabled;
       const ot = document.getElementById("onion-toggle") as HTMLInputElement | null;
@@ -7649,7 +8591,7 @@ function commandList(): Command[] {
     { id: "export-panel-mp4-command", label: "Current panel MP4", group: "Export", run: () => ($("export-panel-mp4") as HTMLButtonElement).click() },
     { id: "export-mp4-command", label: "Full sequence MP4", group: "Export", run: () => ($("export-mp4") as HTMLButtonElement).click() },
     { id: "help-commands", label: "Command Palette", group: "Help", shortcut: "⌘K", run: openCommandPalette },
-    { id: "help-about", label: "About WiggleStudio", group: "Help", run: openAboutDialog },
+    { id: "help-about", label: "About Wiggle GPL", group: "Help", run: openAboutDialog },
     { id: "marquee-rect", label: "Marquee: Rectangle", group: "Edit", run: () => {
       marqueeToolKind = "rect";
       currentBrush = MARQUEE_KEY;
@@ -7681,6 +8623,11 @@ function commandList(): Command[] {
       enabled: () => selectionState?.mode === "region" && selectionState.phase === "idle",
       run: () => growActiveSelection(-8),
     },
+    { id: "selection-copy", label: "Copy Selection", group: "Edit",
+      enabled: () => selectionState?.mode === "object" ||
+        (selectionState?.mode === "region" && activeLayer()?.kind === "raster"),
+      run: () => selectionState?.mode === "region" ? copyRasterRegionSelection() : copySelection(),
+    },
     { id: "selection-cut", label: "Cut Selection", group: "Edit",
       enabled: () => !!selectionState,
       run: () => cutSelection(),
@@ -7688,6 +8635,11 @@ function commandList(): Command[] {
     { id: "selection-duplicate", label: "Duplicate Selection", group: "Edit",
       enabled: () => selectionState?.mode === "object" && isObjectSelectionIdle(selectionState),
       run: () => duplicateSelection(),
+    },
+    { id: "selection-delete", label: "Delete Selection", group: "Edit",
+      enabled: () => isObjectSelectionIdle(selectionState) ||
+        (selectionState?.mode === "region" && activeLayer()?.kind === "raster"),
+      run: () => { if (!deleteRasterRegionSelection()) deleteSelection(); },
     },
     { id: "selection-clear", label: "Clear Selection", group: "Edit",
       enabled: () => !!selectionState,
@@ -7746,6 +8698,389 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+function projectRecordName(existing?: ProjectLibraryRecord): string {
+  if (persistenceState.currentFileName) {
+    return persistenceState.currentFileName.replace(/\.wiggle\.json$/i, "").replace(/\.json$/i, "");
+  }
+  return existing?.name ?? `Untitled ${projectBoardRecords.length + 1}`;
+}
+
+function currentProjectRecord(json: string, refreshPreview: boolean): ProjectLibraryRecord | null {
+  if (!activeLibraryProjectId) return null;
+  const existing = projectBoardRecords.find((record) => record.id === activeLibraryProjectId);
+  const position = existing ?? nextProjectBoardPosition(projectBoardRecords);
+  return {
+    id: activeLibraryProjectId,
+    name: projectRecordName(existing),
+    json,
+    previewDataUrl: refreshPreview
+      ? renderProjectPreview(project, activePanelIndex)
+      : existing?.previewDataUrl ?? null,
+    x: position.x,
+    y: position.y,
+    updatedAt: Date.now(),
+    activePanelIndex,
+    viewport: { ...viewport },
+  };
+}
+
+function replaceProjectBoardRecord(record: ProjectLibraryRecord) {
+  const index = projectBoardRecords.findIndex((item) => item.id === record.id);
+  if (index < 0) projectBoardRecords.push(record);
+  else projectBoardRecords[index] = record;
+}
+
+async function persistCurrentProjectRecord(json: string, refreshPreview: boolean): Promise<boolean> {
+  if (!projectLibraryReady || !activeLibraryProjectId) return false;
+  const record = currentProjectRecord(json, refreshPreview);
+  if (!record) return false;
+  await putProjectLibraryRecord(record);
+  replaceProjectBoardRecord(record);
+  return true;
+}
+
+async function flushAutosave(refreshPreview = false, announce = false): Promise<boolean> {
+  if (_autosaveInFlight) {
+    while (_autosaveInFlight) await new Promise<void>((resolve) => setTimeout(resolve, 16));
+    if (!_isDirty && !refreshPreview) return true;
+  }
+  if (!_isDirty && !refreshPreview) return true;
+
+  const { json } = autosaveSerialization.snapshot(project);
+  const currentHash = projectHashFromString(json);
+  _autosaveInFlight = true;
+  let librarySaved = false;
+  let externalSaved = false;
+  try {
+    if (
+      persistenceState.currentFileHandle &&
+      _isDirty &&
+      currentHash !== persistenceState.lastSavedHash
+    ) {
+      try {
+        await writeHandleString(persistenceState.currentFileHandle, json);
+        persistenceState.lastSavedHash = currentHash;
+        externalSaved = true;
+      } catch (err) {
+        setStatus("external file sync failed; preserving work in the project library");
+        console.warn("External project autosave failed", err);
+      }
+    } else if (persistenceState.currentFileHandle) {
+      externalSaved = true;
+    }
+
+    if (projectLibraryReady) {
+      librarySaved = await persistCurrentProjectRecord(json, refreshPreview);
+    } else if (!persistenceState.currentFileHandle) {
+      const snapshot = writeRecoverySnapshotString(json);
+      if (!snapshot) setStatus("recovery unavailable — project is too large for browser storage");
+      librarySaved = !!snapshot;
+    }
+
+    if (librarySaved || externalSaved) {
+      markClean();
+      if (librarySaved) clearRecoverySnapshot();
+      if (announce) {
+        setStatus(externalSaved && persistenceState.currentFileHandle
+          ? `saved ${persistenceState.currentFileName ?? persistenceState.currentFileHandle.name}`
+          : "saved to project library");
+      }
+      return true;
+    }
+    return false;
+  } catch (err) {
+    setStatus("auto-save failed: " + (err as Error).message);
+    return false;
+  } finally {
+    _autosaveInFlight = false;
+    updateFileChrome();
+  }
+}
+
+function applyProjectBoardCamera() {
+  projectBoardWorld.style.transform =
+    `translate(${projectBoardMeta.camera.tx}px, ${projectBoardMeta.camera.ty}px) scale(${projectBoardMeta.camera.scale})`;
+}
+
+function saveProjectBoardMetaSoon() {
+  if (!projectLibraryReady) return;
+  if (projectBoardMetaSaveTimer !== null) clearTimeout(projectBoardMetaSaveTimer);
+  projectBoardMetaSaveTimer = setTimeout(() => {
+    projectBoardMetaSaveTimer = null;
+    void writeProjectBoardMeta(projectBoardMeta).catch((err) => {
+      console.warn("Could not save project board position", err);
+    });
+  }, 250);
+}
+
+function formatBoardUpdatedAt(timestamp: number): string {
+  const date = new Date(timestamp);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function projectBoardRecordInfo(record: ProjectLibraryRecord): {
+  width: number;
+  height: number;
+  panelCount: number;
+} {
+  try {
+    const parsed = JSON.parse(record.json) as {
+      panels?: unknown[];
+      width?: number;
+      height?: number;
+    };
+    return {
+      width: parsed.width && parsed.width > 0 ? parsed.width : 1080,
+      height: parsed.height && parsed.height > 0 ? parsed.height : 1080,
+      panelCount: parsed.panels?.length ?? 0,
+    };
+  } catch {
+    return { width: 1080, height: 1080, panelCount: 0 };
+  }
+}
+
+function buildProjectBoard() {
+  projectBoardWorld.innerHTML = "";
+  for (const record of projectBoardRecords) {
+    const info = projectBoardRecordInfo(record);
+    const displaySize = projectBoardCanvasSize(info.width, info.height);
+    const card = document.createElement("article");
+    card.className = "project-card" + (record.id === activeLibraryProjectId ? " active" : "");
+    card.style.left = `${record.x}px`;
+    card.style.top = `${record.y}px`;
+    card.style.width = `${displaySize.width}px`;
+    card.dataset.projectId = record.id;
+
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.className = "project-card-preview";
+    preview.style.width = `${displaySize.width}px`;
+    preview.style.height = `${displaySize.height}px`;
+    preview.setAttribute("aria-label", `Focus ${record.name}, ${info.width} by ${info.height}`);
+    if (record.previewDataUrl) {
+      const img = document.createElement("img");
+      img.src = record.previewDataUrl;
+      img.alt = "";
+      preview.appendChild(img);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "project-card-preview-placeholder";
+      empty.textContent = "Preview appears after the first autosave";
+      preview.appendChild(empty);
+    }
+    preview.onclick = () => { void focusProjectFromBoard(record.id); };
+
+    const body = document.createElement("div");
+    body.className = "project-card-body";
+    const titlebar = document.createElement("div");
+    titlebar.className = "project-card-titlebar";
+    const title = document.createElement("div");
+    title.className = "project-card-title";
+    title.textContent = record.name;
+    title.title = record.name;
+    titlebar.append(title);
+
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    const summary = document.createElement("span");
+    const updated = document.createElement("span");
+    summary.textContent =
+      `${info.width}×${info.height} · ${info.panelCount} panel${info.panelCount === 1 ? "" : "s"}`;
+    updated.textContent = formatBoardUpdatedAt(record.updatedAt);
+    meta.append(summary, updated);
+
+    titlebar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      titlebar.setPointerCapture(event.pointerId);
+      card.classList.add("dragging");
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const originX = record.x;
+      const originY = record.y;
+      const move = (next: PointerEvent) => {
+        record.x = originX + (next.clientX - startX) / projectBoardMeta.camera.scale;
+        record.y = originY + (next.clientY - startY) / projectBoardMeta.camera.scale;
+        card.style.left = `${record.x}px`;
+        card.style.top = `${record.y}px`;
+      };
+      const up = () => {
+        card.classList.remove("dragging");
+        titlebar.removeEventListener("pointermove", move);
+        titlebar.removeEventListener("pointerup", up);
+        titlebar.removeEventListener("pointercancel", up);
+        void putProjectLibraryRecord(record);
+      };
+      titlebar.addEventListener("pointermove", move);
+      titlebar.addEventListener("pointerup", up);
+      titlebar.addEventListener("pointercancel", up);
+    });
+
+    body.append(titlebar, meta);
+    card.append(preview, body);
+    projectBoardWorld.appendChild(card);
+  }
+}
+
+function fitProjectBoard() {
+  if (!projectBoardRecords.length) {
+    projectBoardMeta.camera = { scale: 1, tx: 80, ty: 80 };
+    applyProjectBoardCamera();
+    saveProjectBoardMetaSoon();
+    return;
+  }
+  const minX = Math.min(...projectBoardRecords.map((record) => record.x));
+  const minY = Math.min(...projectBoardRecords.map((record) => record.y));
+  const maxX = Math.max(...projectBoardRecords.map((record) => {
+    const info = projectBoardRecordInfo(record);
+    return record.x + projectBoardCanvasSize(info.width, info.height).width;
+  }));
+  const maxY = Math.max(...projectBoardRecords.map((record) => {
+    const info = projectBoardRecordInfo(record);
+    return record.y + projectBoardCanvasSize(info.width, info.height).height + 58;
+  }));
+  const rect = projectBoardSurface.getBoundingClientRect();
+  const scale = Math.max(0.2, Math.min(1.2, Math.min(
+    (rect.width - 120) / Math.max(240, maxX - minX),
+    (rect.height - 140) / Math.max(240, maxY - minY)
+  )));
+  projectBoardMeta.camera = {
+    scale,
+    tx: (rect.width - (maxX - minX) * scale) / 2 - minX * scale,
+    ty: (rect.height - (maxY - minY) * scale) / 2 - minY * scale,
+  };
+  applyProjectBoardCamera();
+  saveProjectBoardMetaSoon();
+}
+
+async function showProjectBoard() {
+  try {
+    await flushAutosave(true);
+    projectBoardRecords = await listProjectLibraryRecords();
+    projectBoardOpen = true;
+    projectBoard.hidden = false;
+    document.body.classList.add("project-board-open");
+    $("project-board-button").classList.add("open");
+    $("project-board-back").textContent = `Back to ${projectRecordName(
+      projectBoardRecords.find((record) => record.id === activeLibraryProjectId)
+    )}`;
+    buildProjectBoard();
+    applyProjectBoardCamera();
+  } catch (err) {
+    setStatus("Project Board unavailable: " + (err as Error).message);
+  }
+}
+
+function hideProjectBoard() {
+  projectBoardOpen = false;
+  projectBoard.hidden = true;
+  document.body.classList.remove("project-board-open");
+  $("project-board-button").classList.remove("open");
+  requestLoopFrame();
+}
+
+async function focusProjectFromBoard(id: string) {
+  if (id === activeLibraryProjectId) {
+    hideProjectBoard();
+    return;
+  }
+  const saved = await flushAutosave(true);
+  if (!saved) return;
+  const record = await getProjectLibraryRecord(id);
+  if (!record) {
+    setStatus("project is no longer available");
+    return;
+  }
+  const next = migrateProject(JSON.parse(record.json));
+  activeLibraryProjectId = id;
+  projectBoardMeta.activeProjectId = id;
+  persistenceState.currentFileHandle = projectFileHandles.get(id) ?? null;
+  persistenceState.currentFileName = record.name.startsWith("Untitled") ? null : record.name;
+  persistenceState.lastSavedHash = projectHashFromString(record.json);
+  resetProjectSession(next, `opened ${record.name}`, record.json);
+  activePanelIndex = Math.max(0, Math.min(record.activePanelIndex, next.panels.length - 1));
+  rangeAnchorIndex = activePanelIndex;
+  rangeEndIndex = activePanelIndex;
+  viewport = { ...record.viewport };
+  buildTimeline();
+  buildLayers();
+  buildBreadcrumb();
+  buildInspector();
+  applyViewport();
+  await writeProjectBoardMeta(projectBoardMeta);
+  hideProjectBoard();
+}
+
+async function addProjectToLibrary(
+  next: Project,
+  name: string,
+  fileHandle: FileSystemFileHandle | null = null,
+  serialized?: string
+): Promise<ProjectLibraryRecord | null> {
+  if (!projectLibraryReady) return null;
+  const json = serialized ?? serializeProject(next);
+  const id = crypto.randomUUID();
+  const position = nextProjectBoardPosition(projectBoardRecords);
+  const record: ProjectLibraryRecord = {
+    id,
+    name,
+    json,
+    previewDataUrl: renderProjectPreview(next, 0),
+    ...position,
+    updatedAt: Date.now(),
+    activePanelIndex: 0,
+    viewport: { scale: 1, tx: 0, ty: 0 },
+  };
+  await putProjectLibraryRecord(record);
+  projectBoardRecords.push(record);
+  if (fileHandle) projectFileHandles.set(id, fileHandle);
+  activeLibraryProjectId = id;
+  projectBoardMeta.activeProjectId = id;
+  await writeProjectBoardMeta(projectBoardMeta);
+  return record;
+}
+
+async function initializeProjectLibrary() {
+  if (!projectLibraryAvailable()) {
+    setStatus("Project Board storage unavailable; using single-project recovery");
+    return;
+  }
+  try {
+    projectBoardRecords = await listProjectLibraryRecords();
+    projectBoardMeta = await readProjectBoardMeta();
+    projectLibraryReady = true;
+    const requested = projectBoardMeta.activeProjectId;
+    const activeRecord = requested
+      ? projectBoardRecords.find((record) => record.id === requested)
+      : null;
+    if (activeRecord) {
+      const next = migrateProject(JSON.parse(activeRecord.json));
+      activeLibraryProjectId = activeRecord.id;
+      persistenceState.currentFileHandle = null;
+      persistenceState.currentFileName = activeRecord.name.startsWith("Untitled") ? null : activeRecord.name;
+      persistenceState.lastSavedHash = projectHashFromString(activeRecord.json);
+      resetProjectSession(next, `restored ${activeRecord.name}`, activeRecord.json);
+      activePanelIndex = Math.max(0, Math.min(activeRecord.activePanelIndex, next.panels.length - 1));
+      rangeAnchorIndex = activePanelIndex;
+      rangeEndIndex = activePanelIndex;
+      viewport = { ...activeRecord.viewport };
+      buildTimeline();
+      buildLayers();
+      buildBreadcrumb();
+      buildInspector();
+      applyViewport();
+    } else {
+      const json = autosaveSerialization.snapshot(project).json;
+      const record = await addProjectToLibrary(project, "Untitled 1", null, json);
+      if (record) resetCurrentFile(project, json);
+    }
+  } catch (err) {
+    projectLibraryReady = false;
+    setStatus("Project Board unavailable: " + (err as Error).message);
+  }
+}
+
 function currentDirty(): boolean {
   return _isDirty;
 }
@@ -7755,9 +9090,10 @@ function updateFileChrome() {
   $("dirty-dot").classList.toggle("dirty", currentDirty());
 }
 
-function resetProjectSession(next: Project, fileStatus: string) {
+function resetProjectSession(next: Project, fileStatus: string, serialized?: string) {
   applySanitizedGroups(next);
   project = next;
+  autosaveSerialization.reset(project, serialized);
   pruneRasterStoreForProject(project);
   history.init(project, { activePanelIndex: 0 });
   updateUndoRedoButtons();
@@ -7800,7 +9136,12 @@ function resetProjectSession(next: Project, fileStatus: string) {
 
 async function saveProject() {
   try {
-    const result = await persistSaveProject(project);
+    const { json } = autosaveSerialization.snapshot(project);
+    const result = await persistSaveProject(project, json);
+    if (activeLibraryProjectId && persistenceState.currentFileHandle) {
+      projectFileHandles.set(activeLibraryProjectId, persistenceState.currentFileHandle);
+    }
+    if (projectLibraryReady) await persistCurrentProjectRecord(json, true);
     markClean();
     clearRecoverySnapshot();
     updateFileChrome();
@@ -7813,7 +9154,16 @@ async function saveProject() {
 
 async function saveProjectAs() {
   try {
-    const result = await saveAsProject(project, persistenceState.currentFileName ?? "wigglestudio-project.wiggle.json");
+    const { json } = autosaveSerialization.snapshot(project);
+    const result = await saveAsProject(
+      project,
+      persistenceState.currentFileName ?? "wigglestudio-project.wiggle.json",
+      json
+    );
+    if (activeLibraryProjectId && persistenceState.currentFileHandle) {
+      projectFileHandles.set(activeLibraryProjectId, persistenceState.currentFileHandle);
+    }
+    if (projectLibraryReady) await persistCurrentProjectRecord(json, true);
     markClean();
     clearRecoverySnapshot();
     updateFileChrome();
@@ -7825,6 +9175,7 @@ async function saveProjectAs() {
 }
 
 async function openProject() {
+  await flushAutosave(true);
   if (!canUseFileSystemAccess()) {
     loadProjectFile.click();
     return;
@@ -7832,20 +9183,28 @@ async function openProject() {
   try {
     const result = await openProjectFromPicker();
     if (!result) return;
-    resetProjectSession(result.project, `opened ${result.fileName}`);
+    const handle = persistenceState.currentFileHandle;
+    const json = serializeProject(result.project);
+    await addProjectToLibrary(result.project, result.fileName, handle, json);
+    resetProjectSession(result.project, `opened ${result.fileName}`, json);
+    if (projectBoardOpen) hideProjectBoard();
     buildFileMenu();
   } catch (err) {
     if (!isAbortError(err)) setStatus("open failed: " + (err as Error).message);
   }
 }
 
-function newProject(presetKey?: string) {
+async function newProject(presetKey?: string) {
+  await flushAutosave(true);
   const preset = presetKey ? canvasPresetByKey(presetKey) : defaultCanvasPreset();
   const { width, height } = preset ?? defaultCanvasPreset();
   const next = createProject(width, height);
-  resetCurrentFile(next);
+  const json = serializeProject(next);
+  resetCurrentFile(next, json);
+  await addProjectToLibrary(next, `Untitled ${projectBoardRecords.length + 1}`, null, json);
   clearRecoverySnapshot();
-  resetProjectSession(next, `new project (${formatCanvasDimensions(width, height)})`);
+  resetProjectSession(next, `new project (${formatCanvasDimensions(width, height)})`, json);
+  if (projectBoardOpen) hideProjectBoard();
   buildFileMenu();
 }
 
@@ -7866,7 +9225,7 @@ function openPresetPicker() {
     btn.appendChild(meta);
     btn.onclick = () => {
       closePresetPicker();
-      newProject(preset.key);
+      void newProject(preset.key);
     };
     list.appendChild(btn);
   }
@@ -7884,9 +9243,12 @@ async function revertProject() {
   }
   try {
     const file = await persistenceState.currentFileHandle.getFile();
-    const next = migrateProject(JSON.parse(await file.text()));
-    persistenceState.lastSavedHash = projectHash(next);
-    resetProjectSession(next, `reverted ${persistenceState.currentFileName ?? file.name}`);
+    const json = await file.text();
+    const next = migrateProject(JSON.parse(json));
+    const canonical = serializeProject(next);
+    persistenceState.lastSavedHash = projectHashFromString(canonical);
+    resetProjectSession(next, `reverted ${persistenceState.currentFileName ?? file.name}`, canonical);
+    await persistCurrentProjectRecord(canonical, true);
   } catch (err) {
     setStatus("revert failed: " + (err as Error).message);
   }
@@ -7951,6 +9313,60 @@ function buildFileMenu() {
   $("file-menu").classList.toggle("open");
   $("file-menu-button").classList.toggle("open");
 };
+($("project-board-button") as HTMLButtonElement).onclick = () => {
+  if (projectBoardOpen) hideProjectBoard();
+  else void showProjectBoard();
+};
+($("project-board-back") as HTMLButtonElement).onclick = hideProjectBoard;
+($("project-board-new") as HTMLButtonElement).onclick = () => { void newProject(); };
+($("project-board-open-file") as HTMLButtonElement).onclick = () => { void openProject(); };
+($("project-board-reset-view") as HTMLButtonElement).onclick = fitProjectBoard;
+
+projectBoardSurface.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || (event.target as HTMLElement).closest(".project-card, .project-board-toolbar")) return;
+  event.preventDefault();
+  projectBoardSurface.setPointerCapture(event.pointerId);
+  projectBoardSurface.classList.add("is-panning");
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const originX = projectBoardMeta.camera.tx;
+  const originY = projectBoardMeta.camera.ty;
+  const move = (next: PointerEvent) => {
+    projectBoardMeta.camera.tx = originX + next.clientX - startX;
+    projectBoardMeta.camera.ty = originY + next.clientY - startY;
+    applyProjectBoardCamera();
+  };
+  const up = () => {
+    projectBoardSurface.classList.remove("is-panning");
+    projectBoardSurface.removeEventListener("pointermove", move);
+    projectBoardSurface.removeEventListener("pointerup", up);
+    projectBoardSurface.removeEventListener("pointercancel", up);
+    saveProjectBoardMetaSoon();
+  };
+  projectBoardSurface.addEventListener("pointermove", move);
+  projectBoardSurface.addEventListener("pointerup", up);
+  projectBoardSurface.addEventListener("pointercancel", up);
+});
+
+projectBoardSurface.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  if (event.ctrlKey || event.metaKey) {
+    const rect = projectBoardSurface.getBoundingClientRect();
+    const factor = Math.exp(-event.deltaY * 0.002);
+    projectBoardMeta.camera = zoomBoardCamera(
+      projectBoardMeta.camera,
+      projectBoardMeta.camera.scale * factor,
+      event.clientX - rect.left,
+      event.clientY - rect.top
+    );
+  } else {
+    projectBoardMeta.camera.tx -= event.deltaX;
+    projectBoardMeta.camera.ty -= event.deltaY;
+  }
+  applyProjectBoardCamera();
+  saveProjectBoardMetaSoon();
+}, { passive: false });
+
 ($("export-menu-button") as HTMLButtonElement).onclick = (e) => {
   e.stopPropagation();
   closeFileMenu();
@@ -8022,8 +9438,12 @@ loadProjectFile.onchange = async (e) => {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (!file) return;
   try {
+    await flushAutosave(true);
     const next = await readFallbackFile(file);
-    resetProjectSession(next, `opened ${file.name}`);
+    const json = serializeProject(next);
+    await addProjectToLibrary(next, file.name, null, json);
+    resetProjectSession(next, `opened ${file.name}`, json);
+    if (projectBoardOpen) hideProjectBoard();
     buildFileMenu();
   } catch (err) {
     setStatus("load failed: " + (err as Error).message);
@@ -8032,41 +9452,9 @@ loadProjectFile.onchange = async (e) => {
 };
 
 async function autosaveTick() {
-  if (!_isDirty) { updateFileChrome(); return; }
-  if (_autosaveInFlight) return;
-  // If no file handle and nothing changed since the last recovery write, skip
-  // the expensive projectHash()/JSON.stringify until the next real edit.
-  if (!persistenceState.currentFileHandle && _recoveryClean) { updateFileChrome(); return; }
-  // Deferred clean-check: undo/redo only calls markDirty() (O(1)); the hash
-  // comparison runs here at most once every 5 seconds instead of every keystroke.
-  // Serialize exactly once and reuse the string for both the hash comparison
-  // and the actual write (save or recovery snapshot) — `projectHash` and
-  // `writeHandle`/`writeRecoverySnapshot` use this same canonical format, so
-  // this can't disagree with a hash set elsewhere (manual save, project load).
-  const json = serializeProject(project);
-  const currentHash = projectHashFromString(json);
-  if (currentHash === persistenceState.lastSavedHash) { markClean(); updateFileChrome(); return; }
-  _autosaveInFlight = true;
-  try {
-    if (persistenceState.currentFileHandle) {
-      try {
-        await writeHandleString(persistenceState.currentFileHandle, json);
-        persistenceState.lastSavedHash = currentHash;
-        markClean();
-        clearRecoverySnapshot();
-        setStatus(`auto-saved ${new Date().toLocaleTimeString()}`);
-      } catch (err) {
-        setStatus("auto-save failed: " + (err as Error).message);
-      }
-    } else {
-      const snapshot = writeRecoverySnapshotString(json);
-      if (!snapshot) setStatus("recovery unavailable — project is too large for browser storage");
-      _recoveryClean = true;
-    }
-  } finally {
-    _autosaveInFlight = false;
-  }
-  updateFileChrome();
+  if (!_isDirty) return;
+  const saved = await flushAutosave();
+  if (saved) setStatus(`auto-saved ${new Date().toLocaleTimeString()}`);
 }
 
 function showRecoveryPrompt() {
@@ -8081,11 +9469,13 @@ function showRecoveryPrompt() {
   const recover = document.createElement("button");
   recover.className = "ghost";
   recover.textContent = "Recover";
-  recover.onclick = () => {
+  recover.onclick = async () => {
     try {
       const next = recoverProject(snapshot);
-      resetCurrentFile(next);
-      resetProjectSession(next, "recovered unsaved work");
+      const json = serializeProject(next);
+      resetCurrentFile(next, json);
+      await addProjectToLibrary(next, `Recovered ${projectBoardRecords.length + 1}`, null, json);
+      resetProjectSession(next, "recovered unsaved work", json);
       clearRecoverySnapshot();
       updateFileChrome();
     } catch (err) {
@@ -8106,6 +9496,11 @@ function showRecoveryPrompt() {
 }
 
 setInterval(() => { void autosaveTick(); }, 5000);
+
+async function initializePersistentWorkspace() {
+  await initializeProjectLibrary();
+  showRecoveryPrompt();
+}
 
 // ---- undo / redo ----------------------------------------------------------
 
@@ -8156,17 +9551,48 @@ window.addEventListener("keydown", (e) => {
       zoomStep(0.8);
       return;
     }
+    if (key === "a" && canvasOwnsKeyboard) {
+      e.preventDefault();
+      selectionState = {
+        mode: "region",
+        phase: "idle",
+        shape: { kind: "rect", x: 0, y: 0, w: project.width, h: project.height },
+        tool: "rect",
+      };
+      buildEditContext();
+      requestLoopFrame();
+      setStatus("Selected all");
+      return;
+    }
+    if (key === "d" && canvasOwnsKeyboard) {
+      e.preventDefault();
+      clearSelection();
+      buildEditContext();
+      requestLoopFrame();
+      setStatus("Selection cleared");
+      return;
+    }
+    if (key === "i" && e.shiftKey && canvasOwnsKeyboard &&
+        selectionState?.mode === "region" && selectionState.phase === "idle") {
+      e.preventDefault();
+      invertActiveSelection();
+      requestLoopFrame();
+      setStatus(selectionState.inverted ? "Selection inverted" : "Selection uninverted");
+      return;
+    }
     if (key === "c") {
       if (selectionState?.mode === "object") { e.preventDefault(); copySelection(); return; }
+      if (selectionState?.mode === "region" && activeLayer()?.kind === "raster") {
+        e.preventDefault();
+        copyRasterRegionSelection();
+        return;
+      }
       if (activeLayer()) { e.preventDefault(); copyActiveLayer(); return; }
     }
-    if (key === "v") {
-      if (lastEditClipboardKind === "selection" && selectionClipboard) {
-        e.preventDefault(); pasteSelection(); return;
-      }
-      if (lastEditClipboardKind === "layer" && layerClipboard) {
-        e.preventDefault(); pasteLayerAboveActive(); return;
-      }
+    if (key === "x" && selectionState) {
+      e.preventDefault();
+      cutSelection();
+      return;
     }
   }
 
@@ -8184,22 +9610,35 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.key === "Enter" && !inEditable && selectionState?.mode === "region" &&
-      selectionState.phase === "idle") {
+  if (!inEditable && canvasOwnsKeyboard && selectionState?.mode === "region" &&
+      selectionState.phase === "idle" &&
+      ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
     e.preventDefault();
-    extractSelection();
+    const step = e.shiftKey ? 10 : 1;
+    const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+    selectionState = {
+      ...selectionState,
+      shape: translateShape(selectionState.shape, dx, dy),
+    };
+    requestLoopFrame();
     return;
   }
 
-  // Delete / Backspace removes extracted object selection.
-  if ((e.key === "Delete" || e.key === "Backspace") &&
-      isObjectSelectionIdle(selectionState) && !inEditable) {
+  // Delete / Backspace clears selected raster pixels or removes extracted objects.
+  if ((e.key === "Delete" || e.key === "Backspace") && !inEditable &&
+      (isObjectSelectionIdle(selectionState) ||
+       (selectionState?.mode === "region" && activeLayer()?.kind === "raster"))) {
     e.preventDefault();
-    deleteSelection();
+    if (!deleteRasterRegionSelection()) deleteSelection();
     return;
   }
   // Escape clears any in-progress or active selection.
   if (e.key === "Escape" && !inEditable) {
+    if (projectBoardOpen) {
+      hideProjectBoard();
+      return;
+    }
     if ($("about-overlay").classList.contains("open")) {
       closeAboutDialog();
       return;
@@ -8220,9 +9659,15 @@ window.addEventListener("keydown", (e) => {
     closeFileMenu();
     closeExportMenu();
     if (selectionState) {
-      // Commit before clearing so any auto-extracted cut has an undo entry.
-      if (selectionState.phase === "moving" && selectionState.mode === "object") commitHistory();
-      else if (selectionState.phase === "transforming") { transformSnapshots = null; commitHistory(); }
+      // Commit before clearing if an explicit extracted-object move is active.
+      if (selectionState.phase === "moving" && selectionState.mode === "object") {
+        syncRasterMarqueeItems(selectionState.items);
+        commitHistory();
+      } else if (selectionState.phase === "transforming") {
+        syncRasterMarqueeItems(selectionState.items);
+        transformSnapshots = null;
+        commitHistory();
+      }
       clearSelection();
       buildEditContext();
       setStatus("Selection cleared");
@@ -8231,6 +9676,34 @@ window.addEventListener("keydown", (e) => {
     if (selectedText) { selectedText = null; buildInspector(); }
     if (selectedSubPanelId) { selectedSubPanelId = null; buildInspector(); }
     return;
+  }
+});
+
+window.addEventListener("paste", (event) => {
+  const target = event.target as HTMLElement | null;
+  const tag = target?.tagName;
+  const inEditable = tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
+  if (inEditable || projectBoardOpen) return;
+
+  const imageFiles = clipboardRasterFiles(event.clipboardData);
+  if (imageFiles.length > 0) {
+    event.preventDefault();
+    void pasteRasterImages(imageFiles);
+    return;
+  }
+  if (clipboardContainsImage(event.clipboardData)) {
+    event.preventDefault();
+    showToast("Only PNG and JPEG images can be pasted", "info");
+    return;
+  }
+  if (lastEditClipboardKind === "selection" && selectionClipboard) {
+    event.preventDefault();
+    pasteSelection();
+    return;
+  }
+  if (lastEditClipboardKind === "layer" && layerClipboard) {
+    event.preventDefault();
+    pasteLayerAboveActive();
   }
 });
 
@@ -8243,37 +9716,26 @@ window.addEventListener("keyup", (e) => {
 
 // ---- movable workspace panels --------------------------------------------
 
-const workspacePanels = Array.from(document.querySelectorAll<HTMLElement>(".workspace-panel"));
-type WorkspaceAnchor = "top-left" | "top-center" | "top-right"
-  | "bottom-left" | "bottom-center" | "bottom-right";
-type WorkspaceDockLane = "left" | "center" | "right";
+const workspacePanels: HTMLElement[] = [];
+const workspacePanelStack: HTMLElement[] = [];
+const workspaceDockTop = 52;
+const workspaceDragBlockers = [
+  "button", "input", "select", "textarea", "a", "summary", "label", "canvas",
+  "[contenteditable]", "[role='button']", "[role='slider']", "[draggable='true']",
+  ".panel-cell", ".layer-row", ".layer-item",
+].join(",");
 
-const workspaceDockMargin = 16;
-const workspaceDockTop = 56;
-const workspaceDockGap = 12;
-
-const workspaceDockTargets = document.createElement("div");
-workspaceDockTargets.className = "workspace-dock-targets";
-workspaceDockTargets.setAttribute("aria-hidden", "true");
-const workspaceAnchorLabels: Record<WorkspaceAnchor, string> = {
-  "top-left": "Top left",
-  "top-center": "Top centre",
-  "top-right": "Top right",
-  "bottom-left": "Bottom left",
-  "bottom-center": "Bottom centre",
-  "bottom-right": "Bottom right",
-};
-for (const anchor of Object.keys(workspaceAnchorLabels) as WorkspaceAnchor[]) {
-  const target = document.createElement("span");
-  target.className = "workspace-dock-target";
-  target.dataset.anchor = anchor;
-  target.textContent = workspaceAnchorLabels[anchor];
-  workspaceDockTargets.appendChild(target);
+function refreshWorkspacePanelLayers() {
+  workspacePanelStack.forEach((item, layer) => {
+    item.style.setProperty("--workspace-panel-layer", String(layer));
+  });
 }
-document.body.appendChild(workspaceDockTargets);
 
 function raiseWorkspacePanel(panel: HTMLElement) {
-  for (const item of workspacePanels) item.classList.toggle("is-front", item === panel);
+  const index = workspacePanelStack.indexOf(panel);
+  if (index >= 0) workspacePanelStack.splice(index, 1);
+  workspacePanelStack.push(panel);
+  refreshWorkspacePanelLayers();
 }
 
 function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
@@ -8288,179 +9750,395 @@ function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   panel.style.bottom = "auto";
 }
 
-function anchorAtPoint(x: number, y: number): WorkspaceAnchor | null {
-  const edge = 108;
-  const top = workspaceDockTop;
-  const bottom = window.innerHeight - 8;
-  const left = 8;
-  const right = window.innerWidth - 8;
-  const column = x <= left + edge ? "left" : x >= right - edge ? "right" : "center";
-  if (y <= top + edge) return `top-${column}` as WorkspaceAnchor;
-  if (y >= bottom - edge) return `bottom-${column}` as WorkspaceAnchor;
-  return null;
+function isWorkspacePanelDragSurface(panel: HTMLElement, event: PointerEvent) {
+  const target = event.target;
+  if (!(target instanceof Element) || target.closest(workspaceDragBlockers)) return false;
+  const rect = panel.getBoundingClientRect();
+  const resizeCorner = 20;
+  return event.clientX < rect.right - resizeCorner || event.clientY < rect.bottom - resizeCorner;
 }
 
-function dockedPanelsInLane(lane: WorkspaceDockLane, edge: "top" | "bottom") {
-  return workspacePanels.filter((panel) => panel.dataset.workspaceAnchor === `${edge}-${lane}`);
-}
+function registerWorkspacePanel(panel: HTMLElement) {
+  if (panel.dataset.workspacePanelReady === "true") return;
+  panel.dataset.workspacePanelReady = "true";
+  workspacePanels.push(panel);
+  workspacePanelStack.push(panel);
+  refreshWorkspacePanelLayers();
 
-function dockLeft(panel: HTMLElement, lane: WorkspaceDockLane) {
-  const width = panel.getBoundingClientRect().width;
-  if (lane === "left") return workspaceDockMargin;
-  if (lane === "right") return window.innerWidth - width - workspaceDockMargin;
-  return (window.innerWidth - width) / 2;
-}
-
-function layoutDockedPanels() {
-  const availableHeight = Math.max(72, window.innerHeight - workspaceDockTop - workspaceDockMargin);
-  for (const lane of ["left", "center", "right"] as WorkspaceDockLane[]) {
-    const topPanels = dockedPanelsInLane(lane, "top");
-    const bottomPanels = dockedPanelsInLane(lane, "bottom");
-    const panels = [...topPanels, ...bottomPanels];
-    if (!panels.length) continue;
-
-    // Panels keep their natural content height. When a lane gets crowded, each
-    // receives an equal maximum slice and its own scrolling content area.
-    const maxPanelHeight = Math.max(72, Math.floor(
-      (availableHeight - workspaceDockGap * Math.max(0, panels.length - 1)) / panels.length,
-    ));
-    for (const panel of panels) panel.style.maxHeight = `${maxPanelHeight}px`;
-
-    let top = workspaceDockTop;
-    for (const panel of topPanels) {
-      moveWorkspacePanel(panel, dockLeft(panel, lane), top);
-      top += panel.getBoundingClientRect().height + workspaceDockGap;
-    }
-
-    let bottom = window.innerHeight - workspaceDockMargin;
-    for (const panel of [...bottomPanels].reverse()) {
-      const height = panel.getBoundingClientRect().height;
-      bottom -= height;
-      moveWorkspacePanel(panel, dockLeft(panel, lane), bottom);
-      bottom -= workspaceDockGap;
-    }
-  }
-}
-
-function showWorkspaceDockTargets(anchor: WorkspaceAnchor | null) {
-  workspaceDockTargets.classList.add("is-visible");
-  for (const target of workspaceDockTargets.querySelectorAll<HTMLElement>(".workspace-dock-target")) {
-    target.classList.toggle("is-active", target.dataset.anchor === anchor);
-  }
-}
-
-function hideWorkspaceDockTargets() {
-  workspaceDockTargets.classList.remove("is-visible");
-  workspaceDockTargets.querySelectorAll(".workspace-dock-target.is-active")
-    .forEach((target) => target.classList.remove("is-active"));
-}
-
-function dockWorkspacePanel(panel: HTMLElement, anchor: WorkspaceAnchor) {
-  panel.dataset.workspaceAnchor = anchor;
-  panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = anchor;
-  layoutDockedPanels();
-}
-
-function addWorkspaceAnchorSelect(panel: HTMLElement, titlebar: HTMLElement) {
-  const select = document.createElement("select");
-  select.className = "workspace-anchor-select";
-  select.setAttribute("aria-label", "Dock panel to workspace corner");
-  select.title = "Dock panel to a workspace corner";
-  for (const [value, label] of [["free", "Dock"], ...Object.entries(workspaceAnchorLabels)]) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    select.appendChild(option);
-  }
-  select.addEventListener("pointerdown", (event) => event.stopPropagation());
-  select.addEventListener("change", () => {
-    if (select.value === "free") {
-      delete panel.dataset.workspaceAnchor;
-      panel.style.maxHeight = `calc(100vh - ${workspaceDockTop + 8}px)`;
-      layoutDockedPanels();
-      return;
-    }
-    dockWorkspacePanel(panel, select.value as WorkspaceAnchor);
+  panel.addEventListener("pointerdown", (event) => {
     raiseWorkspacePanel(panel);
+    if (event.button !== 0) return;
+    if (!isWorkspacePanelDragSurface(panel, event)) return;
+    event.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    panel.focus({ preventScroll: true });
+    panel.classList.add("is-moving");
+    panel.setPointerCapture(event.pointerId);
+    const joinableModule = panel.classList.contains("inspector-module-panel")
+      ? directInspectorModules(panel)[0] ?? null
+      : null;
+
+    const move = (next: PointerEvent) => {
+      moveWorkspacePanel(panel, next.clientX - offsetX, next.clientY - offsetY);
+      if (joinableModule) {
+        queueModuleDropPreview(inspectorModuleDropAt(next.clientX, next.clientY, panel));
+      }
+    };
+    const finish = (cancelled: boolean) => {
+      const acceptedDrop = !cancelled && joinableModule ? readyModuleDrop : null;
+      if (joinableModule) clearModuleDropPreview();
+      panel.classList.remove("is-moving");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (joinableModule && acceptedDrop) joinInspectorModule(joinableModule, acceptedDrop);
+      else fitViewport();
+    };
+    const up = () => finish(false);
+    const cancel = () => finish(true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   });
-  titlebar.insertBefore(select, titlebar.querySelector(".workspace-panel-grip"));
+
+  panel.addEventListener("keydown", (event) => {
+    if (event.target !== panel) return;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    const amount = event.shiftKey ? 48 : 12;
+    const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+    const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+    raiseWorkspacePanel(panel);
+    moveWorkspacePanel(panel, rect.left + dx, rect.top + dy);
+  });
+}
+
+function unregisterWorkspacePanel(panel: HTMLElement) {
+  const panelIndex = workspacePanels.indexOf(panel);
+  if (panelIndex >= 0) workspacePanels.splice(panelIndex, 1);
+  const stackIndex = workspacePanelStack.indexOf(panel);
+  if (stackIndex >= 0) workspacePanelStack.splice(stackIndex, 1);
+  refreshWorkspacePanelLayers();
 }
 
 function initWorkspacePanels() {
-  for (const panel of workspacePanels) {
-    const titlebar = panel.querySelector<HTMLElement>(".workspace-panel-titlebar");
-    if (!titlebar) continue;
-    addWorkspaceAnchorSelect(panel, titlebar);
-
-    titlebar.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      if ((event.target as HTMLElement).closest("select, button, input")) return;
-      event.preventDefault();
-      const rect = panel.getBoundingClientRect();
-      const offsetX = event.clientX - rect.left;
-      const offsetY = event.clientY - rect.top;
-      raiseWorkspacePanel(panel);
-      panel.classList.add("is-moving");
-      titlebar.setPointerCapture(event.pointerId);
-      showWorkspaceDockTargets(anchorAtPoint(event.clientX, event.clientY));
-
-      const move = (next: PointerEvent) => {
-        moveWorkspacePanel(panel, next.clientX - offsetX, next.clientY - offsetY);
-        showWorkspaceDockTargets(anchorAtPoint(next.clientX, next.clientY));
-      };
-      const up = (next: PointerEvent) => {
-        panel.classList.remove("is-moving");
-        titlebar.removeEventListener("pointermove", move);
-        titlebar.removeEventListener("pointerup", up);
-        titlebar.removeEventListener("pointercancel", up);
-        const anchor = anchorAtPoint(next.clientX, next.clientY);
-        if (anchor) dockWorkspacePanel(panel, anchor);
-        else {
-          delete panel.dataset.workspaceAnchor;
-          panel.querySelector<HTMLSelectElement>(".workspace-anchor-select")!.value = "free";
-          panel.style.maxHeight = `calc(100vh - ${workspaceDockTop + 8}px)`;
-          layoutDockedPanels();
-        }
-        hideWorkspaceDockTargets();
-        fitViewport();
-      };
-      titlebar.addEventListener("pointermove", move);
-      titlebar.addEventListener("pointerup", up);
-      titlebar.addEventListener("pointercancel", up);
-    });
-
-    titlebar.addEventListener("keydown", (event) => {
-      if ((event.target as HTMLElement).closest("select, button, input")) return;
-      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-      event.preventDefault();
-      const rect = panel.getBoundingClientRect();
-      const amount = event.shiftKey ? 48 : 12;
-      const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
-      const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
-      raiseWorkspacePanel(panel);
-      moveWorkspacePanel(panel, rect.left + dx, rect.top + dy);
-    });
-
-    panel.addEventListener("pointerdown", () => raiseWorkspacePanel(panel));
-  }
+  document.querySelectorAll<HTMLElement>(".workspace-panel").forEach(registerWorkspacePanel);
 
   window.addEventListener("resize", () => {
-    for (const panel of workspacePanels.filter((panel) => !panel.dataset.workspaceAnchor)) {
+    for (const panel of workspacePanels) {
       if (!panel.style.left) continue;
       const rect = panel.getBoundingClientRect();
       moveWorkspacePanel(panel, rect.left, rect.top);
     }
-    layoutDockedPanels();
     requestLoopFrame();
   });
+}
 
-  const dockResizeObserver = new ResizeObserver(() => layoutDockedPanels());
-  for (const panel of workspacePanels) dockResizeObserver.observe(panel);
-  layoutDockedPanels();
+type InspectorModule = HTMLDetailsElement;
+type InspectorModuleDrop = {
+  edge: "before" | "after";
+  group: HTMLElement;
+  reference: InspectorModule | null;
+};
+
+let inspectorGroupSerial = 0;
+let pendingModuleDrop: InspectorModuleDrop | null = null;
+let readyModuleDrop: InspectorModuleDrop | null = null;
+let moduleDropTimer: number | null = null;
+
+function directInspectorModules(group: HTMLElement) {
+  return Array.from(group.children).filter(
+    (child): child is InspectorModule => child instanceof HTMLDetailsElement
+      && child.classList.contains("inspector-module"),
+  );
+}
+
+function inspectorModuleTitle(module: InspectorModule) {
+  const label = module.querySelector<HTMLElement>(".module-summary-label");
+  return label?.textContent?.trim() || module.dataset.inspectorModule || "Inspector";
+}
+
+function setInspectorModuleSummaryLabel(summary: HTMLElement, label: string) {
+  const text = summary.querySelector<HTMLElement>(".module-summary-label");
+  if (text) text.textContent = label;
+  else summary.textContent = label;
+}
+
+function cleanupEmptyInspectorGroup(group: HTMLElement | null) {
+  if (!group || directInspectorModules(group).length > 0) return;
+  if (group.classList.contains("inspector-module-panel")) {
+    unregisterWorkspacePanel(group);
+    group.remove();
+    return;
+  }
+  if (group.dataset.inspectorGroup === "timeline") group.hidden = true;
+}
+
+function createInspectorModuleGroup(module: InspectorModule, left: number, top: number) {
+  const oldGroup = module.closest<HTMLElement>(".inspector-group");
+  const nextModule = module.nextElementSibling instanceof HTMLDetailsElement
+    && module.nextElementSibling.classList.contains("inspector-module")
+    ? module.nextElementSibling
+    : null;
+  module.dataset.returnBefore = nextModule?.dataset.inspectorModule ?? "";
+  const panel = document.createElement("aside");
+  const key = module.dataset.inspectorModule || "module";
+  panel.className = "right-sidebar workspace-panel inspector-group inspector-module-panel";
+  panel.dataset.workspacePanel = `inspector-${key}-${++inspectorGroupSerial}`;
+  panel.dataset.inspectorGroup = panel.dataset.workspacePanel;
+  panel.tabIndex = 0;
+  panel.setAttribute("aria-label", `${inspectorModuleTitle(module)} panel. Drag empty space or use arrow keys to move.`);
+  panel.appendChild(module);
+  $("workspace-main").appendChild(panel);
+  registerWorkspacePanel(panel);
+  moveWorkspacePanel(panel, left, top);
+  raiseWorkspacePanel(panel);
+  cleanupEmptyInspectorGroup(oldGroup);
+  updateInspectorModuleButtons();
+  return panel;
+}
+
+function joinInspectorModule(module: InspectorModule, drop: InspectorModuleDrop) {
+  const oldGroup = module.closest<HTMLElement>(".inspector-group");
+  const reference = drop.reference;
+  if (reference) {
+    if (drop.edge === "before") reference.before(module);
+    else reference.after(module);
+  } else {
+    const status = drop.group.querySelector<HTMLElement>("#status");
+    drop.group.insertBefore(module, status);
+  }
+  drop.group.hidden = false;
+  cleanupEmptyInspectorGroup(oldGroup);
+  updateInspectorModuleButtons();
+  raiseWorkspacePanel(drop.group);
+  fitViewport();
+}
+
+function clearModuleDropPreview() {
+  if (moduleDropTimer !== null) window.clearTimeout(moduleDropTimer);
+  moduleDropTimer = null;
+  pendingModuleDrop = null;
+  readyModuleDrop = null;
+  document.querySelectorAll(".module-drop-ready").forEach((el) => el.classList.remove("module-drop-ready"));
+  document.querySelectorAll(".module-drop-before").forEach((el) => el.classList.remove("module-drop-before"));
+  document.querySelectorAll(".module-drop-after").forEach((el) => el.classList.remove("module-drop-after"));
+}
+
+function inspectorModuleDropAt(x: number, y: number, draggedGroup: HTMLElement) {
+  const groups = document.elementsFromPoint(x, y)
+    .map((element) => element.closest<HTMLElement>(".inspector-group"))
+    .filter((group): group is HTMLElement => !!group && group !== draggedGroup);
+  const group = groups[0];
+  if (!group) return null;
+  const modules = directInspectorModules(group);
+  for (const module of modules) {
+    const rect = module.getBoundingClientRect();
+    if (y <= rect.top + rect.height / 2) {
+      return { group, reference: module, edge: "before" } satisfies InspectorModuleDrop;
+    }
+    if (y <= rect.bottom) {
+      return { group, reference: module, edge: "after" } satisfies InspectorModuleDrop;
+    }
+  }
+  return {
+    group,
+    reference: modules[modules.length - 1] ?? null,
+    edge: modules.length ? "after" : "before",
+  } satisfies InspectorModuleDrop;
+}
+
+function sameInspectorModuleDrop(a: InspectorModuleDrop | null, b: InspectorModuleDrop | null) {
+  return !!a && !!b && a.group === b.group && a.reference === b.reference && a.edge === b.edge;
+}
+
+function queueModuleDropPreview(drop: InspectorModuleDrop | null) {
+  if (!drop) {
+    clearModuleDropPreview();
+    return;
+  }
+  if (sameInspectorModuleDrop(drop, pendingModuleDrop)) return;
+  clearModuleDropPreview();
+  pendingModuleDrop = drop;
+  moduleDropTimer = window.setTimeout(() => {
+    if (!sameInspectorModuleDrop(drop, pendingModuleDrop)) return;
+    readyModuleDrop = drop;
+    drop.group.classList.add("module-drop-ready");
+    drop.reference?.classList.add(drop.edge === "before" ? "module-drop-before" : "module-drop-after");
+  }, 280);
+}
+
+function toggleInspectorModuleGroup(module: InspectorModule) {
+  const group = module.closest<HTMLElement>(".inspector-group");
+  if (!group) return;
+  const isSingleDetached = group.classList.contains("inspector-module-panel")
+    && directInspectorModules(group).length === 1;
+  if (isSingleDetached) {
+    const homeGroup = document.querySelector<HTMLElement>(
+      `[data-inspector-group="${CSS.escape(module.dataset.moduleHomeGroup ?? "main")}"]`,
+    ) ?? document.querySelector<HTMLElement>('[data-inspector-group="main"]')!;
+    const modules = directInspectorModules(homeGroup);
+    const returnBefore = modules.find(
+      (candidate) => candidate.dataset.inspectorModule === module.dataset.returnBefore,
+    ) ?? null;
+    joinInspectorModule(module, {
+      group: homeGroup,
+      reference: returnBefore ?? modules[modules.length - 1] ?? null,
+      edge: returnBefore ? "before" : modules.length ? "after" : "before",
+    });
+    return;
+  }
+  const rect = group.getBoundingClientRect();
+  const detachedLeft = rect.left > window.innerWidth / 2
+    ? rect.left - 292
+    : rect.right + 12;
+  createInspectorModuleGroup(module, detachedLeft, rect.top + 22);
+  fitViewport();
+}
+
+function updateInspectorModuleButtons() {
+  document.querySelectorAll<InspectorModule>(".inspector-module").forEach((module) => {
+    const group = module.closest<HTMLElement>(".inspector-group");
+    const button = module.querySelector<HTMLButtonElement>(".module-popout");
+    if (!group || !button) return;
+    const singleDetached = group.classList.contains("inspector-module-panel")
+      && directInspectorModules(group).length === 1;
+    const title = inspectorModuleTitle(module);
+    button.replaceChildren(svgIcon(StudioIcons.Layers, 13));
+    button.setAttribute("aria-label", singleDetached ? `Return ${title} to its panel group` : `Detach ${title}`);
+    button.title = singleDetached ? "Return to its panel group" : "Detach into its own panel";
+  });
+}
+
+function initInspectorModule(module: InspectorModule) {
+  if (module.dataset.moduleReady === "true") return;
+  module.dataset.moduleReady = "true";
+  const homeGroup = module.closest<HTMLElement>(".inspector-group");
+  if (homeGroup && !homeGroup.classList.contains("inspector-module-panel")) {
+    module.dataset.moduleHomeGroup = homeGroup.dataset.inspectorGroup ?? "main";
+  }
+  const summary = module.querySelector<HTMLElement>(":scope > summary");
+  if (!summary) return;
+  const label = document.createElement("span");
+  label.className = "module-summary-label";
+  label.textContent = summary.textContent?.trim() || module.dataset.inspectorModule || "Inspector";
+  summary.replaceChildren(label);
+  summary.title = "Click to expand or collapse · Alt+Arrow to reorder · Alt+Enter to detach or join";
+
+  const dragHandle = document.createElement("button");
+  dragHandle.type = "button";
+  dragHandle.className = "module-drag-handle";
+  dragHandle.replaceChildren(svgIcon(StudioIcons.DragGrip, 13));
+  dragHandle.setAttribute("aria-label", `Drag ${label.textContent}`);
+  dragHandle.title = "Drag to detach, move, or join";
+  dragHandle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+
+  const popout = document.createElement("button");
+  popout.type = "button";
+  popout.className = "module-popout";
+  popout.addEventListener("pointerdown", (event) => event.stopPropagation());
+  popout.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleInspectorModuleGroup(module);
+  });
+  summary.replaceChildren(dragHandle, label, popout);
+
+  summary.addEventListener("click", (event) => {
+    if (module.dataset.suppressToggle !== "true") return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  summary.addEventListener("keydown", (event) => {
+    if (!event.altKey || event.target !== summary) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      toggleInspectorModuleGroup(module);
+      return;
+    }
+    if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+    const group = module.closest<HTMLElement>(".inspector-group");
+    if (!group) return;
+    const modules = directInspectorModules(group);
+    const index = modules.indexOf(module);
+    const nextIndex = event.key === "ArrowUp" ? index - 1 : index + 1;
+    if (nextIndex < 0 || nextIndex >= modules.length) return;
+    event.preventDefault();
+    if (nextIndex < index) modules[nextIndex].before(module);
+    else modules[nextIndex].after(module);
+  });
+
+  dragHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const sourceGroup = module.closest<HTMLElement>(".inspector-group");
+    const sourceNext = module.nextElementSibling;
+    let draggedGroup: HTMLElement | null = null;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    const move = (next: PointerEvent) => {
+      if (!draggedGroup) {
+        if (Math.hypot(next.clientX - startX, next.clientY - startY) < 6) return;
+        next.preventDefault();
+        const rect = module.getBoundingClientRect();
+        offsetX = next.clientX - rect.left;
+        offsetY = next.clientY - rect.top;
+        module.dataset.suppressToggle = "true";
+        module.classList.add("is-module-dragging");
+        draggedGroup = createInspectorModuleGroup(module, rect.left, rect.top);
+        dragHandle.setPointerCapture(event.pointerId);
+      }
+      moveWorkspacePanel(draggedGroup, next.clientX - offsetX, next.clientY - offsetY);
+      queueModuleDropPreview(inspectorModuleDropAt(next.clientX, next.clientY, draggedGroup));
+    };
+
+    const finish = (cancelled: boolean) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (!draggedGroup) return;
+      const acceptedDrop = readyModuleDrop;
+      clearModuleDropPreview();
+      module.classList.remove("is-module-dragging");
+      if (cancelled && sourceGroup) {
+        sourceGroup.insertBefore(module, sourceNext && sourceNext.parentElement === sourceGroup ? sourceNext : sourceGroup.querySelector("#status"));
+        cleanupEmptyInspectorGroup(draggedGroup);
+        updateInspectorModuleButtons();
+      } else if (acceptedDrop) {
+        joinInspectorModule(module, acceptedDrop);
+      } else {
+        updateInspectorModuleButtons();
+        fitViewport();
+      }
+      window.setTimeout(() => delete module.dataset.suppressToggle, 0);
+    };
+    const up = () => finish(false);
+    const cancel = () => finish(true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  });
+}
+
+function initInspectorModules() {
+  document.querySelectorAll<InspectorModule>(".inspector-module").forEach(initInspectorModule);
+  updateInspectorModuleButtons();
 }
 
 // initial paint
 initWorkspacePanels();
+initInspectorModules();
 buildBrushBar();
 buildPalette();
 buildTimeline();
@@ -8481,7 +10159,7 @@ updateFileChrome();
 setWorkspaceMode("draw");
 showFirstLaunchStatus();
 updateCanvasHint();
-showRecoveryPrompt();
-void loadPerfProjectFromParam();
+if (perfEnabled) void loadPerfProjectFromParam();
+else void initializePersistentWorkspace();
 // File chrome updates are event-driven via markDirty()/markClean() — the old
 // 500ms poll is gone.

@@ -11,9 +11,9 @@ function compileSchedule() {
   rmSync(outDir, { recursive: true, force: true });
   execFileSync("npx", [
     "tsc",
+    "--ignoreConfig",
     "--outDir", outDir,
     "--module", "commonjs",
-    "--moduleResolution", "node",
     "--target", "ES2020",
     "--lib", "ES2020,DOM",
     "--skipLibCheck",
@@ -251,5 +251,21 @@ test("layer animation does not affect raw-layer localMs cache key", () => {
     bg: "#fff",
     paletteId: null,
     layers: [animatedLayer],
+  }), true);
+});
+
+test("layer fades request continuous playback without invalidating raw pixels", () => {
+  const fadedLayer = {
+    texts: [],
+    fadeIn: { durationTicks: 4 },
+    fadeOut: { durationTicks: 2 },
+  };
+  assert.equal(schedule.layerDependsOnLocalMs(fadedLayer, false), false);
+  assert.equal(schedule.canonicalRawLayerLocalMs(fadedLayer, false, 500), 0);
+  assert.equal(schedule.panelHasPlaybackContinuity({
+    durationMs: 1000,
+    bg: "#fff",
+    paletteId: null,
+    layers: [fadedLayer],
   }), true);
 });

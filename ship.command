@@ -1,7 +1,7 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 clear
-echo "=== WiggleStudio — Shipping ==="
+echo "=== Wiggle GPL — Shipping ==="
 echo ""
 npm run electron:build
 echo ""
