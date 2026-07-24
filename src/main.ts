@@ -7022,10 +7022,10 @@ function buildInspector() {
     const layer = activeLayer();
     if (layer) {
       heading.textContent = `Active: ${layer.name} · Panel ${activePanelIndex + 1}`;
-      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Layer Properties");
+      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Clip & Layer");
     } else {
       heading.textContent = `Active: Panel ${activePanelIndex + 1}`;
-      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Panel Properties");
+      if (summaryEl) setInspectorModuleSummaryLabel(summaryEl, "Entire Clip");
     }
   }
   host.appendChild(heading);
@@ -7301,7 +7301,19 @@ function appendSubPanelInspector(host: HTMLElement, sp: SubPanel) {
 }
 
 function appendPanelAnimInspector(host: HTMLElement, p: Panel) {
-  appendColorRow(host, "Background", () => p.bg, (c) => { p.bg = c; });
+  const section = document.createElement("div");
+  section.className = "inspector-section";
+  const title = document.createElement("div");
+  title.className = "inspector-section-title";
+  title.textContent = "Entire Clip";
+  section.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "property-note";
+  note.textContent = "Applies to the complete frame: background, drawings, layers, text, and sub-panels.";
+  section.appendChild(note);
+
+  appendColorRow(section, "Background", () => p.bg, (c) => { p.bg = c; });
   const fadeShortcuts = document.createElement("div");
   fadeShortcuts.className = "inspector-buttons";
   const fadeTicks = () => Math.max(1, Math.min(
@@ -7316,24 +7328,25 @@ function appendPanelAnimInspector(host: HTMLElement, p: Panel) {
     button.onclick = action;
     fadeShortcuts.appendChild(button);
   };
-  shortcut("Fade in", () => {
+  shortcut("Fade clip in", () => {
     p.enter = { kind: "fade", durationTicks: fadeTicks() };
     commitHistory(); buildTimeline(); buildInspector();
   });
-  shortcut("Fade out", () => {
+  shortcut("Fade clip out", () => {
     p.exit = { kind: "fade", durationTicks: fadeTicks() };
     commitHistory(); buildTimeline(); buildInspector();
   });
-  shortcut("Fade both", () => {
+  shortcut("Fade clip in + out", () => {
     const durationTicks = fadeTicks();
     p.enter = { kind: "fade", durationTicks };
     p.exit = { kind: "fade", durationTicks };
     commitHistory(); buildTimeline(); buildInspector();
   });
-  host.appendChild(fadeShortcuts);
-  appendAnimPicker(host, "Panel Enter", () => p.enter, (a) => { p.enter = a; commitHistory(); buildTimeline(); });
-  appendAnimPicker(host, "Panel Exit",  () => p.exit,  (a) => { p.exit  = a; commitHistory(); buildTimeline(); });
-  appendPanelTransitionPicker(host, p);
+  section.appendChild(fadeShortcuts);
+  appendAnimPicker(section, "Clip enter", () => p.enter, (a) => { p.enter = a; commitHistory(); buildTimeline(); });
+  appendAnimPicker(section, "Clip exit",  () => p.exit,  (a) => { p.exit  = a; commitHistory(); buildTimeline(); });
+  appendPanelTransitionPicker(section, p);
+  host.appendChild(section);
 }
 
 function appendLayerInspector(host: HTMLElement, layer: Layer) {
