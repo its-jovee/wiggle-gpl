@@ -147,6 +147,28 @@ function runKritaRasterTests(): string[] {
     failures.push("pressure flow should increase coverage at higher pressure");
   }
 
+  // Phase 3 chalk: pressure + determinism
+  for (const key of ["krita.chalkSoft", "krita.chalkGrainy", "krita.chalkDetail", "krita.charcoalStick"]) {
+    const brush = BRUSHES.find((b) => b.key === key);
+    if (!brush?.rasterOnly) failures.push(`${key} missing or not rasterOnly`);
+  }
+  const chalkA = paintStroke("krita.chalkGrainy", { pressure: 0.9 });
+  const chalkB = paintStroke("krita.chalkGrainy", { pressure: 0.9 });
+  if (hashCanvas(chalkA) !== hashCanvas(chalkB)) failures.push("chalkGrainy not deterministic");
+  const chalkHi = paintStroke("krita.chalkSoft", {
+    pressure: 1,
+    pressureSize: false,
+    pressureFlow: true,
+  });
+  const chalkLo = paintStroke("krita.chalkSoft", {
+    pressure: 0.2,
+    pressureSize: false,
+    pressureFlow: true,
+  });
+  if (alphaSum(chalkHi) <= alphaSum(chalkLo)) {
+    failures.push("chalk soft pressure/flow should increase coverage");
+  }
+
   // Eraser compositing punches existing pixels
   const erased = paintStroke("krita.eraserHard", { eraseOverlay: true });
   const mid = erased.getContext("2d")!.getImageData(40, 20, 16, 8).data;

@@ -25,7 +25,7 @@ function pressureFlow(b: BrushContext, base: number): number {
 }
 
 /** Phase 2: Pixel, Quick, ink, pencil, marker, eraser, simple textured paint. */
-export const KRITA_RASTER_BRUSHES: Brush[] = [
+const KRITA_EVERYDAY_BRUSHES: Brush[] = [
   // --- Pixel / Quick ----------------------------------------------------------
   {
     // Inspired by roundmarker / b)_Basic-1 (Quick Brush).
@@ -213,4 +213,85 @@ export const KRITA_RASTER_BRUSHES: Brush[] = [
       );
     },
   },
+];
+
+/** Phase 3: chalk / dry media. */
+const KRITA_CHALK_BRUSHES: Brush[] = [
+  {
+    // Inspired by h)_Chalk_Soft (Krita tip scribbles.png — procedural substitute).
+    key: "krita.chalkSoft",
+    label: "Chalk Soft",
+    spacing: 3,
+    group: "Krita Chalk",
+    rasterOnly: true,
+    stamp: (b) => {
+      stampGeneratedTip(b, "chalkGrain", 3.2 * b.size, pressureFlow(b, 0.5), {
+        angle: tipAngle(b, "noise"),
+      });
+    },
+  },
+  {
+    // Inspired by h)_Chalk_Grainy.
+    key: "krita.chalkGrainy",
+    label: "Chalk Grainy",
+    spacing: 3,
+    group: "Krita Chalk",
+    rasterOnly: true,
+    stamp: (b) => {
+      const p = b.pressure ?? 1;
+      stampGeneratedTip(b, "dryTooth", 3.4 * b.size, pressureFlow(b, 0.62), {
+        angle: tipAngle(b, "noise"),
+      });
+      // Second sparse speck for coarser tooth.
+      if (unit01(b.tick, b.seed, 44) > 0.35) {
+        const ox = (unit01(b.tick, b.seed, 45) - 0.5) * 2.2 * b.size;
+        const oy = (unit01(b.tick, b.seed, 46) - 0.5) * 2.2 * b.size;
+        stampGeneratedTip(
+          { ...b, pos: { x: b.pos.x + ox, y: b.pos.y + oy } },
+          "chalkGrain",
+          2.2 * b.size,
+          0.35 * (0.3 + 0.7 * p) * (b.flow ?? 1),
+          { angle: tipAngle(b, "noise") }
+        );
+      }
+    },
+  },
+  {
+    // Inspired by h)_Chalk_Details.
+    key: "krita.chalkDetail",
+    label: "Chalk Detail",
+    spacing: 2,
+    group: "Krita Chalk",
+    rasterOnly: true,
+    stamp: (b) => {
+      stampGeneratedTip(b, "chalkGrain", 1.8 * b.size, pressureFlow(b, 0.68), {
+        angle: tipAngle(b, "noise"),
+      });
+    },
+  },
+  {
+    // Inspired by h)_Charcoal_pencil_* family — one stick preset.
+    key: "krita.charcoalStick",
+    label: "Charcoal Stick",
+    spacing: 3,
+    group: "Krita Chalk",
+    rasterOnly: true,
+    stamp: (b) => {
+      const p = b.pressure ?? 1;
+      stampGeneratedTip(b, "dryTooth", 3.8 * b.size, pressureFlow(b, 0.8), {
+        angle: tipAngle(b, "heading"),
+        stretchX: 1.25,
+        stretchY: 0.75,
+      });
+      stampGeneratedTip(b, "chalkGrain", 2.6 * b.size, 0.25 * (0.4 + 0.6 * p) * (b.flow ?? 1), {
+        angle: tipAngle(b, "noise"),
+      });
+    },
+  },
+];
+
+/** All Krita-inspired raster registry entries (phases accumulate here). */
+export const KRITA_RASTER_BRUSHES: Brush[] = [
+  ...KRITA_EVERYDAY_BRUSHES,
+  ...KRITA_CHALK_BRUSHES,
 ];
