@@ -74,9 +74,12 @@ import {
   setMaskOverlayLayer,
 } from "./core/maskControls";
 import {
-  applyTransform, clampScale, EDITOR_OVERSCAN, overscanPx, screenToCanvas,
-  ViewportState, zoomAboutPoint,
+  overscanPx, screenToCanvas,
 } from "./core/viewport";
+import {
+  Camera, WorldRect, boundingRect, chromeOpacity,
+  fitCamera, migrateLegacyPosition, organizeGrid, zoomAbout,
+} from "./core/boardCamera";
 import {
   canUseFileSystemAccess, clearRecoverySnapshot, openProjectFromPicker,
   persistenceState, projectHashFromString, readFallbackFile,
@@ -88,9 +91,8 @@ import { AutosaveSerializationCache } from "./core/autosave";
 import {
   ProjectBoardMeta, ProjectLibraryRecord,
   defaultProjectBoardMeta, getProjectLibraryRecord,
-  listProjectLibraryRecords, nextProjectBoardPosition, projectLibraryAvailable,
-  projectBoardCanvasSize, putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
-  zoomBoardCamera,
+  listProjectLibraryRecords, projectLibraryAvailable,
+  putProjectLibraryRecord, readProjectBoardMeta, writeProjectBoardMeta,
 } from "./core/projectLibrary";
 import {
   CANVAS_PRESETS, canvasPresetByKey, defaultCanvasPreset, formatCanvasDimensions,
@@ -434,9 +436,10 @@ const canvas = $("stage") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 const stageArea = $("stage-area") as HTMLElement;
 const loadProjectFile = $("load-project-file") as HTMLInputElement;
-const projectBoard = $("project-board") as HTMLElement;
-const projectBoardSurface = $("project-board-surface") as HTMLElement;
-const projectBoardWorld = $("project-board-world") as HTMLElement;
+// The board world lives inside the stage area: the live canvas and every
+// preview card share this one camera-transformed container. The stage area
+// itself is the board "surface" (the screen-space viewport into the world).
+const boardWorld = $("board-world") as HTMLElement;
 
 let overscanX = 0;
 let overscanY = 0;
@@ -450,7 +453,10 @@ let projectBoardRecords: ProjectLibraryRecord[] = [];
 let projectBoardMeta: ProjectBoardMeta = defaultProjectBoardMeta();
 let activeLibraryProjectId: string | null = null;
 let projectLibraryReady = false;
-let projectBoardOpen = false;
+// Whether preview cards for the *other* projects are shown on the board. The
+// active project is always live (the drawing canvas); this toggle only hides
+// the neighbours for a focused, solo-project look.
+let boardCardsVisible = true;
 const projectFileHandles = new Map<string, FileSystemFileHandle>();
 let projectBoardMetaSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -561,6 +567,7 @@ function resizeCanvasForProject() {
   }
   syncCanvasAspect();
   if (dimensionsChanged) invalidateBaseFrameCache();
+  positionActiveCanvas();
   return dimensionsChanged;
 }
 
@@ -600,45 +607,90 @@ onRasterReady(() => {
 });
 resetCurrentFile(project);
 
-let viewport: ViewportState = { scale: 1, tx: 0, ty: 0 };
+// `viewport` is the shared board camera, in world (project-pixel) coordinates.
+// It is applied to #board-world, so the same pan/zoom drives both the live
+// canvas and every preview card. It is persisted as projectBoardMeta.camera.
+let viewport: Camera = { scale: 1, tx: 0, ty: 0 };
 let spacePanDown = false;
 let panDrag: { pointerId: number; x: number; y: number; tx: number; ty: number } | null = null;
 
+/** The board surface's screen rect (the window into world space). */
+function surfaceRect(): DOMRect {
+  return stageArea.getBoundingClientRect();
+}
+
+/** The active project's frame rectangle in world coordinates. */
+function activeWorldRect(): WorldRect {
+  const record = activeLibraryProjectId
+    ? projectBoardRecords.find((r) => r.id === activeLibraryProjectId)
+    : null;
+  return {
+    x: record?.x ?? 0,
+    y: record?.y ?? 0,
+    width: project.width,
+    height: project.height,
+  };
+}
+
+/** Places the live drawing canvas at the active project's world slot. The
+ *  canvas element extends past the frame by the overscan margin on every side,
+ *  so its top-left sits at (frame - overscan). */
+function positionActiveCanvas() {
+  const rect = activeWorldRect();
+  canvas.style.left = `${rect.x - overscanX}px`;
+  canvas.style.top = `${rect.y - overscanY}px`;
+  canvas.style.width = `${canvas.width}px`;
+  canvas.style.height = `${canvas.height}px`;
+}
+
 function applyViewport() {
-  applyTransform(canvas, viewport);
+  boardWorld.style.transform =
+    `translate(${viewport.tx}px, ${viewport.ty}px) scale(${viewport.scale})`;
   $("zoom-label").textContent = `${Math.round(viewport.scale * 100)}%`;
+  updateChromeFade();
+  projectBoardMeta.camera = { ...viewport };
+  saveProjectBoardMetaSoon();
   requestLoopFrame();
 }
 
+/** Fit the active project's frame into the board surface (with margin). */
 function fitViewport() {
-  const areaRect = stageArea.getBoundingClientRect();
-  // cppx: CSS pixels per canvas logical pixel (canvas.offsetWidth is CSS layout size)
-  const cppx = canvas.offsetWidth ? canvas.offsetWidth / canvas.width : 1 / (1 + 2 * EDITOR_OVERSCAN);
-  const frameCssW = project.width * cppx;
-  const frameCssH = project.height * cppx;
-  const scale = clampScale(Math.min(areaRect.width / frameCssW, areaRect.height / frameCssH) * 0.96);
-  viewport = {
-    scale,
-    tx: (areaRect.width - frameCssW * scale) / 2 - canvas.offsetLeft - overscanX * cppx * scale,
-    ty: (areaRect.height - frameCssH * scale) / 2 - canvas.offsetTop - overscanY * cppx * scale,
-  };
+  const rect = surfaceRect();
+  viewport = fitCamera({ width: rect.width, height: rect.height }, activeWorldRect(), 40);
   applyViewport();
 }
 
+/** Frame the active project at exactly 1:1 (100%), centred in the surface. */
 function resetViewport() {
-  const areaRect = stageArea.getBoundingClientRect();
-  const cppx = canvas.offsetWidth ? canvas.offsetWidth / canvas.width : 1 / (1 + 2 * EDITOR_OVERSCAN);
-  const frameCssW = project.width * cppx;
-  const frameCssH = project.height * cppx;
+  const rect = surfaceRect();
+  const frame = activeWorldRect();
   viewport = {
     scale: 1,
-    tx: (areaRect.width - frameCssW) / 2 - canvas.offsetLeft - overscanX * cppx,
-    ty: (areaRect.height - frameCssH) / 2 - canvas.offsetTop - overscanY * cppx,
+    tx: (rect.width - frame.width) / 2 - frame.x,
+    ty: (rect.height - frame.height) / 2 - frame.y,
   };
   applyViewport();
 }
 
-window.addEventListener("resize", () => fitViewport());
+/** Fit every project (active canvas + preview cards) into the board surface.
+ *  With more than one project we pull back a little further so the view clearly
+ *  reads as the board (chrome faded) rather than a near-focused single frame. */
+function fitAllProjects() {
+  const rects = boardWorldRects();
+  const bounds = boundingRect(rects) ?? activeWorldRect();
+  const rect = surfaceRect();
+  const surface = { width: rect.width, height: rect.height };
+  viewport = fitCamera(surface, bounds, 72);
+  if (projectBoardRecords.length > 1) {
+    viewport = zoomAbout(viewport, viewport.scale * 0.78, surface.width / 2, surface.height / 2);
+  }
+  applyViewport();
+}
+
+// Keep the board camera stable across window resizes — just re-apply it (and
+// recompute the chrome fade for the new surface size). Snapping back to "fit"
+// on every resize would fight the user's board position.
+window.addEventListener("resize", () => applyViewport());
 // rAF is naturally paused while the tab is hidden; force one frame on return
 // so the canvas isn't stuck showing whatever was last painted before hiding.
 document.addEventListener("visibilitychange", () => {
@@ -3466,8 +3518,11 @@ canvas.addEventListener("click", (e) => {
 
 stageArea.addEventListener("wheel", (e) => {
   e.preventDefault();
+  const rect = surfaceRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
   const nextScale = viewport.scale * Math.exp(-e.deltaY * 0.0015);
-  viewport = zoomAboutPoint(canvas, stageArea, nextScale, e.clientX, e.clientY);
+  viewport = zoomAbout(viewport, nextScale, sx, sy);
   applyViewport();
   // Resize the eraser ring to the new zoom under the (stationary) pointer.
   updateEraserCursorOverlay(e.clientX, e.clientY);
@@ -3478,14 +3533,8 @@ stageArea.addEventListener("wheel", (e) => {
 canvas.addEventListener("pointerleave", hideEraserCursorOverlay);
 
 function zoomStep(multiplier: number) {
-  const rect = stageArea.getBoundingClientRect();
-  viewport = zoomAboutPoint(
-    canvas,
-    stageArea,
-    viewport.scale * multiplier,
-    rect.left + rect.width / 2,
-    rect.top + rect.height / 2
-  );
+  const rect = surfaceRect();
+  viewport = zoomAbout(viewport, viewport.scale * multiplier, rect.width / 2, rect.height / 2);
   applyViewport();
 }
 
@@ -8814,7 +8863,7 @@ function projectRecordName(existing?: ProjectLibraryRecord): string {
 function currentProjectRecord(json: string, refreshPreview: boolean): ProjectLibraryRecord | null {
   if (!activeLibraryProjectId) return null;
   const existing = projectBoardRecords.find((record) => record.id === activeLibraryProjectId);
-  const position = existing ?? nextProjectBoardPosition(projectBoardRecords);
+  const position = existing ?? nextWorldPosition();
   return {
     id: activeLibraryProjectId,
     name: projectRecordName(existing),
@@ -8903,9 +8952,58 @@ async function flushAutosave(refreshPreview = false, announce = false): Promise<
   }
 }
 
-function applyProjectBoardCamera() {
-  projectBoardWorld.style.transform =
-    `translate(${projectBoardMeta.camera.tx}px, ${projectBoardMeta.camera.ty}px) scale(${projectBoardMeta.camera.scale})`;
+/** World rectangles for every project (active frame + preview cards). */
+function boardWorldRects(): WorldRect[] {
+  return projectBoardRecords.map((record) => {
+    if (record.id === activeLibraryProjectId) {
+      return { x: record.x, y: record.y, width: project.width, height: project.height };
+    }
+    const info = projectBoardRecordInfo(record);
+    return { x: record.x, y: record.y, width: info.width, height: info.height };
+  });
+}
+
+/** A free world position for a new project: just right of the current spread. */
+function nextWorldPosition(): { x: number; y: number } {
+  const bounds = boundingRect(boardWorldRects());
+  if (!bounds) return { x: 0, y: 0 };
+  return { x: bounds.x + bounds.width + 240, y: bounds.y };
+}
+
+// The surrounding editor chrome fades as the active project shrinks on screen,
+// so pulling back turns the workspace into a clean board of every idea. CSS maps
+// the --chrome-fade variable onto the sidebars/toolbox/timeline; the top bar
+// stays put so navigation controls remain reachable.
+let chromeFaded = false;
+
+// Scale at which the active project's frame just fits the surface. Fading is
+// measured relative to this so it means the same thing ("zoomed out past the
+// project fitting the screen") for portrait, square, and landscape canvases.
+function activeFitScale(): number {
+  const rect = surfaceRect();
+  const frame = activeWorldRect();
+  const fit = Math.min(
+    (rect.width - CHROME_FADE_PAD) / Math.max(1, frame.width),
+    (rect.height - CHROME_FADE_PAD) / Math.max(1, frame.height)
+  );
+  return fit > 0 ? fit : 1;
+}
+const CHROME_FADE_PAD = 80;
+// Chrome is solid while the project fills the view and fades as you pull back:
+// fully opaque at/above fit, gone by the time you're at ~55% of fit scale.
+const CHROME_FADE_RANGE = { full: 0.92, hidden: 0.5 };
+
+function updateChromeFade() {
+  const ratio = viewport.scale / activeFitScale();
+  const opacity = chromeOpacity(ratio, CHROME_FADE_RANGE);
+  document.documentElement.style.setProperty("--chrome-fade", opacity.toFixed(3));
+  // Below full opacity the chrome stops intercepting pointer events so the
+  // board behind it is directly draggable/clickable.
+  const faded = opacity < 0.999;
+  if (faded !== chromeFaded) {
+    chromeFaded = faded;
+    document.body.classList.toggle("chrome-faded", faded);
+  }
 }
 
 function saveProjectBoardMetaSoon() {
@@ -8945,151 +9043,178 @@ function projectBoardRecordInfo(record: ProjectLibraryRecord): {
   }
 }
 
+// Preview cards are rebuilt whenever the record set or active project changes.
+// The active project is intentionally skipped — its live canvas occupies that
+// world slot instead of a static preview.
 function buildProjectBoard() {
-  projectBoardWorld.innerHTML = "";
+  boardWorld.querySelectorAll(".board-card").forEach((el) => el.remove());
+  positionActiveCanvas();
   for (const record of projectBoardRecords) {
+    if (record.id === activeLibraryProjectId) continue;
     const info = projectBoardRecordInfo(record);
-    const displaySize = projectBoardCanvasSize(info.width, info.height);
-    const card = document.createElement("article");
-    card.className = "project-card" + (record.id === activeLibraryProjectId ? " active" : "");
+    const card = document.createElement("div");
+    card.className = "board-card";
     card.style.left = `${record.x}px`;
     card.style.top = `${record.y}px`;
-    card.style.width = `${displaySize.width}px`;
+    card.style.width = `${info.width}px`;
+    card.style.height = `${info.height}px`;
     card.dataset.projectId = record.id;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `Open ${record.name}`);
 
-    const preview = document.createElement("button");
-    preview.type = "button";
-    preview.className = "project-card-preview";
-    preview.style.width = `${displaySize.width}px`;
-    preview.style.height = `${displaySize.height}px`;
-    preview.setAttribute("aria-label", `Focus ${record.name}, ${info.width} by ${info.height}`);
     if (record.previewDataUrl) {
       const img = document.createElement("img");
       img.src = record.previewDataUrl;
       img.alt = "";
-      preview.appendChild(img);
+      img.draggable = false;
+      card.appendChild(img);
     } else {
       const empty = document.createElement("div");
-      empty.className = "project-card-preview-placeholder";
+      empty.className = "board-card-placeholder";
       empty.textContent = "Preview appears after the first autosave";
-      preview.appendChild(empty);
+      card.appendChild(empty);
     }
-    preview.onclick = () => { void focusProjectFromBoard(record.id); };
 
-    const body = document.createElement("div");
-    body.className = "project-card-body";
-    const titlebar = document.createElement("div");
-    titlebar.className = "project-card-titlebar";
-    const title = document.createElement("div");
-    title.className = "project-card-title";
+    const label = document.createElement("div");
+    label.className = "board-card-label";
+    const title = document.createElement("span");
     title.textContent = record.name;
-    title.title = record.name;
-    titlebar.append(title);
+    const sub = document.createElement("span");
+    sub.className = "board-card-sub";
+    sub.textContent =
+      `${info.width}×${info.height} · ${info.panelCount} panel${info.panelCount === 1 ? "" : "s"} · ${formatBoardUpdatedAt(record.updatedAt)}`;
+    label.append(title, sub);
+    card.appendChild(label);
 
-    const meta = document.createElement("div");
-    meta.className = "project-card-meta";
-    const summary = document.createElement("span");
-    const updated = document.createElement("span");
-    summary.textContent =
-      `${info.width}×${info.height} · ${info.panelCount} panel${info.panelCount === 1 ? "" : "s"}`;
-    updated.textContent = formatBoardUpdatedAt(record.updatedAt);
-    meta.append(summary, updated);
-
-    titlebar.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
-      event.preventDefault();
-      event.stopPropagation();
-      titlebar.setPointerCapture(event.pointerId);
-      card.classList.add("dragging");
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const originX = record.x;
-      const originY = record.y;
-      const move = (next: PointerEvent) => {
-        record.x = originX + (next.clientX - startX) / projectBoardMeta.camera.scale;
-        record.y = originY + (next.clientY - startY) / projectBoardMeta.camera.scale;
-        card.style.left = `${record.x}px`;
-        card.style.top = `${record.y}px`;
-      };
-      const up = () => {
-        card.classList.remove("dragging");
-        titlebar.removeEventListener("pointermove", move);
-        titlebar.removeEventListener("pointerup", up);
-        titlebar.removeEventListener("pointercancel", up);
-        void putProjectLibraryRecord(record);
-      };
-      titlebar.addEventListener("pointermove", move);
-      titlebar.addEventListener("pointerup", up);
-      titlebar.addEventListener("pointercancel", up);
+    // Click the preview to dive into the project; drag the label to arrange it.
+    card.addEventListener("click", (event) => {
+      if ((event.target as HTMLElement).closest(".board-card-label")) return;
+      if (card.dataset.dragged === "1") { card.dataset.dragged = ""; return; }
+      void focusProjectFromBoard(record.id);
     });
+    attachCardDrag(card, label, record);
 
-    body.append(titlebar, meta);
-    card.append(preview, body);
-    projectBoardWorld.appendChild(card);
+    boardWorld.appendChild(card);
   }
 }
 
-function fitProjectBoard() {
-  if (!projectBoardRecords.length) {
-    projectBoardMeta.camera = { scale: 1, tx: 80, ty: 80 };
-    applyProjectBoardCamera();
-    saveProjectBoardMetaSoon();
-    return;
-  }
-  const minX = Math.min(...projectBoardRecords.map((record) => record.x));
-  const minY = Math.min(...projectBoardRecords.map((record) => record.y));
-  const maxX = Math.max(...projectBoardRecords.map((record) => {
+// Drag a card's label to reposition it in world space. Screen deltas are
+// divided by the camera scale so the card tracks the cursor at any zoom.
+function attachCardDrag(card: HTMLElement, handle: HTMLElement, record: ProjectLibraryRecord) {
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    card.classList.add("dragging");
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originX = record.x;
+    const originY = record.y;
+    let moved = false;
+    const move = (next: PointerEvent) => {
+      const dx = (next.clientX - startX) / viewport.scale;
+      const dy = (next.clientY - startY) / viewport.scale;
+      if (!moved && Math.hypot(next.clientX - startX, next.clientY - startY) > 3) moved = true;
+      record.x = originX + dx;
+      record.y = originY + dy;
+      card.style.left = `${record.x}px`;
+      card.style.top = `${record.y}px`;
+    };
+    const up = () => {
+      card.classList.remove("dragging");
+      if (moved) card.dataset.dragged = "1";
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      void putProjectLibraryRecord(record);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
+}
+
+// Smoothly glide the camera to a target over ~320ms; used when diving into a
+// project so the preview stays in view while the session loads underneath.
+let cameraTween: number | null = null;
+function animateCameraTo(target: Camera, durationMs = 320): Promise<void> {
+  if (cameraTween !== null) cancelAnimationFrame(cameraTween);
+  const from = { ...viewport };
+  const start = performance.now();
+  return new Promise((resolve) => {
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      // easeInOutCubic
+      const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      viewport = {
+        scale: from.scale + (target.scale - from.scale) * e,
+        tx: from.tx + (target.tx - from.tx) * e,
+        ty: from.ty + (target.ty - from.ty) * e,
+      };
+      applyViewport();
+      if (t < 1) {
+        cameraTween = requestAnimationFrame(step);
+      } else {
+        cameraTween = null;
+        resolve();
+      }
+    };
+    cameraTween = requestAnimationFrame(step);
+  });
+}
+
+function setBoardCardsVisible(visible: boolean) {
+  boardCardsVisible = visible;
+  boardWorld.classList.toggle("cards-hidden", !visible);
+  const button = $("project-board-button");
+  button.classList.toggle("open", visible);
+  button.setAttribute("aria-pressed", visible ? "true" : "false");
+}
+
+// Arrange every project on a tidy grid (newest first, top-left), then fit them
+// all into view. The grid cell is the largest frame so nothing overlaps.
+async function organizeProjects() {
+  if (!projectLibraryReady || !projectBoardRecords.length) return;
+  const ordered = [...projectBoardRecords].sort((a, b) => b.updatedAt - a.updatedAt);
+  let cellW = 1080;
+  let cellH = 1080;
+  for (const record of ordered) {
     const info = projectBoardRecordInfo(record);
-    return record.x + projectBoardCanvasSize(info.width, info.height).width;
-  }));
-  const maxY = Math.max(...projectBoardRecords.map((record) => {
-    const info = projectBoardRecordInfo(record);
-    return record.y + projectBoardCanvasSize(info.width, info.height).height + 58;
-  }));
-  const rect = projectBoardSurface.getBoundingClientRect();
-  const scale = Math.max(0.2, Math.min(1.2, Math.min(
-    (rect.width - 120) / Math.max(240, maxX - minX),
-    (rect.height - 140) / Math.max(240, maxY - minY)
-  )));
-  projectBoardMeta.camera = {
-    scale,
-    tx: (rect.width - (maxX - minX) * scale) / 2 - minX * scale,
-    ty: (rect.height - (maxY - minY) * scale) / 2 - minY * scale,
-  };
-  applyProjectBoardCamera();
-  saveProjectBoardMetaSoon();
-}
-
-async function showProjectBoard() {
-  try {
-    await flushAutosave(true);
-    projectBoardRecords = await listProjectLibraryRecords();
-    projectBoardOpen = true;
-    projectBoard.hidden = false;
-    document.body.classList.add("project-board-open");
-    $("project-board-button").classList.add("open");
-    $("project-board-back").textContent = `Back to ${projectRecordName(
-      projectBoardRecords.find((record) => record.id === activeLibraryProjectId)
-    )}`;
-    buildProjectBoard();
-    applyProjectBoardCamera();
-  } catch (err) {
-    setStatus("Project Board unavailable: " + (err as Error).message);
+    cellW = Math.max(cellW, info.width);
+    cellH = Math.max(cellH, info.height);
   }
+  const positions = organizeGrid(ordered.length, { width: cellW, height: cellH }, 4, 260);
+  for (let i = 0; i < ordered.length; i++) {
+    ordered[i].x = positions[i].x;
+    ordered[i].y = positions[i].y;
+    await putProjectLibraryRecord(ordered[i]);
+  }
+  buildProjectBoard();
+  fitAllProjects();
 }
 
-function hideProjectBoard() {
-  projectBoardOpen = false;
-  projectBoard.hidden = true;
-  document.body.classList.remove("project-board-open");
-  $("project-board-button").classList.remove("open");
-  requestLoopFrame();
+// Camera that frames a record's world rect the way "focus" should land: fit it
+// into the surface at a comfortable size.
+function cameraForRecord(record: Pick<ProjectLibraryRecord, "x" | "y">, width: number, height: number): Camera {
+  const rect = surfaceRect();
+  return fitCamera({ width: rect.width, height: rect.height }, {
+    x: record.x, y: record.y, width, height,
+  }, 40);
 }
 
+// Dive into another project: glide the camera over to its card, then swap the
+// live session in underneath. The camera is not reset afterwards — it already
+// sits over the newly active frame.
 async function focusProjectFromBoard(id: string) {
   if (id === activeLibraryProjectId) {
-    hideProjectBoard();
+    fitViewport();
     return;
+  }
+  const target = projectBoardRecords.find((record) => record.id === id);
+  if (target) {
+    const info = projectBoardRecordInfo(target);
+    await animateCameraTo(cameraForRecord(target, info.width, info.height));
   }
   const saved = await flushAutosave(true);
   if (!saved) return;
@@ -9108,14 +9233,13 @@ async function focusProjectFromBoard(id: string) {
   activePanelIndex = Math.max(0, Math.min(record.activePanelIndex, next.panels.length - 1));
   rangeAnchorIndex = activePanelIndex;
   rangeEndIndex = activePanelIndex;
-  viewport = { ...record.viewport };
   buildTimeline();
   buildLayers();
   buildBreadcrumb();
   buildInspector();
+  buildProjectBoard();
   applyViewport();
   await writeProjectBoardMeta(projectBoardMeta);
-  hideProjectBoard();
 }
 
 async function addProjectToLibrary(
@@ -9127,7 +9251,7 @@ async function addProjectToLibrary(
   if (!projectLibraryReady) return null;
   const json = serialized ?? serializeProject(next);
   const id = crypto.randomUUID();
-  const position = nextProjectBoardPosition(projectBoardRecords);
+  const position = nextWorldPosition();
   const record: ProjectLibraryRecord = {
     id,
     name,
@@ -9156,6 +9280,20 @@ async function initializeProjectLibrary() {
     projectBoardRecords = await listProjectLibraryRecords();
     projectBoardMeta = await readProjectBoardMeta();
     projectLibraryReady = true;
+    // One-time migration: old records were positioned on a shrunken display
+    // grid. Spread them out into full-resolution world coordinates and discard
+    // the stale (display-space) camera so we re-fit from scratch.
+    let migratedPositions = false;
+    if (!projectBoardMeta.worldMigrated && projectBoardRecords.length) {
+      for (const record of projectBoardRecords) {
+        const moved = migrateLegacyPosition({ x: record.x, y: record.y });
+        record.x = moved.x;
+        record.y = moved.y;
+        await putProjectLibraryRecord(record);
+      }
+      projectBoardMeta.worldMigrated = true;
+      migratedPositions = true;
+    }
     const requested = projectBoardMeta.activeProjectId;
     const activeRecord = requested
       ? projectBoardRecords.find((record) => record.id === requested)
@@ -9170,17 +9308,25 @@ async function initializeProjectLibrary() {
       activePanelIndex = Math.max(0, Math.min(activeRecord.activePanelIndex, next.panels.length - 1));
       rangeAnchorIndex = activePanelIndex;
       rangeEndIndex = activePanelIndex;
-      viewport = { ...activeRecord.viewport };
       buildTimeline();
       buildLayers();
       buildBreadcrumb();
       buildInspector();
+      buildProjectBoard();
+      // Restore the saved board camera unless we just migrated (its coordinate
+      // space is gone) — resetProjectSession already left us fit on the project.
+      if (!migratedPositions && projectBoardMeta.camera) {
+        viewport = { ...projectBoardMeta.camera };
+      }
       applyViewport();
     } else {
       const json = autosaveSerialization.snapshot(project).json;
       const record = await addProjectToLibrary(project, "Untitled 1", null, json);
       if (record) resetCurrentFile(project, json);
+      buildProjectBoard();
+      applyViewport();
     }
+    if (migratedPositions) await writeProjectBoardMeta(projectBoardMeta);
   } catch (err) {
     projectLibraryReady = false;
     setStatus("Project Board unavailable: " + (err as Error).message);
@@ -9293,7 +9439,8 @@ async function openProject() {
     const json = serializeProject(result.project);
     await addProjectToLibrary(result.project, result.fileName, handle, json);
     resetProjectSession(result.project, `opened ${result.fileName}`, json);
-    if (projectBoardOpen) hideProjectBoard();
+    buildProjectBoard();
+    fitViewport();
     buildFileMenu();
   } catch (err) {
     if (!isAbortError(err)) setStatus("open failed: " + (err as Error).message);
@@ -9310,7 +9457,8 @@ async function newProject(presetKey?: string) {
   await addProjectToLibrary(next, `Untitled ${projectBoardRecords.length + 1}`, null, json);
   clearRecoverySnapshot();
   resetProjectSession(next, `new project (${formatCanvasDimensions(width, height)})`, json);
-  if (projectBoardOpen) hideProjectBoard();
+  buildProjectBoard();
+  fitViewport();
   buildFileMenu();
 }
 
@@ -9419,59 +9567,44 @@ function buildFileMenu() {
   $("file-menu").classList.toggle("open");
   $("file-menu-button").classList.toggle("open");
 };
+// The Projects button toggles whether neighbouring projects are shown on the
+// board (default: shown). The board itself is always the workspace.
 ($("project-board-button") as HTMLButtonElement).onclick = () => {
-  if (projectBoardOpen) hideProjectBoard();
-  else void showProjectBoard();
+  setBoardCardsVisible(!boardCardsVisible);
 };
-($("project-board-back") as HTMLButtonElement).onclick = hideProjectBoard;
-($("project-board-new") as HTMLButtonElement).onclick = () => { void newProject(); };
-($("project-board-open-file") as HTMLButtonElement).onclick = () => { void openProject(); };
-($("project-board-reset-view") as HTMLButtonElement).onclick = fitProjectBoard;
+($("board-fit-all") as HTMLButtonElement).onclick = () => {
+  if (!boardCardsVisible) setBoardCardsVisible(true);
+  fitAllProjects();
+};
+($("board-organize") as HTMLButtonElement).onclick = () => { void organizeProjects(); };
 
-projectBoardSurface.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || (event.target as HTMLElement).closest(".project-card, .project-board-toolbar")) return;
+// Drag empty world space to pan the board. Events on the live canvas, a card,
+// or a floating control are left for their own handlers.
+stageArea.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (target === canvas || target.closest(".board-card, .zoom-pill, .canvas-hint")) return;
   event.preventDefault();
-  projectBoardSurface.setPointerCapture(event.pointerId);
-  projectBoardSurface.classList.add("is-panning");
+  stageArea.setPointerCapture(event.pointerId);
+  stageArea.classList.add("panning");
   const startX = event.clientX;
   const startY = event.clientY;
-  const originX = projectBoardMeta.camera.tx;
-  const originY = projectBoardMeta.camera.ty;
+  const originTx = viewport.tx;
+  const originTy = viewport.ty;
   const move = (next: PointerEvent) => {
-    projectBoardMeta.camera.tx = originX + next.clientX - startX;
-    projectBoardMeta.camera.ty = originY + next.clientY - startY;
-    applyProjectBoardCamera();
+    viewport = { scale: viewport.scale, tx: originTx + next.clientX - startX, ty: originTy + next.clientY - startY };
+    applyViewport();
   };
   const up = () => {
-    projectBoardSurface.classList.remove("is-panning");
-    projectBoardSurface.removeEventListener("pointermove", move);
-    projectBoardSurface.removeEventListener("pointerup", up);
-    projectBoardSurface.removeEventListener("pointercancel", up);
-    saveProjectBoardMetaSoon();
+    stageArea.classList.remove("panning");
+    stageArea.removeEventListener("pointermove", move);
+    stageArea.removeEventListener("pointerup", up);
+    stageArea.removeEventListener("pointercancel", up);
   };
-  projectBoardSurface.addEventListener("pointermove", move);
-  projectBoardSurface.addEventListener("pointerup", up);
-  projectBoardSurface.addEventListener("pointercancel", up);
+  stageArea.addEventListener("pointermove", move);
+  stageArea.addEventListener("pointerup", up);
+  stageArea.addEventListener("pointercancel", up);
 });
-
-projectBoardSurface.addEventListener("wheel", (event) => {
-  event.preventDefault();
-  if (event.ctrlKey || event.metaKey) {
-    const rect = projectBoardSurface.getBoundingClientRect();
-    const factor = Math.exp(-event.deltaY * 0.002);
-    projectBoardMeta.camera = zoomBoardCamera(
-      projectBoardMeta.camera,
-      projectBoardMeta.camera.scale * factor,
-      event.clientX - rect.left,
-      event.clientY - rect.top
-    );
-  } else {
-    projectBoardMeta.camera.tx -= event.deltaX;
-    projectBoardMeta.camera.ty -= event.deltaY;
-  }
-  applyProjectBoardCamera();
-  saveProjectBoardMetaSoon();
-}, { passive: false });
 
 ($("export-menu-button") as HTMLButtonElement).onclick = (e) => {
   e.stopPropagation();
@@ -9549,7 +9682,8 @@ loadProjectFile.onchange = async (e) => {
     const json = serializeProject(next);
     await addProjectToLibrary(next, file.name, null, json);
     resetProjectSession(next, `opened ${file.name}`, json);
-    if (projectBoardOpen) hideProjectBoard();
+    buildProjectBoard();
+    fitViewport();
     buildFileMenu();
   } catch (err) {
     setStatus("load failed: " + (err as Error).message);
@@ -9741,8 +9875,10 @@ window.addEventListener("keydown", (e) => {
   }
   // Escape clears any in-progress or active selection.
   if (e.key === "Escape" && !inEditable) {
-    if (projectBoardOpen) {
-      hideProjectBoard();
+    // When zoomed out into board/overview territory, Escape flies back to the
+    // active project rather than clearing anything.
+    if (chromeFaded) {
+      fitViewport();
       return;
     }
     if ($("about-overlay").classList.contains("open")) {
@@ -9789,7 +9925,7 @@ window.addEventListener("paste", (event) => {
   const target = event.target as HTMLElement | null;
   const tag = target?.tagName;
   const inEditable = tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
-  if (inEditable || projectBoardOpen) return;
+  if (inEditable) return;
 
   const imageFiles = clipboardRasterFiles(event.clipboardData);
   if (imageFiles.length > 0) {

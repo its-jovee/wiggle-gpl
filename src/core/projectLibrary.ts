@@ -28,6 +28,9 @@ export type ProjectBoardMeta = {
   key: "board";
   activeProjectId: string | null;
   camera: BoardViewport;
+  // Set once records have been migrated from the old display-size grid to
+  // full-resolution world coordinates (see boardCamera.migrateLegacyPosition).
+  worldMigrated?: boolean;
 };
 
 const DB_NAME = "wiggle-gpl-project-library";
