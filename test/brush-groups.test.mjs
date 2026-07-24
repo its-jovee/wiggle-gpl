@@ -25,6 +25,7 @@ function compileGroups() {
 
 compileGroups();
 const groups = await import(`${outDir}/brushes/groups.js`);
+const registry = await import(`${outDir}/brushes/registry.js`);
 
 test("brush tools split classic texture scatter and eraser brushes", () => {
   assert.deepEqual(groups.BRUSH_TOOLS.map((tool) => tool.key), [
@@ -57,4 +58,40 @@ test("tool defaults choose the first brush from each tool", () => {
   assert.equal(groups.defaultBrushForTool("texture").key, "watercolor");
   assert.equal(groups.defaultBrushForTool("scatter").key, "spray");
   assert.equal(groups.defaultBrushForTool("eraser").key, "eraser");
+});
+
+test("raster-only brushes are hidden on draw layers and available on raster", () => {
+  const probe = {
+    key: "krita.testProbe",
+    label: "Probe",
+    spacing: 2,
+    rasterOnly: true,
+    group: "Krita Pixel",
+    stamp() {},
+  };
+  assert.equal(groups.isBrushAvailable(probe, "draw"), false);
+  assert.equal(groups.isBrushAvailable(probe, "raster"), true);
+  assert.equal(groups.brushToolForBrush(probe), "classic");
+
+  // Inject temporarily into the compiled registry array for resolve tests.
+  registry.BRUSHES.push(probe);
+  try {
+    assert.equal(groups.isBrushKeyAvailable("krita.testProbe", "draw"), false);
+    assert.equal(groups.isBrushKeyAvailable("krita.testProbe", "raster"), true);
+    const onDraw = groups.resolveBrushForLayer("krita.testProbe", "draw");
+    assert.equal(onDraw.changed, true);
+    assert.equal(onDraw.brush.rasterOnly, undefined);
+    assert.match(onDraw.reason, /raster-only/i);
+    const onRaster = groups.resolveBrushForLayer("krita.testProbe", "raster");
+    assert.equal(onRaster.changed, false);
+    assert.equal(onRaster.brush.key, "krita.testProbe");
+  } finally {
+    registry.BRUSHES.pop();
+  }
+});
+
+test("missing brush keys fall back safely for saved-project compatibility", () => {
+  const resolved = groups.resolveBrushForLayer("missing_legacy_brush", "draw");
+  assert.equal(resolved.changed, true);
+  assert.equal(resolved.brush.key, "round");
 });

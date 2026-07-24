@@ -52,6 +52,9 @@ export type Brush = {
   erase?: boolean;
   /** Brush-bar section header ("Classic" when omitted). UI only. */
   group?: string;
+  /** When true, the brush is offered only while a raster layer is paintable.
+   *  UI metadata only — does not change stamp(BrushContext). */
+  rasterOnly?: boolean;
 };
 
 const heading = (d: Vec2) => Math.atan2(d.y, d.x);

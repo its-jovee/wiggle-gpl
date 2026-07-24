@@ -52,7 +52,8 @@ import {
   addPanelToGroup, applySanitizedGroups, createFrameGroup, expandedDurationMs,
   findGroupForPanel, formatSequenceCounter, groupAtPanelIndex,
   groupsForProject, moveGroup, movePanelBlock, onPanelDeleted, onPanelDuplicated,
-  sequenceTransitionAtTime, setGroupRepeat, syncGroupPanelIds, ungroup,
+  sequenceStartMsForPanel, sequenceTransitionAtTime, setGroupRepeat,
+  syncGroupPanelIds, ungroup,
   type SequencePosition,
 } from "./core/sequence";
 import { AudioPreview } from "./core/audioPreview";
@@ -116,6 +117,7 @@ import { eraserPreviewRadius, isErasePreviewBrush } from "./core/eraserPreview";
 import { floodFillImageData } from "./core/fill";
 import {
   BRUSH_TOOLS, BrushToolKey, brushesForTool, brushToolForKey, defaultBrushForTool,
+  isBrushKeyAvailable, resolveBrushForLayer,
 } from "./brushes/groups";
 import { DEFAULT_BRUSH_SETTINGS, normalizeBrushSettings } from "./core/brushSettings";
 import {
@@ -186,6 +188,9 @@ let currentBrushSettings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
 let activeBrushPresetId: string | null = null;
 let closeBrushPicker: (() => void) | null = null;
 const lastBrushByTool: Partial<Record<BrushToolKey, string>> = {};
+/** Raster-only brush parked while the user is on a non-raster layer, restored
+ *  when they return to a raster layer (if still available). */
+let deferredRasterBrush: string | null = null;
 /** Whether the Tone tool chip is engaged, and which layer to restore when
  *  the user switches to any other tool/brush. The Tone tool is a layer
  *  shortcut, not a brush — currentBrush is left untouched while it's active. */
@@ -318,7 +323,8 @@ function applyBrushPresetById(id: string) {
   const preset = project.brushPresets.find((p) => p.id === id);
   if (!preset) return;
   const applied = applyBrushPreset(preset);
-  currentBrush = brushByKey(applied.brush).key;
+  const resolved = resolveBrushForLayer(applied.brush, activeLayer()?.kind ?? null);
+  currentBrush = resolved.brush.key;
   currentSize = applied.size;
   currentBrushSettings = { ...applied.settings };
   activeBrushPresetId = preset.id;
@@ -326,7 +332,8 @@ function applyBrushPresetById(id: string) {
   updateBrushSettingsControls();
   buildBrushBar();
   buildBrushPresetControls();
-  setStatus(`preset ${preset.name}`);
+  if (resolved.changed && resolved.reason) setStatus(resolved.reason);
+  else setStatus(`preset ${preset.name}`);
 }
 
 function saveCurrentBrushPreset() {
@@ -4535,7 +4542,35 @@ requestLoopFrame();
 
 // ---- UI: brushes / palette / layers / timeline / inspector / breadcrumb ---
 
+/** Keep currentBrush compatible with the active layer; park/restore raster-only. */
+function syncBrushAvailability(announce = true): boolean {
+  if (TOOL_KEYS.has(currentBrush)) return false;
+  const layerKind = activeLayer()?.kind ?? null;
+
+  if (
+    layerKind === "raster" &&
+    deferredRasterBrush &&
+    isBrushKeyAvailable(deferredRasterBrush, "raster")
+  ) {
+    if (currentBrush !== deferredRasterBrush) {
+      currentBrush = deferredRasterBrush;
+      if (announce) setStatus(`Restored ${brushByKey(deferredRasterBrush).label}`);
+    }
+    deferredRasterBrush = null;
+    return true;
+  }
+
+  const resolved = resolveBrushForLayer(currentBrush, layerKind);
+  if (!resolved.changed) return false;
+  const previous = BRUSHES.find((b) => b.key === currentBrush);
+  if (previous?.rasterOnly) deferredRasterBrush = currentBrush;
+  currentBrush = resolved.brush.key;
+  if (announce && resolved.reason) setStatus(resolved.reason);
+  return true;
+}
+
 function buildBrushBar() {
+  syncBrushAvailability(true);
   canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
   canvas.classList.toggle("marquee-cursor", currentBrush === MARQUEE_KEY);
   const drawTools = $("tools-draw");
@@ -4596,6 +4631,7 @@ function buildBrushBar() {
     host.appendChild(btn);
   };
   const addBrushTool = (tool: BrushToolKey, label: string, icon: StudioIcon) => {
+    const layerKind = activeLayer()?.kind ?? null;
     const active = !TOOL_KEYS.has(currentBrush) && brushToolForKey(currentBrush) === tool;
     const btn = document.createElement("button");
     btn.className = "chip tool" + (active ? " active" : "");
@@ -4603,8 +4639,11 @@ function buildBrushBar() {
     btn.setAttribute("aria-label", label);
     btn.appendChild(svgIcon(icon, 16));
     btn.onclick = () => {
-      const fallback = defaultBrushForTool(tool).key;
-      switchTo(lastBrushByTool[tool] ?? fallback);
+      const fallback = defaultBrushForTool(tool, layerKind).key;
+      const remembered = lastBrushByTool[tool];
+      const next =
+        remembered && isBrushKeyAvailable(remembered, layerKind) ? remembered : fallback;
+      switchTo(next);
     };
     drawTools.appendChild(btn);
   };
@@ -4638,9 +4677,10 @@ function buildBrushBar() {
 
   const activeTool = TOOL_KEYS.has(currentBrush) ? "classic" : brushToolForKey(currentBrush);
   const activeToolLabel = BRUSH_TOOLS.find((tool) => tool.key === activeTool)?.label ?? "Classic";
-  const activeBrushes = brushesForTool(activeTool);
+  const layerKind = activeLayer()?.kind ?? null;
+  const activeBrushes = brushesForTool(activeTool, layerKind);
   const activeBrush = activeBrushes.find((b) => b.key === currentBrush)
-    ?? defaultBrushForTool(activeTool);
+    ?? defaultBrushForTool(activeTool, layerKind);
   const appendBrushPreview = (
     host: HTMLElement,
     brush: typeof BRUSHES[number],
@@ -5339,7 +5379,7 @@ function buildTransportBar(): HTMLElement {
   playBtn.appendChild(svgIcon(playing ? StudioIcons.Pause : StudioIcons.Play, 16));
   playBtn.onclick = () => {
     if (playing) void stopPlayback(playheadMs);
-    else void startPlayback(playheadMs);
+    else void startPlayback(sequenceStartMsForPanel(project, activePanelIndex));
   };
   bar.appendChild(playBtn);
 
@@ -6896,6 +6936,7 @@ function buildLayers() {
         host.querySelectorAll(".layer-row.active").forEach((activeRow) =>
           activeRow.classList.remove("active"));
         row.classList.add("active");
+        syncBrushAvailability(true);
         buildInspector();
         buildBrushBar();
       }
@@ -7067,6 +7108,7 @@ function buildLayers() {
       toneToolActive = false;
       toneToolPrevLayerIndex = null;
       cont.setActiveLayerIndex(li);
+      syncBrushAvailability(true);
       buildLayers();
       buildInspector();
       buildBrushBar();
