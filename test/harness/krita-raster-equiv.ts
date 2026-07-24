@@ -209,6 +209,23 @@ function runKritaRasterTests(): string[] {
     if (fills < 1) failures.push("large spray produced no particles");
   }
 
+  // Phase 5 hatch/grid: deterministic per-dab stamps
+  for (const key of [
+    "krita.hatchParallel",
+    "krita.hatchCross",
+    "krita.hatchFollow",
+    "krita.gridBasic",
+  ]) {
+    const brush = BRUSHES.find((b) => b.key === key);
+    if (!brush?.rasterOnly) failures.push(`${key} missing or not rasterOnly`);
+  }
+  const hatchA = paintStroke("krita.hatchCross");
+  const hatchB = paintStroke("krita.hatchCross");
+  if (hashCanvas(hatchA) !== hashCanvas(hatchB)) failures.push("hatchCross not deterministic");
+  const gridA = paintStroke("krita.gridBasic");
+  const gridB = paintStroke("krita.gridBasic");
+  if (hashCanvas(gridA) !== hashCanvas(gridB)) failures.push("gridBasic not deterministic");
+
   // Eraser compositing punches existing pixels
   const erased = paintStroke("krita.eraserHard", { eraseOverlay: true });
   const mid = erased.getContext("2d")!.getImageData(40, 20, 16, 8).data;

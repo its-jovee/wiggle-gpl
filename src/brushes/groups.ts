@@ -42,6 +42,7 @@ export function brushToolForBrush(brush: Brush): BrushToolKey {
     ) {
       return "texture";
     }
+    // Hatch / Grid / Pixel / Ink / etc. live under Classic tool chrome.
     return "classic";
   }
   return "classic";

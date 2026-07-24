@@ -359,9 +359,131 @@ const KRITA_SPRAY_BRUSHES: Brush[] = [
   },
 ];
 
+/** Phase 5: per-dab hatching / grid approximations (no whole-stroke engines). */
+const KRITA_HATCH_GRID_BRUSHES: Brush[] = [
+  {
+    // Inspired by hatchingbrush parallel lines — short ticks in dab only.
+    key: "krita.hatchParallel",
+    label: "Hatch Parallel",
+    spacing: 5,
+    group: "Krita Hatch",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, color, size } = b;
+      const angle = -Math.PI / 3;
+      const len = 4.5 * size;
+      const gap = 1.6 * size;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(0.6, 0.55 * size);
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.85 * (b.flow ?? 1) * (0.45 + 0.55 * (b.pressure ?? 1));
+      for (let i = -1; i <= 1; i++) {
+        const ox = Math.cos(angle + Math.PI / 2) * gap * i;
+        const oy = Math.sin(angle + Math.PI / 2) * gap * i;
+        ctx.beginPath();
+        ctx.moveTo(pos.x + ox - Math.cos(angle) * len, pos.y + oy - Math.sin(angle) * len);
+        ctx.lineTo(pos.x + ox + Math.cos(angle) * len, pos.y + oy + Math.sin(angle) * len);
+        ctx.stroke();
+      }
+      ctx.restore();
+    },
+  },
+  {
+    // Inspired by hatching perpendicular / crosshatch preference.
+    key: "krita.hatchCross",
+    label: "Hatch Cross",
+    spacing: 5,
+    group: "Krita Hatch",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, color, size } = b;
+      const angles = [-Math.PI / 3, Math.PI / 6];
+      const len = 4.2 * size;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(0.55, 0.5 * size);
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.8 * (b.flow ?? 1) * (0.45 + 0.55 * (b.pressure ?? 1));
+      for (const angle of angles) {
+        ctx.beginPath();
+        ctx.moveTo(pos.x - Math.cos(angle) * len, pos.y - Math.sin(angle) * len);
+        ctx.lineTo(pos.x + Math.cos(angle) * len, pos.y + Math.sin(angle) * len);
+        ctx.stroke();
+      }
+      ctx.restore();
+    },
+  },
+  {
+    // Stroke-following hatch: angle from delta.
+    key: "krita.hatchFollow",
+    label: "Hatch Follow",
+    spacing: 5,
+    group: "Krita Hatch",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, color, size } = b;
+      const angle = tipAngle(b, "heading") + Math.PI / 2;
+      const len = 4.8 * size;
+      const jitter = (unit01(b.tick, b.seed, 12) - 0.5) * 0.25;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(0.55, 0.5 * size);
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.85 * (b.flow ?? 1) * (0.45 + 0.55 * (b.pressure ?? 1));
+      ctx.beginPath();
+      ctx.moveTo(
+        pos.x - Math.cos(angle + jitter) * len,
+        pos.y - Math.sin(angle + jitter) * len
+      );
+      ctx.lineTo(
+        pos.x + Math.cos(angle + jitter) * len,
+        pos.y + Math.sin(angle + jitter) * len
+      );
+      ctx.stroke();
+      ctx.restore();
+    },
+  },
+  {
+    // Inspired by gridbrush — small cell pattern stamp per dab.
+    key: "krita.gridBasic",
+    label: "Grid Basic",
+    spacing: 6,
+    group: "Krita Grid",
+    rasterOnly: true,
+    stamp: (b) => {
+      const { ctx, pos, color, size } = b;
+      const cell = Math.max(2, Math.round(2.2 * size));
+      const half = cell * 1.5;
+      const originX = Math.floor(pos.x / cell) * cell;
+      const originY = Math.floor(pos.y / cell) * cell;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = Math.max(0.5, 0.35 * size);
+      ctx.globalAlpha = 0.75 * (b.flow ?? 1) * (0.4 + 0.6 * (b.pressure ?? 1));
+      for (let gy = -1; gy <= 1; gy++) {
+        for (let gx = -1; gx <= 1; gx++) {
+          const x = originX + gx * cell;
+          const y = originY + gy * cell;
+          if (Math.hypot(x - pos.x, y - pos.y) > half + cell) continue;
+          ctx.strokeRect(x, y, cell, cell);
+          if (unit01(b.tick + gx * 3, b.seed + gy * 5, 9) > 0.55) {
+            ctx.globalAlpha = 0.55 * (b.flow ?? 1);
+            ctx.fillRect(x + cell * 0.25, y + cell * 0.25, cell * 0.5, cell * 0.5);
+            ctx.globalAlpha = 0.75 * (b.flow ?? 1) * (0.4 + 0.6 * (b.pressure ?? 1));
+          }
+        }
+      }
+      ctx.restore();
+    },
+  },
+];
+
 /** All Krita-inspired raster registry entries (phases accumulate here). */
 export const KRITA_RASTER_BRUSHES: Brush[] = [
   ...KRITA_EVERYDAY_BRUSHES,
   ...KRITA_CHALK_BRUSHES,
   ...KRITA_SPRAY_BRUSHES,
+  ...KRITA_HATCH_GRID_BRUSHES,
 ];
