@@ -110,7 +110,7 @@ import {
   containRasterImage, isSupportedRasterImageFile, rasterLayerName,
 } from "./core/rasterImport";
 import { drawBrushPreview } from "./brushes/preview";
-import { drawEraserTracePreview, isErasePreviewBrush } from "./core/eraserPreview";
+import { eraserPreviewRadius, isErasePreviewBrush } from "./core/eraserPreview";
 import { floodFillImageData } from "./core/fill";
 import {
   BRUSH_TOOLS, BrushToolKey, brushesForTool, brushToolForKey, defaultBrushForTool,
@@ -1772,6 +1772,9 @@ function selectionMoveCursorHit(pos: Vec2, state: SelectionState): boolean {
 
 function updateCanvasCursor(pos?: Vec2) {
   canvas.style.cursor = "";
+  // The eraser ring overlay is driven by pointermove; drop it whenever the
+  // eraser isn't the effective tool so it can't linger over other tools.
+  if (!isEraseBrushKey(currentBrush)) hideEraserCursorOverlay();
   if (playing || panDrag || spacePanDown) return;
   if (isEraseBrushKey(currentBrush)) {
     canvas.style.cursor = "none";
@@ -1779,16 +1782,24 @@ function updateCanvasCursor(pos?: Vec2) {
   }
   if (currentBrush === MARQUEE_KEY && selectionState) {
     const at = pos ?? lastCanvasPointerPos;
-    const bounds = marqueeTransformBounds(selectionState);
-    if (at && bounds && selectionState.mode === "object" && selectionState.phase === "idle") {
-      const handle = hitTestTransformHandle(at, bounds, viewport.scale);
-      if (handle) {
-        canvas.style.cursor = transformCursorForHandle(handle);
-        return;
-      }
-      if (selectionMoveCursorHit(at, selectionState)) {
-        canvas.style.cursor = "move";
-        return;
+    const manipulableIdleObject = selectionState.mode === "object" && selectionState.phase === "idle";
+    const manipulableRasterRegion = isManipulableRasterRegion(selectionState);
+    if (at && (manipulableIdleObject || manipulableRasterRegion)) {
+      const bounds = manipulableRasterRegion
+        ? shapeBounds(selectionState.shape)
+        : marqueeTransformBounds(selectionState);
+      if (bounds) {
+        const handle = hitTestTransformHandle(at, bounds, viewport.scale);
+        if (handle) {
+          canvas.style.cursor = transformCursorForHandle(handle);
+          return;
+        }
+        if (manipulableRasterRegion
+          ? activeRegionContains(selectionState, at)
+          : selectionMoveCursorHit(at, selectionState)) {
+          canvas.style.cursor = "move";
+          return;
+        }
       }
     }
   } else if (currentBrush === SCALE_KEY) {
@@ -1907,8 +1918,24 @@ function rasterContentSelection(layer: Layer): Extract<MarqueeRef, { kind: "rast
   return rasterSelectionAtShape(layer, { kind: "rect", ...bounds }, false);
 }
 
-function extractSelection() {
-  if (!selectionState || selectionState.mode !== "region" || selectionState.phase !== "idle") return;
+/** True when the active selection is an idle region on a raster layer — the
+ *  case the marquee lets you drag/scale/rotate directly (handles are drawn and
+ *  a plain drag inside lifts the pixels). Non-raster layers keep region
+ *  selections as paint clips. */
+function isManipulableRasterRegion(state: SelectionState | null): boolean {
+  return !!state && state.mode === "region" && state.phase === "idle" &&
+    activeLayer()?.kind === "raster";
+}
+
+/** Lifts an idle region selection into an object selection (extracting raster
+ *  pixels or vector items) but does NOT commit history — the caller commits
+ *  once the ensuing move/transform gesture ends, so a select→drag→release is a
+ *  single undo step. Returns the extracted items, or null when the selection is
+ *  not a promotable idle region or contains nothing. */
+function promoteRegionSelection(): MarqueeRef[] | null {
+  if (!selectionState || selectionState.mode !== "region" || selectionState.phase !== "idle") {
+    return null;
+  }
   const shape = selectionState.shape;
   const inverted = !!selectionState.inverted;
   const layer = activeLayer();
@@ -1916,19 +1943,26 @@ function extractSelection() {
     ? rasterSelectionAtShape(layer, shape, inverted)
     : null;
   const items = rasterRef ? [rasterRef] : layer?.kind === "raster" ? [] : cutAtShape(shape, inverted);
-  if (items.length === 0) {
-    clearSelection();
-    setStatus("Nothing to extract in selection");
-    return;
-  }
-  const bounds = boundsFromItems(items, measureText);
+  if (items.length === 0) return null;
   selectionState = {
     mode: "object",
     phase: "idle",
     shape,
-    bounds,
+    bounds: boundsFromItems(items, measureText),
     items,
   };
+  return items;
+}
+
+function extractSelection() {
+  if (!selectionState || selectionState.mode !== "region" || selectionState.phase !== "idle") return;
+  const items = promoteRegionSelection();
+  if (!items) {
+    clearSelection();
+    setStatus("Nothing to extract in selection");
+    return;
+  }
+  const rasterRef = rasterMarqueeItems(items)[0];
   if (rasterRef) {
     syncRasterToLayer(rasterRef.layer);
     commitHistory([rasterRef.layer]);
@@ -2693,6 +2727,41 @@ canvas.addEventListener("pointerdown", (e) => {
       buildEditContext();
     }
     if (selectionState?.mode === "region" && selectionState.phase === "idle") {
+      // On raster layers the marquee manipulates pixels directly: a handle grab
+      // scales/rotates, a plain drag inside lifts and moves the selection. Both
+      // promote the region to an object selection first. Alt-drag (and every
+      // non-raster layer) keeps the classic behavior of moving just the mask.
+      if (isManipulableRasterRegion(selectionState) && !e.altKey) {
+        const handle = hitTestTransformHandle(pos, shapeBounds(selectionState.shape), viewport.scale);
+        if (handle) {
+          if (beginObjectSelectionTransform(handle, pos)) {
+            try { canvas.setPointerCapture(e.pointerId); } catch {}
+            return;
+          }
+        } else if (activeRegionContains(selectionState, pos)) {
+          // promoteRegionSelection extracts the pixels and swaps selectionState
+          // to an object selection; open the move gesture directly from the
+          // returned items so this reads as one grab-and-drag.
+          const items = promoteRegionSelection();
+          if (items) {
+            transformSnapshots = snapshotItems(items);
+            const bounds = boundsFromItems(items, measureText);
+            selectionState = {
+              mode: "object",
+              phase: "moving",
+              shape: { kind: "rect", x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+              bounds,
+              items,
+              lastPos: pos,
+            };
+            try { canvas.setPointerCapture(e.pointerId); } catch {}
+            buildEditContext();
+            return;
+          }
+          // Promotion failed (empty / still decoding) — fall through to a
+          // boundary move so the gesture still does something sensible.
+        }
+      }
       if (activeRegionContains(selectionState, pos)) {
         selectionState = { ...selectionState, phase: "moving", lastPos: pos };
         try { canvas.setPointerCapture(e.pointerId); } catch {}
@@ -2966,6 +3035,7 @@ canvas.addEventListener("pointerdown", (e) => {
 canvas.addEventListener("pointermove", (e) => {
   const hoverPos = canvasPos(e);
   lastCanvasPointerPos = hoverPos;
+  updateEraserCursorOverlay(e.clientX, e.clientY);
   if (e.buttons === 0) updateCanvasCursor(hoverPos);
 
   if (panDrag) {
@@ -3186,7 +3256,9 @@ window.addEventListener("pointerup", (e) => {
       }
       selectionState = { mode: "region", phase: "idle", shape, tool: selectionState.tool };
       buildEditContext();
-      setStatus("Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
+      setStatus(activeLayer()?.kind === "raster"
+        ? "Selection active · drag to move pixels · handles scale/rotate · ⌥-drag moves boundary · Esc to clear"
+        : "Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
       return;
     }
     if (selectionState.phase === "moving") {
@@ -3397,7 +3469,13 @@ stageArea.addEventListener("wheel", (e) => {
   const nextScale = viewport.scale * Math.exp(-e.deltaY * 0.0015);
   viewport = zoomAboutPoint(canvas, stageArea, nextScale, e.clientX, e.clientY);
   applyViewport();
+  // Resize the eraser ring to the new zoom under the (stationary) pointer.
+  updateEraserCursorOverlay(e.clientX, e.clientY);
 }, { passive: false });
+
+// Drop the eraser ring when the pointer leaves the canvas so it doesn't hang
+// frozen at the edge (pointermove stops firing once the pointer is outside).
+canvas.addEventListener("pointerleave", hideEraserCursorOverlay);
 
 function zoomStep(multiplier: number) {
   const rect = stageArea.getBoundingClientRect();
@@ -3665,7 +3743,15 @@ function drawLiveErasePreviewFrame() {
   const panel = activePanel();
   const segments = liveStrokePreviewSegments();
   const insertAt = liveStrokeLayer.strokes.length;
+  // Temporarily append the in-progress erase to the layer, then bump its
+  // version so the layer signature (which hashes every stroke) recomputes and
+  // the raw-layer cache stores THIS layer's with-erase bitmap under a fresh
+  // key. Every other layer keeps its version, so it renders from cache instead
+  // of restamping — per-frame cost stays O(active layer) rather than O(panel).
+  // The post-pop bump restores a truthful signature for the popped-back state
+  // so no later render can serve the with-erase bitmap after the drag ends.
   liveStrokeLayer.strokes.push(...segments);
+  bumpLayerVersion(liveStrokeLayer);
   try {
     if (onionEnabled && panel.kind !== "timelapse") {
       drawEditorPanelWithOnion(panel, "live-erase-active");
@@ -3679,6 +3765,7 @@ function drawLiveErasePreviewFrame() {
         localMs: keyframeArm === "to" ? panel.durationMs : 0,
         wiggleFps: project.wiggleFps,
         overscan: { x: overscanX, y: overscanY },
+        renderCache: displayRenderCache,
         contentVersion: renderContentVersion,
         deferFillMasks: true,
         skipFillMaskCache: true,
@@ -3686,6 +3773,7 @@ function drawLiveErasePreviewFrame() {
     }
   } finally {
     liveStrokeLayer.strokes.splice(insertAt, segments.length);
+    bumpLayerVersion(liveStrokeLayer);
   }
 }
 
@@ -3836,31 +3924,42 @@ function drawStabilizerLeashOverlay(targetCtx: CanvasRenderingContext2D) {
   targetCtx.restore();
 }
 
-function drawEraserCursorOverlay(targetCtx: CanvasRenderingContext2D) {
-  const points = drawing && liveStroke && isEraseBrushKey(liveStroke.brush, liveStroke.erase === true)
-    ? liveStroke.points
-    : !drawing && lastCanvasPointerPos && isEraseBrushKey(currentBrush)
-    ? [lastCanvasPointerPos]
-    : null;
-  if (!points || points.length === 0) return;
+// The eraser cursor is a DOM overlay positioned directly from pointer events,
+// not painted into the canvas. That keeps it tracking the pointer at input rate
+// even while the canvas render loop is idling at the wiggle tick rate (which is
+// why a canvas-painted ring lagged on hover).
+const eraserCursorEl = document.createElement("div");
+eraserCursorEl.className = "eraser-cursor";
+eraserCursorEl.setAttribute("aria-hidden", "true");
+stageArea.appendChild(eraserCursorEl);
 
-  targetCtx.save();
-  targetCtx.beginPath();
-  targetCtx.rect(0, 0, project.width, project.height);
-  targetCtx.clip();
+function hideEraserCursorOverlay() {
+  eraserCursorEl.style.display = "none";
+}
 
-  const clip = activeRegionShape(selectionState);
-  if (clip) {
-    targetCtx.beginPath();
-    traceShapePath(targetCtx, clip);
-    targetCtx.clip();
+/** Shows and positions the eraser ring at the given screen coordinates, sized
+ *  to the erased radius at the current zoom. Hides it when the eraser isn't the
+ *  effective tool or the canvas is otherwise busy (playback / panning). */
+function updateEraserCursorOverlay(clientX: number, clientY: number) {
+  const erasing = drawing && liveStroke &&
+    isEraseBrushKey(liveStroke.brush, liveStroke.erase === true);
+  const hovering = !drawing && isEraseBrushKey(currentBrush);
+  if ((!erasing && !hovering) || playing || panDrag || spacePanDown) {
+    hideEraserCursorOverlay();
+    return;
   }
-
-  drawEraserTracePreview(targetCtx, {
-    brushSize: liveStroke?.size ?? currentSize,
-    points,
-  });
-  targetCtx.restore();
+  const areaRect = stageArea.getBoundingClientRect();
+  // canvas.offsetWidth is the CSS layout size before the zoom transform, so
+  // (offsetWidth / canvas.width) converts frame pixels to CSS pixels; the live
+  // viewport scale then accounts for zoom.
+  const cssPerFramePx = canvas.offsetWidth ? canvas.offsetWidth / canvas.width : 1;
+  const brushSize = liveStroke?.size ?? currentSize;
+  const diameter = 2 * eraserPreviewRadius(brushSize) * cssPerFramePx * viewport.scale;
+  eraserCursorEl.style.display = "block";
+  eraserCursorEl.style.width = `${diameter}px`;
+  eraserCursorEl.style.height = `${diameter}px`;
+  eraserCursorEl.style.left = `${clientX - areaRect.left}px`;
+  eraserCursorEl.style.top = `${clientY - areaRect.top}px`;
 }
 
 function drawMaskOverlay(targetCtx: CanvasRenderingContext2D) {
@@ -4043,8 +4142,12 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  if (currentBrush === MARQUEE_KEY && selectionState.mode === "object" &&
-      (selectionState.phase === "idle" || selectionState.phase === "transforming")) {
+  const showTransformHandles = currentBrush === MARQUEE_KEY && (
+    (selectionState.mode === "object" &&
+      (selectionState.phase === "idle" || selectionState.phase === "transforming")) ||
+    isManipulableRasterRegion(selectionState)
+  );
+  if (showTransformHandles) {
     const hs = transformHandleVisualHalfSize(viewport.scale);
     const corners = [
       { x: b.x, y: b.y }, { x: b.x + b.w, y: b.y },
@@ -4279,7 +4382,6 @@ function loop(now: number) {
     drawSelectionOverlay(ctx);
     drawScaleToolOverlay(ctx);
     drawStabilizerLeashOverlay(ctx);
-    drawEraserCursorOverlay(ctx);
 
     // Selected-text outline
     if (selectedText) {
@@ -4861,7 +4963,9 @@ function buildEditContext() {
     if (currentBrush === MARQUEE_KEY) {
       const hint = document.createElement("div");
       hint.className = "context-hint";
-      hint.textContent = "Drag to select. Shift constrains; Alt draws from center. Drag inside to move the boundary.";
+      hint.textContent = activeLayer()?.kind === "raster"
+        ? "Drag to select. Shift constrains; Alt draws from center. On raster layers, drag inside to move the selected pixels; handles scale/rotate; ⌥-drag moves just the boundary."
+        : "Drag to select. Shift constrains; Alt draws from center. Drag inside to move the boundary.";
       host.appendChild(hint);
     }
     if (selectionClipboard) {
@@ -4874,7 +4978,9 @@ function buildEditContext() {
   info.className = "context-hint";
   info.style.marginBottom = "8px";
   if (selectionState.mode === "region") {
-    info.textContent = `Region selection (${selectionState.tool}). Paint is clipped; drag inside to move the boundary.`;
+    info.textContent = isManipulableRasterRegion(selectionState)
+      ? `Region selection (${selectionState.tool}). Drag inside to move pixels; handles scale/rotate; ⌥-drag moves the boundary.`
+      : `Region selection (${selectionState.tool}). Paint is clipped; drag inside to move the boundary.`;
   } else {
     info.textContent = rasterMarqueeItems(selectionState.items).length > 0
       ? "Selected pixels. Drag to move; handles scale/rotate."

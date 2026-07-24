@@ -841,6 +841,17 @@
     #stage.select-cursor:active { cursor: grabbing; }
     #stage.marquee-cursor { cursor: crosshair; }
 
+    /* Eraser cursor ring — a DOM overlay that tracks the pointer directly via
+       pointermove, so it never lags behind the canvas render loop. Dual-tone
+       (light ring with a dark halo) to read on any background. */
+    .eraser-cursor {
+      position: absolute; display: none; box-sizing: border-box;
+      transform: translate(-50%, -50%); border-radius: 50%;
+      border: 1.5px solid rgba(255, 255, 255, .95);
+      box-shadow: 0 0 0 1.5px rgba(14, 14, 22, .6), inset 0 0 0 1.5px rgba(14, 14, 22, .6);
+      pointer-events: none; z-index: 3; will-change: left, top, width, height;
+    }
+
     /* Palette "+" — add a custom color */
     .swatch-add { background: var(--bg) !important; padding: 0;
       -webkit-appearance: none; appearance: none; }
