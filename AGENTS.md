@@ -83,3 +83,20 @@ locally at `public/ffmpeg/` (copied from `@ffmpeg/core` via
 ## What to do when unsure
 Flag it in your response with a short options list and a recommendation. Don't
 guess on anything touching determinism, the data model, or export output.
+
+## Cursor Cloud specific instructions
+- This is a vanilla TS + Vite web app. Standard commands live in `README.md` /
+  `CONTRIBUTING.md` / `package.json`: `npm run dev` (dev server on
+  http://localhost:5173), `npx tsc --noEmit` (typecheck), `npm run build`
+  (tsc + vite build), `npm test` (node:test runner).
+- The dev server sets COOP/COEP cross-origin-isolation headers (see
+  `vite.config.ts`); they are required for the ffmpeg.wasm MP4 export path.
+- 3 tests (`determinism`, `timelapse-render`, `tone-paint`) launch headless
+  Chromium via Playwright and will fail if the browser binary is missing. The
+  update script installs it; if tests error on a missing browser, run
+  `npx playwright install chromium --with-deps`.
+- `npm install` runs a `postinstall` (`scripts/copy-ffmpeg.mjs`) that copies the
+  ffmpeg core into `public/ffmpeg/` and verifies its SHA-256. This is required
+  before `npm run build` or the MP4 export will not load.
+- The Electron desktop shell (`npm run electron:dev`) targets macOS packaging
+  and needs a display; for cloud work, use the browser dev server instead.
