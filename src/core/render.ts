@@ -607,6 +607,15 @@ function drawLayerStack(
     const raw = drawLayerRaw(layer, li, tick, layerBudget, width, height, bg, opts, localMs, containerDurMs, wiggleFps, skipAnim, layers,
       (layer.clipToBelow && clipBase) ? clipBaseLayer : undefined);
     const ownAnim = skipAnim ? IDENTITY_LAYER_ANIM : computeLayerAnim(layer.animation, localMs, wiggleFps);
+    const fadeAlpha = skipAnim
+      ? 1
+      : computeAnim(
+          layer.fadeIn ? { kind: "fade", ...layer.fadeIn } : undefined,
+          layer.fadeOut ? { kind: "fade", ...layer.fadeOut } : undefined,
+          localMs,
+          containerDurMs,
+          wiggleFps
+        ).alpha;
     const preview = opts?.layerPreviewOffset?.layerId === layer.id
       ? opts.layerPreviewOffset
       : null;
@@ -616,13 +625,14 @@ function drawLayerStack(
     const finalAnim = layer.clipToBelow && clipBase
       ? composeLayerAnim(clipBase.transform, ownAnimWithPreview)
       : ownAnimWithPreview;
-    const needsCompose = !isIdentityLayerAnim(finalAnim) || layer.opacity !== 1;
+    const effectiveOpacity = layer.opacity * fadeAlpha;
+    const needsCompose = !isIdentityLayerAnim(finalAnim) || effectiveOpacity !== 1;
     let stamped: HTMLCanvasElement;
     if (layer.clipToBelow && clipBase) {
-      stamped = composeLayerCanvas(raw, finalAnim, width, height, layer.opacity);
+      stamped = composeLayerCanvas(raw, finalAnim, width, height, effectiveOpacity);
       maskLayerCanvas(stamped, clipBase.mask, width, height);
     } else if (needsCompose) {
-      stamped = composeLayerCanvas(raw, finalAnim, width, height, layer.opacity);
+      stamped = composeLayerCanvas(raw, finalAnim, width, height, effectiveOpacity);
     } else {
       stamped = raw;
     }

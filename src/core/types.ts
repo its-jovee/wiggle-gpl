@@ -45,6 +45,16 @@ export type AnimationSpec = {
 
 export const NONE_ANIM: AnimationSpec = { kind: "none", durationTicks: 4 };
 
+export type FadeSpec = {
+  durationTicks: number;
+  startTick?: number;
+};
+
+export type PanelTransition = {
+  kind: "crossfade";
+  durationTicks: number;
+};
+
 export type EasingKind = "linear" | "easeIn" | "easeOut" | "easeInOut";
 export type LayerLoopKind = "none" | "repeat" | "pingpong";
 
@@ -189,6 +199,10 @@ export type Layer = {
    *  the live pixels are held in `core/rasterStore.ts`, keyed by layer.id. */
   raster?: { data: string; width: number; height: number };
   clipToBelow?: boolean;
+  /** Independent opacity envelopes for a drawing/layer. These compose with
+   *  the layer's static opacity and transform animation at render time. */
+  fadeIn?: FadeSpec;
+  fadeOut?: FadeSpec;
   animation?: LayerAnimation;
   strokes: Stroke[];
   fills: Fill[];
@@ -293,6 +307,9 @@ export type Panel = {
   guides?: PerspectiveGuide[];
   enter?: AnimationSpec;
   exit?: AnimationSpec;
+  /** Overlap transition owned by this panel and leading into the next
+   *  expanded timeline entry. It does not change either panel's exposure. */
+  transitionToNext?: PanelTransition;
 };
 
 /** Contiguous run of panels played repeat times during sequence playback. */

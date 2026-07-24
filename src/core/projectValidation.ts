@@ -113,6 +113,11 @@ export function capProjectDrawingSettings(project: Project): void {
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
+  for (const [name, fade] of [["fadeIn", layer.fadeIn], ["fadeOut", layer.fadeOut]] as const) {
+    if (fade && (!Number.isFinite(fade.durationTicks) || fade.durationTicks < 1)) {
+      errors.push(`${path}: ${name} durationTicks must be a positive finite number`);
+    }
+  }
   if (layer.strokes.length > MAX_STROKES_PER_LAYER) {
     errors.push(`${path}: ${layer.strokes.length} strokes exceeds max ${MAX_STROKES_PER_LAYER}`);
   }
@@ -167,6 +172,11 @@ export function validateProject(project: Project): ProjectValidationResult {
     const panel = project.panels[pi];
     if (!Number.isFinite(panel.durationMs) || panel.durationMs < 1) {
       errors.push(`panel ${pi + 1}: durationMs must be a positive finite number`);
+    }
+    if (panel.transitionToNext &&
+        (!Number.isFinite(panel.transitionToNext.durationTicks) ||
+         panel.transitionToNext.durationTicks < 1)) {
+      errors.push(`panel ${pi + 1}: transition durationTicks must be a positive finite number`);
     }
     if (panel.annotation !== undefined &&
         (typeof panel.annotation !== "string" || panel.annotation.length > MAX_PANEL_ANNOTATION_CHARS)) {

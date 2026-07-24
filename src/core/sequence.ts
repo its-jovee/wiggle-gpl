@@ -23,6 +23,15 @@ export type SequencePosition = {
   entryIndex?: number;
 };
 
+export type SequenceTransitionPosition = SequencePosition & {
+  transition?: {
+    nextIndex: number;
+    nextEntryIndex: number;
+    progress: number;
+    durationMs: number;
+  };
+};
+
 /** Drop dangling ids, enforce contiguity, clamp repeat >= 1, one group per panel. */
 export function sanitizeGroups(project: Project): FrameGroup[] {
   if (!project.groups?.length) return [];
@@ -154,6 +163,40 @@ export function sequenceAtTime(project: Project, elapsedMs: number): SequencePos
     groupId: last?.groupId,
     iteration: last?.iteration,
     entryIndex: Math.max(0, entries.length - 1),
+  };
+}
+
+/**
+ * Resolve a panel overlap without changing sequence duration. Crossfades use
+ * the tail of the outgoing entry and the first visual state of the next entry.
+ * The final expanded entry never wraps to the first during one-shot export.
+ */
+export function sequenceTransitionAtTime(
+  project: Project,
+  elapsedMs: number
+): SequenceTransitionPosition {
+  const position = sequenceAtTime(project, elapsedMs);
+  const entries = expandTimeline(project);
+  const entryIndex = position.entryIndex ?? 0;
+  const entry = entries[entryIndex];
+  const next = entries[entryIndex + 1];
+  const panel = entry ? project.panels[entry.panelIndex] : undefined;
+  const transition = panel?.transitionToNext;
+  if (!entry || !next || !transition || transition.kind !== "crossfade") return position;
+
+  const requestedMs = (Math.max(1, transition.durationTicks) * 1000) / project.wiggleFps;
+  const durationMs = Math.min(entry.durationMs, requestedMs);
+  const startMs = entry.durationMs - durationMs;
+  if (position.localMs < startMs) return position;
+
+  return {
+    ...position,
+    transition: {
+      nextIndex: next.panelIndex,
+      nextEntryIndex: entryIndex + 1,
+      progress: Math.max(0, Math.min(1, (position.localMs - startMs) / durationMs)),
+      durationMs,
+    },
   };
 }
 

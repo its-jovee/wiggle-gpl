@@ -7,7 +7,7 @@
 
 import {
   Project, Stroke, Panel, Layer, Fill, SubPanel, TextElement, Vec2, SelectionShape,
-  AnimationSpec, AnimationKind, SubPanelShape, LayerAnimation,
+  AnimationSpec, AnimationKind, SubPanelShape, LayerAnimation, FadeSpec,
   EasingKind, LayerLoopKind, LayerAnimTransform, FrameGroup, BrushPreset,
   PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings, ToneStyle,
   newProject as createProject, newPanel, newLayer, newSubPanel, newPerspectiveGuide, migrateProject,
@@ -25,9 +25,10 @@ import {
   stampStrokeToCanvas,
   resetRenderCacheStats, computeTotalLength, trimFramePool, setAsyncRenderInvalidate,
 } from "./core/render";
+import { renderSequenceFrame } from "./core/sequenceRender";
 import {
   baseFrameCacheKey, editorPreviewPasses, panelHasPlaybackContinuity, shouldRefreshThumbnail,
-  shouldRenderIdleFrame, shouldRenderPlaybackFrame, timelapseProgressQuantized,
+  shouldRenderIdleFrame, shouldRenderPlaybackFrame,
 } from "./core/renderSchedule";
 import { drawTikTokOverlay } from "./core/tiktokOverlay";
 import { StudioIcons, type IconNode } from "./icons/studio";
@@ -47,7 +48,7 @@ import {
   addPanelToGroup, applySanitizedGroups, createFrameGroup, expandedDurationMs,
   findGroupForPanel, formatSequenceCounter, groupAtPanelIndex,
   groupsForProject, moveGroup, movePanelBlock, onPanelDeleted, onPanelDuplicated,
-  sequenceAtTime, setGroupRepeat, syncGroupPanelIds, ungroup,
+  sequenceTransitionAtTime, setGroupRepeat, syncGroupPanelIds, ungroup,
   type SequencePosition,
 } from "./core/sequence";
 import { AudioPreview } from "./core/audioPreview";
@@ -3636,7 +3637,7 @@ function loop(now: number) {
       playheadMs = e;
       lastPlaybackMs = e;
       const visualMs = Math.min(e, Math.max(0, projectVisualDuration() - 1));
-      const seqPos = sequenceAtTime(project, visualMs);
+      const seqPos = sequenceTransitionAtTime(project, visualMs);
       lastSequencePosition = seqPos;
       const { index, localMs } = seqPos;
       activePanelIndex = index;
@@ -3647,20 +3648,15 @@ function loop(now: number) {
         seqTick,
         lastPanelIndex: lastPlaybackRenderPanelIndex,
         lastSeqTick: lastPlaybackRenderSeqTick,
-        continuous: panelHasPlaybackContinuity(panel),
+        continuous: panelHasPlaybackContinuity(panel) || !!seqPos.transition,
       })) {
-        profileRender("playback-main", () => renderPanel(ctx, panel, seqTick, project.width, project.height, {
-          allPanels: project.panels,
-          timelapseProgress: panel.kind === "timelapse"
-            ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+        profileRender("playback-main", () => renderSequenceFrame(ctx, project, visualMs, {
           skipJitter: !jitterEnabled,
-          localMs,
-          wiggleFps: project.wiggleFps,
           overscan: { x: overscanX, y: overscanY },
           overscanDim: 1,
           renderCache: displayRenderCache,
           contentVersion: renderContentVersion,
-        }));
+        }, seqPos));
         drawTikTokOverlayInCanvasSpace();
         editorPreviewInvalidated = false;
         lastPlaybackRenderPanelIndex = index;
@@ -4707,6 +4703,12 @@ function buildPanelCell(
     tag.style.cssText = "font-size:9px;color:#a7f070;text-align:center;";
     cell.appendChild(tag);
   }
+  if (p.transitionToNext?.kind === "crossfade") {
+    const tag = document.createElement("div");
+    tag.textContent = `⇄ crossfade ${p.transitionToNext.durationTicks}fr`;
+    tag.style.cssText = "font-size:9px;color:#8fd3ff;text-align:center;";
+    cell.appendChild(tag);
+  }
 
   const exposure = document.createElement("div");
   exposure.className = "exposure-control";
@@ -4989,7 +4991,24 @@ function buildTimeline() {
   if (workspaceMode === "edit") { buildEditTimeline(tl); return; }
   if (timelineMode === "tracks") { buildTrackView(tl); return; }
 
-  // Draw mode — transport + filmstrip + onion skin, no tab row
+  // Draw mode — make the element timing tracks reachable from the filmstrip.
+  const tabRow = document.createElement("div");
+  tabRow.className = "timeline-tabs";
+  const panelsTab = document.createElement("button");
+  panelsTab.type = "button";
+  panelsTab.textContent = "Panels";
+  panelsTab.className = "timeline-tab active";
+  const tracksTab = document.createElement("button");
+  tracksTab.type = "button";
+  tracksTab.textContent = "Tracks";
+  tracksTab.className = "timeline-tab";
+  tracksTab.onclick = () => {
+    timelineMode = "tracks";
+    buildTimeline();
+  };
+  tabRow.append(panelsTab, tracksTab);
+  tl.appendChild(tabRow);
+
   tl.appendChild(buildTransportBar());
 
   // Filmstrip scroll area
@@ -5495,6 +5514,15 @@ function buildTrackView(tl: HTMLElement) {
   });
 
   panel.layers.forEach((l) => {
+    if (l.fadeIn || l.fadeOut) {
+      addRow(
+        `Layer fade: ${l.name}`,
+        () => l.fadeIn ? { kind: "fade", ...l.fadeIn } : undefined,
+        (a) => { l.fadeIn = { durationTicks: a.durationTicks, startTick: a.startTick }; commitHistory(); },
+        () => l.fadeOut ? { kind: "fade", ...l.fadeOut } : undefined,
+        (a) => { l.fadeOut = { durationTicks: a.durationTicks, startTick: a.startTick }; commitHistory(); },
+      );
+    }
     if (l.animation?.enabled) {
       const row = document.createElement("div");
       row.className = "track-row";
@@ -5535,7 +5563,7 @@ function buildTrackView(tl: HTMLElement) {
   const hasAny = (panel.enter && panel.enter.kind !== "none") ||
                  (panel.exit && panel.exit.kind !== "none") ||
                  (panel.subPanels ?? []).some(sp => (sp.enter?.kind ?? "none") !== "none" || (sp.exit?.kind ?? "none") !== "none") ||
-                 panel.layers.some(l => !!l.animation?.enabled) ||
+                 panel.layers.some(l => !!l.animation?.enabled || !!l.fadeIn || !!l.fadeOut) ||
                  panel.layers.some(l => (l.texts ?? []).some(t => (t.enter?.kind ?? "none") !== "none" || (t.exit?.kind ?? "none") !== "none"));
   if (!hasAny) {
     const hint = document.createElement("div");
@@ -6609,8 +6637,38 @@ function appendSubPanelInspector(host: HTMLElement, sp: SubPanel) {
 
 function appendPanelAnimInspector(host: HTMLElement, p: Panel) {
   appendColorRow(host, "Background", () => p.bg, (c) => { p.bg = c; });
+  const fadeShortcuts = document.createElement("div");
+  fadeShortcuts.className = "inspector-buttons";
+  const fadeTicks = () => Math.max(1, Math.min(
+    4,
+    Math.round((p.durationMs / 1000) * project.wiggleFps / 2)
+  ));
+  const shortcut = (label: string, action: () => void) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cellbtn";
+    button.textContent = label;
+    button.onclick = action;
+    fadeShortcuts.appendChild(button);
+  };
+  shortcut("Fade in", () => {
+    p.enter = { kind: "fade", durationTicks: fadeTicks() };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  shortcut("Fade out", () => {
+    p.exit = { kind: "fade", durationTicks: fadeTicks() };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  shortcut("Fade both", () => {
+    const durationTicks = fadeTicks();
+    p.enter = { kind: "fade", durationTicks };
+    p.exit = { kind: "fade", durationTicks };
+    commitHistory(); buildTimeline(); buildInspector();
+  });
+  host.appendChild(fadeShortcuts);
   appendAnimPicker(host, "Panel Enter", () => p.enter, (a) => { p.enter = a; commitHistory(); buildTimeline(); });
   appendAnimPicker(host, "Panel Exit",  () => p.exit,  (a) => { p.exit  = a; commitHistory(); buildTimeline(); });
+  appendPanelTransitionPicker(host, p);
 }
 
 function appendLayerInspector(host: HTMLElement, layer: Layer) {
@@ -6633,6 +6691,17 @@ function appendLayerInspector(host: HTMLElement, layer: Layer) {
     wrap.appendChild(child);
     section.appendChild(wrap);
   };
+
+  appendFadePicker(section, "Fade in", () => layer.fadeIn, (fade) => {
+    layer.fadeIn = fade;
+    commitHistory();
+    buildTimeline();
+  });
+  appendFadePicker(section, "Fade out", () => layer.fadeOut, (fade) => {
+    layer.fadeOut = fade;
+    commitHistory();
+    buildTimeline();
+  });
 
   if (layer.kind === "tone" && layer.tone) {
     const tone = layer.tone;
@@ -7007,6 +7076,101 @@ function appendAnimPicker(
     write({ kind, durationTicks: Math.max(1, +ticks.value || 4) });
   };
   wrap.appendChild(sel); wrap.appendChild(ticks);
+  host.appendChild(wrap);
+}
+
+function appendFadePicker(
+  host: HTMLElement,
+  label: string,
+  read: () => FadeSpec | undefined,
+  write: (fade: FadeSpec | undefined) => void
+) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:grid;grid-template-columns:80px 1fr 1fr;gap:4px;align-items:center;margin-top:4px;";
+  const lab = document.createElement("span");
+  lab.textContent = label;
+  lab.style.cssText = "font-size:11px;color:var(--dim);";
+  wrap.appendChild(lab);
+
+  const current = read();
+  const mode = document.createElement("select");
+  for (const [value, text] of [["none", "Off"], ["fade", "Fade"]] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = value === (current ? "fade" : "none");
+    mode.appendChild(option);
+  }
+
+  const ticks = document.createElement("input");
+  ticks.type = "number";
+  ticks.min = "1";
+  ticks.max = "32";
+  ticks.step = "1";
+  ticks.value = String(current?.durationTicks ?? 4);
+  ticks.title = "Duration in animation frames";
+  ticks.setAttribute("aria-label", `${label} duration in frames`);
+  ticks.disabled = !current;
+  ticks.style.cssText = "width:100%;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:2px;font-size:11px;";
+
+  mode.onchange = () => {
+    ticks.disabled = mode.value === "none";
+    write(mode.value === "none"
+      ? undefined
+      : { durationTicks: Math.max(1, +ticks.value || 4) });
+  };
+  ticks.onchange = () => {
+    if (mode.value === "none") return;
+    write({
+      durationTicks: Math.max(1, +ticks.value || 4),
+      startTick: read()?.startTick,
+    });
+  };
+  wrap.append(mode, ticks);
+  host.appendChild(wrap);
+}
+
+function appendPanelTransitionPicker(host: HTMLElement, panel: Panel) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:grid;grid-template-columns:80px 1fr 1fr;gap:4px;align-items:center;margin-top:4px;";
+  const label = document.createElement("span");
+  label.textContent = "To next";
+  label.style.cssText = "font-size:11px;color:var(--dim);";
+
+  const mode = document.createElement("select");
+  const cut = document.createElement("option");
+  cut.value = "cut";
+  cut.textContent = "Cut";
+  const crossfade = document.createElement("option");
+  crossfade.value = "crossfade";
+  crossfade.textContent = "Crossfade";
+  mode.append(cut, crossfade);
+  mode.value = panel.transitionToNext?.kind ?? "cut";
+  mode.disabled = project.panels.length < 2;
+  mode.title = mode.disabled ? "Add another panel to create a transition" : "Blend this panel into the next timeline frame";
+
+  const ticks = document.createElement("input");
+  ticks.type = "number";
+  ticks.min = "1";
+  ticks.max = "32";
+  ticks.step = "1";
+  ticks.value = String(panel.transitionToNext?.durationTicks ?? 4);
+  ticks.disabled = mode.disabled || mode.value === "cut";
+  ticks.title = "Crossfade duration in animation frames";
+  ticks.setAttribute("aria-label", "Crossfade duration in frames");
+  ticks.style.cssText = "width:100%;background:#0e0e16;color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:2px;font-size:11px;";
+
+  const commit = () => {
+    panel.transitionToNext = mode.value === "crossfade"
+      ? { kind: "crossfade", durationTicks: Math.max(1, +ticks.value || 4) }
+      : undefined;
+    ticks.disabled = mode.disabled || mode.value === "cut";
+    commitHistory();
+    buildTimeline();
+  };
+  mode.onchange = commit;
+  ticks.onchange = commit;
+  wrap.append(label, mode, ticks);
   host.appendChild(wrap);
 }
 

@@ -11,8 +11,9 @@
 
 import { Project } from "./types";
 import { renderPanel, clearTimelapseCache } from "./render";
+import { renderSequenceFrame } from "./sequenceRender";
 import { timelapseProgressQuantized } from "./renderSchedule";
-import { expandedDurationMs, sequenceAtTime } from "./sequence";
+import { expandedDurationMs } from "./sequence";
 import { buildAudioExportPlan, totalAudioDuration } from "./audioTimeline";
 import { audioBridge } from "./electronAudio";
 import {
@@ -86,15 +87,7 @@ export async function exportWebM(
         }
         const elapsed = performance.now() - start;
         if (elapsed >= totalMs) { rec.stop(); return; }
-        const { index, localMs } = sequenceAtTime(project, elapsed);
-        const panel = project.panels[index];
-        const tick = Math.floor((localMs / 1000) * project.wiggleFps);
-        renderPanel(ctx, panel, tick, project.width, project.height, {
-          allPanels: project.panels,
-          timelapseProgress: panel.kind === "timelapse"
-            ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
-          localMs,
-          wiggleFps: project.wiggleFps,
+        renderSequenceFrame(ctx, project, elapsed, {
           contentVersion,
           skipJitter: renderOpts?.skipJitter ?? false,
         });
@@ -145,21 +138,24 @@ export async function exportMP4(
       if (opts?.shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
       const elapsedMs = (f / exportFps) * 1000;
       const visualElapsedMs = Math.min(elapsedMs, Math.max(0, visualMs - 1));
-      const { index, localMs } = panel
-        ? { index: opts!.panelIndex!, localMs: visualElapsedMs }
-        : sequenceAtTime(project, visualElapsedMs);
-      const framePanel = project.panels[index];
-      // Deterministic tick: derived purely from time, never from a wall clock.
-      const tick = Math.floor((localMs / 1000) * project.wiggleFps);
-      renderPanel(ctx, framePanel, tick, project.width, project.height, {
-        allPanels: project.panels,
-        timelapseProgress: framePanel.kind === "timelapse"
-          ? timelapseProgressQuantized(localMs, framePanel.durationMs, project.wiggleFps) : undefined,
-        localMs,
-        wiggleFps: project.wiggleFps,
-        contentVersion,
-        skipJitter: opts?.skipJitter ?? false,
-      });
+      if (panel) {
+        const localMs = visualElapsedMs;
+        const tick = Math.floor((localMs / 1000) * project.wiggleFps);
+        renderPanel(ctx, panel, tick, project.width, project.height, {
+          allPanels: project.panels,
+          timelapseProgress: panel.kind === "timelapse"
+            ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+          localMs,
+          wiggleFps: project.wiggleFps,
+          contentVersion,
+          skipJitter: opts?.skipJitter ?? false,
+        });
+      } else {
+        renderSequenceFrame(ctx, project, visualElapsedMs, {
+          contentVersion,
+          skipJitter: opts?.skipJitter ?? false,
+        });
+      }
 
       const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/png"));
       const name = `frame${String(f).padStart(5, "0")}.png`;
