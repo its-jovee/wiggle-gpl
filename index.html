@@ -2122,6 +2122,9 @@
       min-height: 72px;
       max-width: calc(100vw - 16px);
       max-height: calc(100vh - 60px);
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
       cursor: default;
     }
     .workspace-panel:focus-visible {
@@ -2144,12 +2147,32 @@
       max-height: calc(100vh - 68px);
       padding: 8px 12px 12px; overflow: auto; background: rgba(255, 253, 249, .96);
     }
-    /* Layers/inspector grows with Layer Animation — no inner scrollbar. */
+    /* Keep long layer stacks inside the viewport instead of letting the
+       floating inspector disappear below it. */
     .right-sidebar.inspector-group[data-workspace-panel="inspector"] {
-      max-height: none;
+      max-height: calc(100vh - 68px);
       height: auto;
-      overflow: visible;
+      overflow: auto;
       resize: horizontal;
+    }
+
+    /* Shared resize seams appear when two floating panels meet. They are
+       deliberately quiet until hovered so the canvas remains visually primary. */
+    .workspace-panel-divider {
+      position: fixed;
+      z-index: calc(var(--z-sticky) + 1000);
+      border-radius: 999px;
+      background: transparent;
+      touch-action: none;
+      transition: background var(--dur-fast) var(--ease-standard),
+        box-shadow var(--dur-fast) var(--ease-standard);
+    }
+    .workspace-panel-divider.vertical { width: 10px; cursor: col-resize; }
+    .workspace-panel-divider.horizontal { height: 10px; cursor: row-resize; }
+    .workspace-panel-divider:hover,
+    .workspace-panel-divider.is-resizing {
+      background: color-mix(in srgb, var(--accent) 40%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
     }
     #timeline-region { min-height: 0; flex: 1; display: flex; flex-direction: column; }
     #timeline-region > summary { flex: 0 0 auto; padding: 2px 2px 8px; }
@@ -2380,7 +2403,8 @@
     }
     .palettes-group:not(:has(> .inspector-module[open])) {
       min-height: 0;
-      height: auto;
+      height: auto !important;
+      max-height: none !important;
       padding: 8px 12px;
       overflow: hidden;
       resize: none;
@@ -2847,8 +2871,8 @@
         max-height: calc(100vh - 68px);
       }
       .right-sidebar.inspector-group[data-workspace-panel="inspector"] {
-        max-height: none;
-        overflow: visible;
+        max-height: calc(100vh - 68px);
+        overflow: auto;
       }
     }
     @media (max-width: 560px) {
@@ -3237,11 +3261,14 @@
                 <option value="radial">Radial</option>
               </select>
             </label>
-            <label class="control-row" for="gradient-end-color">
-              <span>End color</span>
-              <input id="gradient-end-color" type="color" value="#ffffff" />
-            </label>
-            <p class="control-note">The start color is the current palette color. End color is ignored for manga-tone density fades.</p>
+            <div class="color-row">
+              <label class="color-row-label" for="gradient-end-color">End color</label>
+              <div class="color-row-right">
+                <input id="gradient-end-color" type="color" value="#ffffff" />
+                <div id="gradient-end-swatches" class="color-row-swatches" aria-label="Current palette gradient end colors"></div>
+              </div>
+            </div>
+            <p class="control-note">The start color is the current palette color. Manga-tone gradients use the drag to fade texture density.</p>
           </div>
         </details>
 

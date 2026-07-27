@@ -103,23 +103,9 @@ export const PEN_STARTUP_FALLBACK_PRESSURE = 0.25;
 const MIN_REAL_PRESSURE = 0.01;
 
 /** Spec default for devices that don't report pressure — also what Chromium
- *  emits when a stylus stream has been demoted to mouse. */
+ *  commonly emits when a stylus stream has been demoted to mouse. */
 export function isBrowserDefaultPressure(e: PointerPressureInput): boolean {
   return Math.abs(e.pressure - 0.5) < 1e-6;
-}
-
-function hasPenTilt(e: PointerPressureInput): boolean {
-  return (e.tiltX ?? 0) !== 0 || (e.tiltY ?? 0) !== 0;
-}
-
-/**
- * True when this sample looks like a wedged/demoted stylus reading rather than
- * intentional half-pressure. Exact 0.5 with zero tilt is the common Chromium
- * artifact after wheel/keyboard interrupts.
- */
-export function isSuspiciousPenPressure(e: PointerPressureInput): boolean {
-  if (!isBrowserDefaultPressure(e)) return false;
-  return !hasPenTilt(e);
 }
 
 export function readPointerPressure(
@@ -134,18 +120,22 @@ export function readPointerPressure(
 
   if (e.pointerType === "mouse") {
     // After wheel/undo the tablet often keeps delivering mouse events with the
-    // browser default half-pressure. Prefer the last real pen value until the
-    // driver resumes reporting `pointerType: "pen"`.
+    // browser default half-pressure. Some tablet drivers retain their varying
+    // pressure values even while mislabelling the stream as mouse, so preserve
+    // those real values and use the fallback only for the exact spec default.
     if (options.recovery) {
+      if (e.pressure > 0 && !isBrowserDefaultPressure(e)) {
+        return { pressure: Math.max(MIN_REAL_PRESSURE, Math.min(1, e.pressure)), real: true };
+      }
       return { pressure: fallback, real: false };
     }
     return { pressure: 1, real: true };
   }
 
   if (e.pressure > 0) {
-    if (options.recovery && isSuspiciousPenPressure(e)) {
-      return { pressure: fallback, real: false };
-    }
+    // A real pen stream is authoritative. In particular, 0.5 is a perfectly
+    // valid user pressure; treating it as synthetic freezes sensitivity after
+    // an interrupt on tablets that do not report tilt.
     return { pressure: Math.max(MIN_REAL_PRESSURE, Math.min(1, e.pressure)), real: true };
   }
 

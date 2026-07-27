@@ -61,14 +61,14 @@ test("pen default half-pressure is trusted outside recovery", () => {
   );
 });
 
-test("pen default half-pressure without tilt is synthetic during recovery", () => {
+test("pen default half-pressure stays sensitive during recovery", () => {
   assert.deepEqual(
     input.readPointerPressure(
       { pointerType: "pen", pressure: 0.5, buttons: 1, tiltX: 0, tiltY: 0 },
       true,
       { recovery: true, fallbackPressure: 0.7 }
     ),
-    { pressure: 0.7, real: false }
+    { pressure: 0.5, real: true }
   );
 });
 
@@ -80,6 +80,17 @@ test("pen half-pressure with tilt stays real during recovery", () => {
       { recovery: true, fallbackPressure: 0.7 }
     ),
     { pressure: 0.5, real: true }
+  );
+});
+
+test("demoted mouse stream keeps varying tablet pressure during recovery", () => {
+  assert.deepEqual(
+    input.readPointerPressure(
+      { pointerType: "mouse", pressure: 0.18, buttons: 1 },
+      true,
+      { recovery: true, fallbackPressure: 0.7 }
+    ),
+    { pressure: 0.18, real: true }
   );
 });
 

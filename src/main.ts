@@ -4066,7 +4066,8 @@ canvas.addEventListener("pointerdown", (e) => {
   // strokes directly (they commit through the normal liveStroke path — the
   // tone pattern is revealed by the mask at render time).
   const paintableTone = layer.kind === "tone" && layer.tone?.coverage === "painted";
-  if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone) {
+  const gradientTone = currentBrush === GRADIENT_KEY && layer.kind === "tone";
+  if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone && !gradientTone) {
     const c = activeContainer();
     const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible);
     if (idx < 0) return;
@@ -4150,9 +4151,9 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
 
-  // Undo/redo may have cancelled a stroke while this tip was still down —
-  // wait for a fresh press before painting again.
-  if (suppressStrokeUntilPointerUp === e.pointerId) return;
+  // Undo/redo may have cancelled the previous contact without Chromium ever
+  // delivering its pointerup. A new pointerdown is itself proof of a fresh
+  // contact, even when tablet drivers reuse the same pointer id.
   if (suppressStrokeUntilPointerUp !== null) suppressStrokeUntilPointerUp = null;
 
   drawing = true;
@@ -6056,10 +6057,10 @@ function buildBrushBar() {
   insertTools.innerHTML = "";
   brushBar.innerHTML = "";
   if (recentHost) recentHost.innerHTML = "";
-  const exitToneTool = () => {
+  const exitToneTool = (restorePreviousLayer = true) => {
     if (!toneToolActive) return;
     const cont = activeContainer();
-    if (toneToolPrevLayerIndex !== null && toneToolPrevLayerIndex < cont.layers.length) {
+    if (restorePreviousLayer && toneToolPrevLayerIndex !== null && toneToolPrevLayerIndex < cont.layers.length) {
       cont.setActiveLayerIndex(toneToolPrevLayerIndex);
     }
     toneToolActive = false;
@@ -6067,12 +6068,15 @@ function buildBrushBar() {
   };
   const switchTo = (k: string) => {
     const hadTone = toneToolActive;
-    exitToneTool();
+    // Gradient is a valid tone-layer operation. Keep the Tone shortcut's
+    // active layer selected instead of restoring the prior draw layer.
+    exitToneTool(k !== GRADIENT_KEY);
     if (TOOL_KEYS.has(k)) {
       currentBrush = k;
     } else {
       selectBrushKey(k);
     }
+    rememberRecentTool(k);
     selectDrag = null;
     if (scaleToolDrag) {
       for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
@@ -6774,7 +6778,33 @@ function buildPalette() {
     rebuildInspector();
   };
   bar.appendChild(add);
+  buildGradientEndPalette();
   syncPaletteTriangle();
+}
+
+/** Keep the Gradient tool's second color tied to the current palette. This is
+ *  transient tool state; project history changes only when a drag commits. */
+function buildGradientEndPalette() {
+  const host = document.getElementById("gradient-end-swatches");
+  const input = document.getElementById("gradient-end-color") as HTMLInputElement | null;
+  if (!host || !input) return;
+  input.value = currentGradientEndColor;
+  host.replaceChildren();
+  for (const color of currentPalette.colors) {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "mini-swatch" +
+      (color.toLowerCase() === currentGradientEndColor.toLowerCase() ? " active" : "");
+    swatch.style.background = color;
+    swatch.title = color;
+    swatch.setAttribute("aria-label", `Gradient end color ${color}`);
+    swatch.onclick = () => {
+      currentGradientEndColor = color;
+      input.value = color;
+      buildGradientEndPalette();
+    };
+    host.appendChild(swatch);
+  }
 }
 
 let paletteTriangle: ColorTriangleHandle | null = null;
@@ -11246,6 +11276,7 @@ function buildFontPicker() {
 };
 ($("gradient-end-color") as HTMLInputElement).oninput = (e) => {
   currentGradientEndColor = (e.target as HTMLInputElement).value;
+  buildGradientEndPalette();
 };
 
 // ---- palette UX -----------------------------------------------------------
@@ -12761,6 +12792,7 @@ function setWorkspacePanelVisible(id: ViewChromePanel, visible: boolean) {
     document.querySelectorAll<HTMLElement>(`.inspector-module-panel[data-inspector-group="${id === "inspector" ? "main" : id}"]`)
       .forEach((floater) => { floater.hidden = !visible; });
   }
+  refreshWorkspacePanelDividers();
 }
 
 function viewMenuCheck(
@@ -13334,6 +13366,12 @@ window.addEventListener("keyup", (e) => {
 const workspacePanels: HTMLElement[] = [];
 const workspacePanelStack: HTMLElement[] = [];
 const workspaceDockTop = 52;
+const workspacePanelMargin = 8;
+const workspacePanelGap = 4;
+let workspacePanelDividers: HTMLElement[] = [];
+let workspaceDividerResizing = false;
+let workspacePanelResizeObserver: ResizeObserver | null = null;
+let workspacePanelSettleQueued = false;
 const workspaceDragBlockers = [
   "button", "input", "select", "textarea", "a", "summary", "label", "canvas",
   "[contenteditable]", "[role='button']", "[role='slider']", "[draggable='true']",
@@ -13353,6 +13391,269 @@ function raiseWorkspacePanel(panel: HTMLElement) {
   refreshWorkspacePanelLayers();
 }
 
+function floatingWorkspacePanels() {
+  return workspacePanels.filter((panel) => !panel.hidden
+    && !(panel.classList.contains("timeline-panel") && !panel.classList.contains("is-floating")));
+}
+
+function workspacePanelMinWidth(panel: HTMLElement) {
+  return panel.classList.contains("toolbox-panel") ? 52 : 196;
+}
+
+function workspacePanelMinHeight(panel: HTMLElement) {
+  return panel.querySelector(":scope > .inspector-module[open]") ? 72 : 40;
+}
+
+function overlapLength(startA: number, endA: number, startB: number, endB: number) {
+  return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+}
+
+function workspacePanelsOverlap(a: HTMLElement, b: HTMLElement) {
+  const ar = a.getBoundingClientRect();
+  const br = b.getBoundingClientRect();
+  return overlapLength(ar.left, ar.right, br.left, br.right) > 1
+    && overlapLength(ar.top, ar.bottom, br.top, br.bottom) > 1;
+}
+
+function workspacePanelsShareLane(a: HTMLElement, b: HTMLElement) {
+  const ar = a.getBoundingClientRect();
+  const br = b.getBoundingClientRect();
+  return Math.abs(ar.left - br.left) <= 12
+    && overlapLength(ar.left, ar.right, br.left, br.right) >= 32;
+}
+
+/** Turn each intersecting cluster into a shared vertical lane. Every member
+ * competes for the available viewport height and scrolls internally, rather
+ * than sitting over another panel's controls. */
+function settleWorkspacePanelIntersections() {
+  const panels = floatingWorkspacePanels();
+  const toolbox = panels.find((panel) => panel.classList.contains("toolbox-panel"));
+  let laneMinLeft = workspacePanelMargin;
+  if (toolbox) {
+    const rail = toolbox.getBoundingClientRect();
+    laneMinLeft = Math.max(rail.right, rail.left + workspacePanelMinWidth(toolbox))
+      + workspacePanelGap;
+    for (const panel of panels) {
+      if (panel === toolbox || !workspacePanelsOverlap(panel, toolbox)) continue;
+      const rect = panel.getBoundingClientRect();
+      const nextLeft = laneMinLeft;
+      if (nextLeft + rect.width <= window.innerWidth - workspacePanelMargin) {
+        panel.style.left = `${nextLeft}px`;
+        panel.style.right = "auto";
+      }
+    }
+  }
+
+  const candidates = panels.filter((panel) => panel !== toolbox);
+  const unseen = new Set(candidates);
+  while (unseen.size) {
+    const seed = unseen.values().next().value as HTMLElement;
+    unseen.delete(seed);
+    const component = [seed];
+    for (let i = 0; i < component.length; i++) {
+      for (const candidate of [...unseen]) {
+        if (!workspacePanelsOverlap(component[i], candidate)
+          && !workspacePanelsShareLane(component[i], candidate)) continue;
+        unseen.delete(candidate);
+        component.push(candidate);
+      }
+    }
+    if (component.length < 2) continue;
+
+    component.sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return ar.top - br.top || ar.left - br.left;
+    });
+    const rects = component.map((panel) => panel.getBoundingClientRect());
+    const laneLeft = Math.max(laneMinLeft, Math.min(...rects.map((rect) => rect.left)));
+    const laneTop = Math.max(workspaceDockTop, Math.min(...rects.map((rect) => rect.top)));
+    const laneWidth = Math.min(
+      Math.max(...rects.map((rect) => rect.width)),
+      window.innerWidth - workspacePanelMargin - laneLeft,
+    );
+    const usableHeight = window.innerHeight - workspacePanelMargin - laneTop
+      - workspacePanelGap * (component.length - 1);
+    const minimums = component.map(workspacePanelMinHeight);
+    const minimumTotal = minimums.reduce((sum, height) => sum + height, 0);
+    if (laneWidth < Math.max(...component.map(workspacePanelMinWidth)) || usableHeight < minimumTotal) {
+      continue;
+    }
+    const desiredExtras = rects.map((rect, i) => Math.max(0, rect.height - minimums[i]));
+    const desiredExtraTotal = desiredExtras.reduce((sum, height) => sum + height, 0);
+    const availableExtra = usableHeight - minimumTotal;
+    let top = laneTop;
+    component.forEach((panel, i) => {
+      const proportionalExtra = desiredExtraTotal > 0
+        ? availableExtra * desiredExtras[i] / desiredExtraTotal
+        : availableExtra / component.length;
+      const height = minimums[i] + proportionalExtra;
+      panel.style.left = `${laneLeft}px`;
+      panel.style.right = "auto";
+      panel.style.top = `${top}px`;
+      panel.style.bottom = "auto";
+      panel.style.width = `${laneWidth}px`;
+      panel.style.height = `${height}px`;
+      top += height + workspacePanelGap;
+    });
+  }
+  refreshWorkspacePanelDividers();
+}
+
+function clearWorkspacePanelDividers() {
+  workspacePanelDividers.forEach((divider) => divider.remove());
+  workspacePanelDividers = [];
+}
+
+function attachWorkspacePanelDivider(
+  orientation: "vertical" | "horizontal",
+  first: HTMLElement,
+  second: HTMLElement,
+  start: number,
+  end: number,
+  boundary: number,
+) {
+  const divider = document.createElement("div");
+  divider.className = `workspace-panel-divider ${orientation}`;
+  divider.setAttribute("role", "separator");
+  divider.setAttribute("aria-orientation", orientation);
+  divider.setAttribute("aria-valuenow", String(Math.round(boundary)));
+  divider.tabIndex = 0;
+  if (orientation === "vertical") {
+    divider.style.left = `${boundary - 5}px`;
+    divider.style.top = `${start}px`;
+    divider.style.height = `${end - start}px`;
+  } else {
+    divider.style.left = `${start}px`;
+    divider.style.top = `${boundary - 5}px`;
+    divider.style.width = `${end - start}px`;
+  }
+  divider.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    workspaceDividerResizing = true;
+    divider.classList.add("is-resizing");
+    divider.setPointerCapture(event.pointerId);
+    const firstRect = first.getBoundingClientRect();
+    const secondRect = second.getBoundingClientRect();
+    const minFirst = orientation === "vertical"
+      ? workspacePanelMinWidth(first) : workspacePanelMinHeight(first);
+    const minSecond = orientation === "vertical"
+      ? workspacePanelMinWidth(second) : workspacePanelMinHeight(second);
+    const outerStart = orientation === "vertical" ? firstRect.left : firstRect.top;
+    const outerEnd = orientation === "vertical" ? secondRect.right : secondRect.bottom;
+    const move = (next: PointerEvent) => {
+      const pointer = orientation === "vertical" ? next.clientX : next.clientY;
+      const split = Math.max(outerStart + minFirst + workspacePanelGap / 2,
+        Math.min(outerEnd - minSecond - workspacePanelGap / 2, pointer));
+      if (orientation === "vertical") {
+        first.style.width = `${split - workspacePanelGap / 2 - outerStart}px`;
+        second.style.left = `${split + workspacePanelGap / 2}px`;
+        second.style.right = "auto";
+        second.style.width = `${outerEnd - split - workspacePanelGap / 2}px`;
+      } else {
+        first.style.height = `${split - workspacePanelGap / 2 - outerStart}px`;
+        second.style.top = `${split + workspacePanelGap / 2}px`;
+        second.style.bottom = "auto";
+        second.style.height = `${outerEnd - split - workspacePanelGap / 2}px`;
+      }
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      workspaceDividerResizing = false;
+      refreshWorkspacePanelDividers();
+      fitViewport();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  });
+  divider.addEventListener("keydown", (event) => {
+    const backward = orientation === "vertical" ? event.key === "ArrowLeft" : event.key === "ArrowUp";
+    const forward = orientation === "vertical" ? event.key === "ArrowRight" : event.key === "ArrowDown";
+    if (!backward && !forward) return;
+    event.preventDefault();
+    workspaceDividerResizing = true;
+    const amount = (event.shiftKey ? 24 : 8) * (backward ? -1 : 1);
+    const firstRect = first.getBoundingClientRect();
+    const secondRect = second.getBoundingClientRect();
+    if (orientation === "vertical") {
+      const boundary = firstRect.right + workspacePanelGap / 2 + amount;
+      const min = firstRect.left + workspacePanelMinWidth(first) + workspacePanelGap / 2;
+      const max = secondRect.right - workspacePanelMinWidth(second) - workspacePanelGap / 2;
+      const split = Math.max(min, Math.min(max, boundary));
+      first.style.width = `${split - workspacePanelGap / 2 - firstRect.left}px`;
+      second.style.left = `${split + workspacePanelGap / 2}px`;
+      second.style.right = "auto";
+      second.style.width = `${secondRect.right - split - workspacePanelGap / 2}px`;
+      divider.style.left = `${split - 5}px`;
+      divider.setAttribute("aria-valuenow", String(Math.round(split)));
+    } else {
+      const boundary = firstRect.bottom + workspacePanelGap / 2 + amount;
+      const min = firstRect.top + workspacePanelMinHeight(first) + workspacePanelGap / 2;
+      const max = secondRect.bottom - workspacePanelMinHeight(second) - workspacePanelGap / 2;
+      const split = Math.max(min, Math.min(max, boundary));
+      first.style.height = `${split - workspacePanelGap / 2 - firstRect.top}px`;
+      second.style.top = `${split + workspacePanelGap / 2}px`;
+      second.style.bottom = "auto";
+      second.style.height = `${secondRect.bottom - split - workspacePanelGap / 2}px`;
+      divider.style.top = `${split - 5}px`;
+      divider.setAttribute("aria-valuenow", String(Math.round(split)));
+    }
+    fitViewport();
+  });
+  const finishKeyboardResize = () => {
+    if (!workspaceDividerResizing) return;
+    workspaceDividerResizing = false;
+    refreshWorkspacePanelDividers();
+  };
+  divider.addEventListener("keyup", finishKeyboardResize);
+  divider.addEventListener("blur", finishKeyboardResize);
+  document.body.appendChild(divider);
+  workspacePanelDividers.push(divider);
+}
+
+/** Add a hoverable shared seam wherever non-overlapping panels meet. */
+function refreshWorkspacePanelDividers() {
+  if (workspaceDividerResizing) return;
+  clearWorkspacePanelDividers();
+  const panels = floatingWorkspacePanels();
+  for (let i = 0; i < panels.length; i++) {
+    for (let j = i + 1; j < panels.length; j++) {
+      const a = panels[i];
+      const b = panels[j];
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      const verticalOverlap = overlapLength(ar.top, ar.bottom, br.top, br.bottom);
+      const horizontalOverlap = overlapLength(ar.left, ar.right, br.left, br.right);
+      if (verticalOverlap >= 32) {
+        const left = ar.left <= br.left ? a : b;
+        const right = left === a ? b : a;
+        const lr = left.getBoundingClientRect();
+        const rr = right.getBoundingClientRect();
+        if (Math.abs(rr.left - lr.right - workspacePanelGap) <= 2) {
+          attachWorkspacePanelDivider("vertical", left, right,
+            Math.max(lr.top, rr.top), Math.min(lr.bottom, rr.bottom),
+            (lr.right + rr.left) / 2);
+        }
+      }
+      if (horizontalOverlap >= 32) {
+        const top = ar.top <= br.top ? a : b;
+        const bottom = top === a ? b : a;
+        const tr = top.getBoundingClientRect();
+        const dr = bottom.getBoundingClientRect();
+        if (Math.abs(dr.top - tr.bottom - workspacePanelGap) <= 2) {
+          attachWorkspacePanelDivider("horizontal", top, bottom,
+            Math.max(tr.left, dr.left), Math.min(tr.right, dr.right),
+            (tr.bottom + dr.top) / 2);
+        }
+      }
+    }
+  }
+}
+
 function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   if (panel.classList.contains("timeline-panel") && !panel.classList.contains("is-floating")) {
     syncTimelineDock();
@@ -13367,6 +13668,7 @@ function moveWorkspacePanel(panel: HTMLElement, left: number, top: number) {
   panel.style.right = "auto";
   panel.style.top = `${Math.max(minTop, Math.min(maxTop, top))}px`;
   panel.style.bottom = "auto";
+  refreshWorkspacePanelDividers();
 }
 
 function isWorkspacePanelDragSurface(panel: HTMLElement, event: PointerEvent) {
@@ -13383,6 +13685,7 @@ function registerWorkspacePanel(panel: HTMLElement) {
   workspacePanels.push(panel);
   workspacePanelStack.push(panel);
   refreshWorkspacePanelLayers();
+  workspacePanelResizeObserver?.observe(panel);
 
   panel.addEventListener("pointerdown", (event) => {
     raiseWorkspacePanel(panel);
@@ -13414,7 +13717,10 @@ function registerWorkspacePanel(panel: HTMLElement) {
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       if (joinableModule && acceptedDrop) joinInspectorModule(joinableModule, acceptedDrop);
-      else fitViewport();
+      else {
+        settleWorkspacePanelIntersections();
+        fitViewport();
+      }
     };
     const up = () => finish(false);
     const cancel = () => finish(true);
@@ -13434,20 +13740,37 @@ function registerWorkspacePanel(panel: HTMLElement) {
     const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
     raiseWorkspacePanel(panel);
     moveWorkspacePanel(panel, rect.left + dx, rect.top + dy);
+    settleWorkspacePanelIntersections();
+  });
+
+  panel.addEventListener("pointerdown", (event) => {
+    const rect = panel.getBoundingClientRect();
+    const onNativeResizeEdge = event.clientX >= rect.right - 14 || event.clientY >= rect.bottom - 14;
+    if (!onNativeResizeEdge) return;
+    const finishResize = () => {
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+      settleWorkspacePanelIntersections();
+      fitViewport();
+    };
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
   });
 }
 
 function unregisterWorkspacePanel(panel: HTMLElement) {
+  workspacePanelResizeObserver?.unobserve(panel);
   const panelIndex = workspacePanels.indexOf(panel);
   if (panelIndex >= 0) workspacePanels.splice(panelIndex, 1);
   const stackIndex = workspacePanelStack.indexOf(panel);
   if (stackIndex >= 0) workspacePanelStack.splice(stackIndex, 1);
   refreshWorkspacePanelLayers();
+  refreshWorkspacePanelDividers();
 }
 
 function initWorkspacePanels() {
   document.querySelectorAll<HTMLElement>(".workspace-panel").forEach(registerWorkspacePanel);
-    syncTimelineDock();
+  syncTimelineDock();
   initPalettesPanelCollapseDirection();
   initTimelinePanelCollapseDirection();
 
@@ -13459,8 +13782,25 @@ function initWorkspacePanels() {
       const rect = panel.getBoundingClientRect();
       moveWorkspacePanel(panel, rect.left, rect.top);
     }
+    settleWorkspacePanelIntersections();
     requestLoopFrame();
   });
+
+  workspacePanelResizeObserver = new ResizeObserver(() => {
+    refreshWorkspacePanelDividers();
+    if (workspaceDividerResizing || workspacePanelSettleQueued) return;
+    workspacePanelSettleQueued = true;
+    requestAnimationFrame(() => {
+      workspacePanelSettleQueued = false;
+      const panels = floatingWorkspacePanels();
+      if (panels.some((panel, i) => panels.slice(i + 1)
+        .some((other) => workspacePanelsOverlap(panel, other)))) {
+        settleWorkspacePanelIntersections();
+      }
+    });
+  });
+  workspacePanels.forEach((panel) => workspacePanelResizeObserver?.observe(panel));
+  settleWorkspacePanelIntersections();
 }
 
 /**
@@ -13479,7 +13819,12 @@ function initPalettesPanelCollapseDirection() {
   };
 
   const pinBeforeClose = () => {
-    if (details.open) pinTop();
+    if (!details.open) return;
+    pinTop();
+    // Native panel resizing leaves an inline height behind. It otherwise
+    // survives the details collapse as an empty shell below the Color header.
+    panel.style.height = "auto";
+    panel.style.maxHeight = "none";
   };
 
   // Pin while still expanded — `toggle` fires after open flips, too late to measure.
@@ -13487,6 +13832,18 @@ function initPalettesPanelCollapseDirection() {
   summary?.addEventListener("pointerdown", pinBeforeClose);
   summary?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") pinBeforeClose();
+  });
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      panel.style.height = "auto";
+      panel.style.maxHeight = "none";
+    } else {
+      panel.style.maxHeight = "min(480px, calc(100vh - 100px))";
+    }
+    requestAnimationFrame(() => {
+      settleWorkspacePanelIntersections();
+      fitViewport();
+    });
   });
 }
 
@@ -13842,7 +14199,11 @@ updateFileChrome();
 setTimelineTab("panels");
 showFirstLaunchStatus();
 updateCanvasHint();
-if (perfEnabled) void loadPerfProjectFromParam();
-else void initializePersistentWorkspace();
+const settleInitialWorkspace = () => requestAnimationFrame(() => {
+  settleWorkspacePanelIntersections();
+  fitViewport();
+});
+if (perfEnabled) void loadPerfProjectFromParam().finally(settleInitialWorkspace);
+else void initializePersistentWorkspace().finally(settleInitialWorkspace);
 // File chrome updates are event-driven via markDirty()/markClean() — the old
 // 500ms poll is gone.
