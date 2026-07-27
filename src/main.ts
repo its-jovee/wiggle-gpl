@@ -3653,8 +3653,8 @@ function confirmAction(title: string, copy: string, confirmLabel = "Continue"): 
 
 async function rasterizeActiveLayer() {
   const layer = activeLayer();
-  if (!layer || layer.kind !== "draw") {
-    setStatus("Only draw layers can be rasterized");
+  if (!layer || (layer.kind !== "draw" && layer.kind !== "tone")) {
+    setStatus("Only draw and manga tone layers can be rasterized");
     return;
   }
   if (!activeLayerIsEditable(true)) return;
@@ -3684,7 +3684,12 @@ async function rasterizeActiveLayer() {
   raster.visible = layer.visible;
   raster.opacity = layer.opacity;
   raster.blendMode = layer.blendMode;
+  raster.clipToBelow = layer.clipToBelow;
+  raster.mask = layer.mask ? JSON.parse(JSON.stringify(layer.mask)) as Layer["mask"] : undefined;
+  raster.fadeIn = layer.fadeIn ? { ...layer.fadeIn } : undefined;
+  raster.fadeOut = layer.fadeOut ? { ...layer.fadeOut } : undefined;
   raster.animation = layer.animation;
+  raster.noiseDisplace = layer.noiseDisplace ? { ...layer.noiseDisplace } : undefined;
   installRasterCanvas(raster, baked);
   const cont = activeContainer();
   const index = cont.getActiveLayerIndex();
@@ -9508,12 +9513,14 @@ function appendLayerRow(
   actions.appendChild(iconButton(StudioIcons.Copy, "Copy layer", (e) => {
     e.stopPropagation(); activateRow(); copyActiveLayer();
   }));
-  if (layer.kind === "draw") {
+  if (layer.kind === "draw" || layer.kind === "tone") {
     const rasterize = document.createElement("button");
     rasterize.type = "button";
     rasterize.className = "cellbtn iconbtn";
     rasterize.textContent = "PX";
-    rasterize.title = "Rasterize layer (destructive)";
+    rasterize.title = layer.kind === "tone"
+      ? "Rasterize manga tone to editable pixels (destructive)"
+      : "Rasterize layer (destructive)";
     rasterize.setAttribute("aria-label", rasterize.title);
     rasterize.onclick = (e) => { e.stopPropagation(); activateRow(); rasterizeActiveLayer(); };
     actions.appendChild(rasterize);
