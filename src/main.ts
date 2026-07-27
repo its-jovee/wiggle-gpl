@@ -88,9 +88,11 @@ import { bumpLayerVersion, layerVersion } from "./core/layerVersion";
 import { canMergeLayerDown, clearLayerContents, duplicateLayer, mergeLayerDown, pasteLayerAbove } from "./core/layerOps";
 import {
   countSubPanels,
+  containerHasUnlockedLayer,
   ensurePanelStack,
   findSubPanelPath,
   moveStackItem,
+  replaceLayersWithGroup,
   sanitizeSubPanelPath,
   stackInsertLayer,
   stackInsertSubPanel,
@@ -224,6 +226,10 @@ let lastSequencePosition: SequencePosition | null = null;
 let activeSubPanelPath: string[] = [];           // [] = panel root; path of nested frame ids
 let selectedSubPanelId: string | null = null;     // for inspector
 let selectedText: TextRef | null = null;
+const selectedLayerIds = new Set<string>();
+let selectedLayerAnchorId: string | null = null;
+let selectedLayerContainerKey = "";
+const collapsedLayerGroupIds = new Set<string>();
 /** Selected board reference image (editor-only overlay; never exported). */
 let selectedReferenceImageId: string | null = null;
 let selectionState: SelectionState | null = null;
@@ -1036,10 +1042,15 @@ function removeSubPanelById(panel: Panel, subPanelId: string): boolean {
   return true;
 }
 
-function groupActiveLayer(): void {
+function groupSelectedLayers(): void {
   const cont = activeContainer();
-  const layer = cont.layers[cont.getActiveLayerIndex()];
-  if (!layer) return;
+  const active = cont.layers[cont.getActiveLayerIndex()];
+  const containerKey = activeSubPanelPath.join("/");
+  const selected = cont.layers.filter((layer) =>
+    selectedLayerContainerKey === containerKey && selectedLayerIds.has(layer.id)
+  );
+  const layers = selected.length ? selected : active ? [active] : [];
+  if (!layers.length) return;
   if (countSubPanels(activePanel()) >= MAX_SUBPANELS_PER_PANEL) {
     setStatus(`Layer group limit reached (${MAX_SUBPANELS_PER_PANEL} nested containers)`);
     return;
@@ -1049,20 +1060,13 @@ function groupActiveLayer(): void {
     return;
   }
   const container = cont.container;
-  const stack = ensurePanelStack(container);
-  const stackIndex = stack.findIndex((item) => item.kind === "layer" && item.id === layer.id);
-  if (stackIndex < 0) return;
-
   const groupCount = (container.subPanels ?? []).filter((sp) => sp.group).length;
-  const group = newLayerGroup(`Group ${groupCount + 1}`, project.width, project.height, [layer]);
-  container.layers = container.layers.filter((candidate) => candidate.id !== layer.id);
-  (container.subPanels ??= []).push(group);
-  stack.splice(stackIndex, 1, { kind: "subpanel", id: group.id });
-  container.stack = stack;
-  container.activeLayerIndex = Math.max(0, Math.min(
-    container.activeLayerIndex ?? 0,
-    container.layers.length - 1,
-  ));
+  const group = newLayerGroup(`Group ${groupCount + 1}`, project.width, project.height, layers);
+  if (!replaceLayersWithGroup(container, group)) return;
+  selectedLayerIds.clear();
+  selectedLayerAnchorId = null;
+  selectedLayerContainerKey = "";
+  collapsedLayerGroupIds.delete(group.id);
   selectedSubPanelId = group.id;
   selectedText = null;
   commitHistory();
@@ -1179,6 +1183,24 @@ function noteRootLayerRemoved(layerId: string) {
 function activeLayer(): Layer | null {
   const c = activeContainer();
   return c.layers[c.getActiveLayerIndex()] ?? null;
+}
+
+function activeContainerIsLocked(): boolean {
+  let container: StackContainer = activePanel();
+  for (const id of activeSubPanelPath) {
+    const child = (container.subPanels ?? []).find((subPanel) => subPanel.id === id);
+    if (!child) return false;
+    if (child.group && child.locked) return true;
+    container = child;
+  }
+  return false;
+}
+
+function activeLayerIsEditable(showMessage = false): boolean {
+  const layer = activeLayer();
+  const editable = !!layer && !layer.locked && !activeContainerIsLocked();
+  if (!editable && showMessage) setStatus("Layer is locked · unlock it in Layers to edit");
+  return editable;
 }
 
 function projectLayerIds(source: Project): Set<string> {
@@ -1997,11 +2019,12 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
   if (panel.kind === "timelapse") return;
   let layer = activeLayer();
   if (!layer || !layer.visible) return;
+  if (!activeLayerIsEditable(true)) return;
   const paintableTone = layer.kind === "tone" && layer.tone?.coverage === "painted";
   const gradientTone = currentBrush === GRADIENT_KEY && layer.kind === "tone";
   if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone && !gradientTone) {
     const c = activeContainer();
-    const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible);
+    const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible && !l.locked);
     if (idx < 0) return;
     c.setActiveLayerIndex(idx);
     buildLayers();
@@ -2062,6 +2085,7 @@ function commitGradient(start: Vec2, end: Vec2) {
   if (Math.hypot(end.x - start.x, end.y - start.y) < 2) return;
   const layer = activeLayer();
   if (!layer?.visible) return;
+  if (!activeLayerIsEditable(true)) return;
 
   if (layer.kind === "tone" && layer.tone) {
     layer.tone.gradient = { kind: currentGradientKind, start: { ...start }, end: { ...end } };
@@ -2548,7 +2572,7 @@ function cutAtShape(shape: SelectionShape, inverted = false): MarqueeRef[] {
   }
 
   for (const layer of cont.layers) {
-    if (!layer.visible) continue;
+    if (!layer.visible || layer.locked) continue;
     const next: Stroke[] = [];
     for (const stroke of layer.strokes) {
       const allIn = stroke.points.length > 0 && stroke.points.every(inSelection);
@@ -2666,6 +2690,7 @@ function promoteRegionSelection(): MarqueeRef[] | null {
 }
 
 function extractSelection() {
+  if (!activeLayerIsEditable(true)) return;
   if (!selectionState || selectionState.mode !== "region" || selectionState.phase !== "idle") return;
   const items = promoteRegionSelection();
   if (!items) {
@@ -2766,6 +2791,7 @@ function applyActiveSelectionTransform(pos: Vec2, shiftKey: boolean, altKey: boo
 }
 
 function deleteSelection() {
+  if (!activeLayerIsEditable(true)) return;
   if (!selectionState || selectionState.mode !== "object" || selectionState.phase !== "idle") return;
   const panel = activePanel();
   bumpMarqueeItemLayers(selectionState.items);
@@ -3498,6 +3524,7 @@ function duplicateActiveLayer() {
 function clearActiveLayer() {
   const layer = activeLayer();
   if (!layer) return;
+  if (!activeLayerIsEditable(true)) return;
   if (layer.kind === "raster") {
     const rasterCanvas = getRasterCanvas(layer);
     if (!rasterCanvas) { showToast("Layer still loading", "info"); return; }
@@ -3519,6 +3546,10 @@ function mergeActiveLayerDown() {
   const index = cont.getActiveLayerIndex();
   const active = cont.layers[index];
   const below = cont.layers[index - 1];
+  if (active?.locked || below?.locked || activeContainerIsLocked()) {
+    setStatus("Unlock both layers before merging");
+    return;
+  }
   if (active?.kind === "raster" && below?.kind === "raster") {
     if (!canMergeLayerDown(cont.layers, index)) {
       setStatus("Raster layers cannot merge with their current settings");
@@ -3602,6 +3633,7 @@ async function rasterizeActiveLayer() {
     setStatus("Only draw layers can be rasterized");
     return;
   }
+  if (!activeLayerIsEditable(true)) return;
   if (!await confirmAction("Rasterize layer?", `“${layer.name}” will become pixels and vector editing will be lost.`, "Rasterize")) return;
 
   const baked = document.createElement("canvas");
@@ -3651,6 +3683,7 @@ function copyActiveLayerAnimation() {
 function pasteAnimationToActiveLayer() {
   const layer = activeLayer();
   if (!layer || !animationClipboard) return;
+  if (!activeLayerIsEditable(true)) return;
   layer.animation = JSON.parse(JSON.stringify(animationClipboard)) as LayerAnimation;
   commitHistory();
   buildTimeline();
@@ -3688,6 +3721,7 @@ let noiseDisplaceIncludeTone = false;
 function armLayerKeyframe(which: "from" | "to") {
   const layer = activeLayer();
   if (!layer) return;
+  if (!activeLayerIsEditable(true)) return;
   const anim = ensureLayerAnimation(layer);
   anim.enabled = true;
   keyframeArm = which;
@@ -3798,6 +3832,12 @@ canvas.addEventListener("pointerdown", (e) => {
     const textHit = hitTestText(pos);
     if (textHit) {
       selectedSubPanelId = null;
+      if (textHit.layer.locked || activeContainerIsLocked()) {
+        selectedText = textHit;
+        setStatus("Text layer is locked");
+        buildInspector();
+        return;
+      }
       const alreadySelected = selectedText?.text === textHit.text;
       selectedText = textHit;
       selectDrag = {
@@ -3833,6 +3873,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Marquee tool — region mask (clip draw/fill) or extracted object group.
   if (currentBrush === MARQUEE_KEY) {
+    if (!activeLayerIsEditable(true)) return;
     if (selectionState?.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
       if (handle) {
@@ -3914,6 +3955,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Scale tool — resize/rotate the active layer's content (or the current selection).
   if (currentBrush === SCALE_KEY) {
+    if (!activeLayerIsEditable(true)) return;
     let target = scaleToolItems();
     if (!target) return;
     const handle = hitTestTransformHandle(pos, target.bounds, viewport.scale);
@@ -3954,6 +3996,7 @@ canvas.addEventListener("pointerdown", (e) => {
   if (currentBrush === MOVE_LAYER_KEY) {
     const layer = activeLayer();
     if (!layer || !layer.visible) return;
+    if (!activeLayerIsEditable(true)) return;
     // Direct-drag A/B handles from the canvas
     if (!keyframeArm && layer.animation?.enabled) {
       const cent = layerCentroid(layer);
@@ -4044,10 +4087,16 @@ canvas.addEventListener("pointerdown", (e) => {
     if (textHit) {
       selectedSubPanelId = null;
       selectedText = textHit;
+      if (textHit.layer.locked || activeContainerIsLocked()) {
+        setStatus("Text layer is locked");
+        buildInspector();
+        return;
+      }
       openTextInputAt(pos, textHit);
       buildInspector();
       return;
     }
+    if (!activeLayerIsEditable(true)) return;
     openTextInputAt(pos);
     return;
   }
@@ -4060,6 +4109,7 @@ canvas.addEventListener("pointerdown", (e) => {
   if (panel.kind === "timelapse") return;
   let layer = activeLayer();
   if (!layer || !layer.visible) return;
+  if (!activeLayerIsEditable(true)) return;
   // Text layers, and tone layers still set to full-bleed coverage, are
   // output-only; send paint tools to a real draw layer so an accidental
   // stroke cannot silently disappear. Painted-coverage tone layers accept
@@ -4069,7 +4119,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const gradientTone = currentBrush === GRADIENT_KEY && layer.kind === "tone";
   if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone && !gradientTone) {
     const c = activeContainer();
-    const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible);
+    const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible && !l.locked);
     if (idx < 0) return;
     c.setActiveLayerIndex(idx);
     buildLayers();
@@ -4677,6 +4727,11 @@ canvas.addEventListener("dblclick", (e) => {
     if (textHit) {
       selectedSubPanelId = null;
       selectedText = textHit;
+      if (textHit.layer.locked || activeContainerIsLocked()) {
+        setStatus("Text layer is locked");
+        buildInspector();
+        return;
+      }
       openTextInputAt({ x: textHit.text.x, y: textHit.text.y }, textHit);
       buildInspector();
       return;
@@ -4974,7 +5029,7 @@ function maybeEnterSubPanelAt(pos: { x: number; y: number }): boolean {
   if (activeSubPanelPath.length >= MAX_SUBPANEL_DEPTH) return false;
   const sps = frameSubPanels(activeStackContainer());
   for (let i = sps.length - 1; i >= 0; i--) {
-    if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
+    if (isInsideSubPanel(pos.x, pos.y, sps[i]) && containerHasUnlockedLayer(sps[i])) {
       enterChildSubPanel(sps[i].id);
       buildBreadcrumb();
       buildLayers();
@@ -8875,6 +8930,57 @@ function makeStackPreview(source: StackPreviewSource): HTMLCanvasElement {
   return canvas;
 }
 
+function layerContainerAccess(container: StackContainer, path: string[]) {
+  const subPanel = path.length ? container as SubPanel : undefined;
+  return {
+    layers: container.layers,
+    getActiveLayerIndex: () => container.activeLayerIndex ?? 0,
+    setActiveLayerIndex: (i: number) => { container.activeLayerIndex = i; },
+    isSubPanel: path.length > 0,
+    subPanel,
+    container,
+  };
+}
+
+function selectLayerRow(
+  container: StackContainer,
+  containerPath: string[],
+  layer: Layer,
+  event: MouseEvent,
+) {
+  const key = containerPath.join("/");
+  const displayIds = ensurePanelStack(container).slice().reverse()
+    .filter((item): item is { kind: "layer"; id: string } => item.kind === "layer")
+    .map((item) => item.id);
+  if (selectedLayerContainerKey !== key) {
+    selectedLayerIds.clear();
+    selectedLayerAnchorId = null;
+  }
+  selectedLayerContainerKey = key;
+  if (event.shiftKey && selectedLayerAnchorId) {
+    const from = displayIds.indexOf(selectedLayerAnchorId);
+    const to = displayIds.indexOf(layer.id);
+    if (from >= 0 && to >= 0) {
+      if (!event.metaKey && !event.ctrlKey) selectedLayerIds.clear();
+      const [start, end] = from <= to ? [from, to] : [to, from];
+      displayIds.slice(start, end + 1).forEach((id) => selectedLayerIds.add(id));
+    }
+  } else if (event.metaKey || event.ctrlKey) {
+    if (selectedLayerIds.has(layer.id)) selectedLayerIds.delete(layer.id);
+    else selectedLayerIds.add(layer.id);
+    selectedLayerAnchorId = layer.id;
+  } else {
+    selectedLayerIds.clear();
+    selectedLayerIds.add(layer.id);
+    selectedLayerAnchorId = layer.id;
+  }
+  activeSubPanelPath = [...containerPath];
+  const index = container.layers.findIndex((candidate) => candidate.id === layer.id);
+  if (index >= 0) container.activeLayerIndex = index;
+  selectedSubPanelId = null;
+  selectedText = null;
+}
+
 function buildLayers() {
   stackPreviewQueue.length = 0;
   const host = $("layers");
@@ -8885,7 +8991,7 @@ function buildLayers() {
     return;
   }
   const cont = activeContainer();
-  buildContainerStackLayers(host, cont.container);
+  buildContainerStackLayers(host, panel, []);
 
   const addHost = document.getElementById("layer-add-actions") ?? host;
   if (addHost !== host) addHost.innerHTML = "";
@@ -8926,8 +9032,8 @@ function buildLayers() {
     buildInspector();
   }, "ghost iconbtn"));
 
-  const groupButton = iconButton(StudioIcons.Layers, "Group active layer", () => {
-    groupActiveLayer();
+  const groupButton = iconButton(StudioIcons.Layers, "Group selected layers", () => {
+    groupSelectedLayers();
   }, "ghost iconbtn");
   groupButton.disabled = !activeLayer();
   addRow.appendChild(groupButton);
@@ -8940,10 +9046,11 @@ function buildLayers() {
   refreshTimelinePanelActionsBar();
 }
 
-function buildContainerStackLayers(host: HTMLElement, container: StackContainer) {
+function buildContainerStackLayers(host: HTMLElement, container: StackContainer, containerPath: string[]) {
   const stack = ensurePanelStack(container);
-  const cont = activeContainer();
+  const cont = layerContainerAccess(container, containerPath);
   const panel = activePanel();
+  const containerIsActive = containerPath.join("/") === activeSubPanelPath.join("/");
 
   for (let displayPos = 0; displayPos < stack.length; displayPos++) {
     const si = stack.length - 1 - displayPos;
@@ -8953,7 +9060,8 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
       if (!sp) continue;
       const isActive = selectedSubPanelId === sp.id;
       const row = document.createElement("div");
-      row.className = "layer-row subpanel-row" + (isActive ? " active" : "");
+      row.className = "layer-row subpanel-row" + (isActive ? " active" : "")
+        + (sp.locked ? " locked" : "");
       row.dataset.stackKind = "subpanel";
       row.dataset.stackIndex = String(si);
       row.dataset.subPanelId = sp.id;
@@ -8985,6 +9093,22 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
 
       const nameCell = document.createElement("div");
       nameCell.className = "layer-name-cell";
+      if (sp.group) {
+        const expanded = !collapsedLayerGroupIds.has(sp.id);
+        const disclosure = iconButton(
+          expanded ? StudioIcons.ChevronDown : StudioIcons.ChevronRight,
+          expanded ? "Collapse group" : "Expand group",
+          (e) => {
+            e.stopPropagation();
+            if (expanded) collapsedLayerGroupIds.add(sp.id);
+            else collapsedLayerGroupIds.delete(sp.id);
+            buildLayers();
+          },
+          "group-disclosure iconbtn",
+        );
+        disclosure.setAttribute("aria-expanded", String(expanded));
+        nameCell.appendChild(disclosure);
+      }
       const nameEl = document.createElement("span");
       nameEl.className = "layer-label";
       nameEl.textContent = subPanelLabel(sp);
@@ -9018,6 +9142,9 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
           activeSubPanelPath = sanitizeSubPanelPath(panel, activeSubPanelPath);
         }
         if (selectedSubPanelId === sp.id) selectedSubPanelId = null;
+        selectedLayerIds.clear();
+        selectedLayerAnchorId = null;
+        selectedLayerContainerKey = "";
         commitHistory();
         buildBreadcrumb();
         buildLayers();
@@ -9025,6 +9152,21 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
       });
       const rowActions = document.createElement("div");
       rowActions.className = "layer-actions";
+      if (sp.group) {
+        const lock = iconButton(
+          sp.locked ? StudioIcons.Lock : StudioIcons.Unlock,
+          sp.locked ? "Unlock group" : "Lock group",
+          (e) => {
+            e.stopPropagation();
+            sp.locked = !sp.locked;
+            commitHistory();
+            buildLayers();
+            buildInspector();
+          },
+        );
+        lock.classList.toggle("active", !!sp.locked);
+        rowActions.appendChild(lock);
+      }
       rowActions.append(enterBtn, del);
       row.appendChild(rowActions);
 
@@ -9034,6 +9176,9 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
         const t = e.target as HTMLElement;
         if (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.classList.contains("drag-handle")) return;
         selectedSubPanelId = sp.id;
+        selectedLayerIds.clear();
+        selectedLayerAnchorId = null;
+        selectedLayerContainerKey = "";
         selectedText = null;
         syncStackRowActiveStates(host, {
           activeLayerIndex: cont.getActiveLayerIndex(),
@@ -9051,6 +9196,13 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
         buildInspector();
       };
       host.appendChild(row);
+      if (sp.group && !collapsedLayerGroupIds.has(sp.id)) {
+        const children = document.createElement("div");
+        children.className = "layer-group-children";
+        children.dataset.groupId = sp.id;
+        buildContainerStackLayers(children, sp, [...containerPath, sp.id]);
+        host.appendChild(children);
+      }
       continue;
     }
 
@@ -9059,7 +9211,8 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
     appendLayerRow(host, panel, cont, li, {
       stackIndex: si,
       rootStack: true,
-      isActive: li === cont.getActiveLayerIndex() && !selectedSubPanelId,
+      isActive: containerIsActive && li === cont.getActiveLayerIndex() && !selectedSubPanelId,
+      containerPath,
     });
   }
 }
@@ -9069,15 +9222,18 @@ function appendLayerRow(
   panel: Panel,
   cont: ReturnType<typeof activeContainer>,
   li: number,
-  opts: { stackIndex: number; rootStack: boolean; isActive: boolean }
+  opts: { stackIndex: number; rootStack: boolean; isActive: boolean; containerPath: string[] }
 ) {
   const layer = cont.layers[li];
   const isActive = opts.isActive;
   const row = document.createElement("div");
-  row.className = "layer-row" + (isActive ? " active" : "");
+  row.className = "layer-row" + (isActive ? " active" : "")
+    + (selectedLayerIds.has(layer.id) ? " multi-selected" : "")
+    + (layer.locked ? " locked" : "");
   row.dataset.stackKind = "layer";
   row.dataset.stackIndex = String(opts.stackIndex);
   row.dataset.layerIndex = String(li);
+  row.dataset.layerId = layer.id;
 
   const handle = document.createElement("span");
   handle.textContent = "⋮⋮"; handle.className = "drag-handle"; handle.title = "Drag to reorder";
@@ -9097,11 +9253,27 @@ function appendLayerRow(
   nameEl.tabIndex = 0;
   nameEl.setAttribute("role", "button");
   nameEl.setAttribute("aria-label", `Rename layer ${layer.name}`);
+  const activateSelection = (event: MouseEvent) => {
+    toneToolActive = false;
+    toneToolPrevLayerIndex = null;
+    selectLayerRow(cont.container, opts.containerPath, layer, event);
+    syncBrushAvailability(true);
+    buildBreadcrumb();
+    buildLayers();
+    buildInspector();
+    buildBrushBar();
+    refreshTimelinePanelActionsBar();
+  };
   const beginRename = () => {
     if (!nameEl.isConnected) return;
+    if (layer.locked) {
+      setStatus("Layer is locked · unlock it before renaming");
+      return;
+    }
     if (!isActive) {
       toneToolActive = false;
       toneToolPrevLayerIndex = null;
+      activeSubPanelPath = [...opts.containerPath];
       cont.setActiveLayerIndex(li);
       selectedSubPanelId = null;
       if (opts.rootStack) {
@@ -9146,6 +9318,10 @@ function appendLayerRow(
   };
   nameEl.addEventListener("click", (e) => {
     e.stopPropagation();
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      activateSelection(e);
+      return;
+    }
     beginRename();
   });
   nameEl.addEventListener("keydown", (e) => {
@@ -9188,6 +9364,7 @@ function appendLayerRow(
     e.stopPropagation();
     if (cont.layers.length <= 1) return;
     const removedId = layer.id;
+    selectedLayerIds.delete(removedId);
     cont.layers.splice(li, 1);
     noteRootLayerRemoved(removedId);
     cont.setActiveLayerIndex(Math.max(0, Math.min(cont.getActiveLayerIndex(), cont.layers.length - 1)));
@@ -9197,7 +9374,23 @@ function appendLayerRow(
     buildInspector();
   });
   if (cont.layers.length <= 1) del.disabled = true;
-  row.appendChild(del);
+  const lock = iconButton(
+    layer.locked ? StudioIcons.Lock : StudioIcons.Unlock,
+    layer.locked ? "Unlock layer" : "Lock layer",
+    (e) => {
+      e.stopPropagation();
+      layer.locked = !layer.locked;
+      if (layer.locked && selectedText?.layer === layer) selectedText = null;
+      commitHistory([layer]);
+      buildLayers();
+      buildInspector();
+    },
+  );
+  lock.classList.toggle("active", !!layer.locked);
+  const topActions = document.createElement("div");
+  topActions.className = "layer-actions layer-top-actions";
+  topActions.append(lock, del);
+  row.appendChild(topActions);
 
   const expanded = document.createElement("div");
   expanded.className = "layer-expanded";
@@ -9214,11 +9407,13 @@ function appendLayerRow(
   op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
   op.value = String(layer.opacity); op.className = "layer-op";
   op.tabIndex = isActive ? 0 : -1;
+  op.disabled = !!layer.locked;
   op.oninput = () => { layer.opacity = +op.value; opLabel.textContent = `${Math.round(layer.opacity * 100)}%`; };
   op.onchange = () => { commitHistory(); };
   meter.append(op, opLabel);
 
   const activateRow = () => {
+    activeSubPanelPath = [...opts.containerPath];
     cont.setActiveLayerIndex(li);
     selectedText = null;
     selectedSubPanelId = null;
@@ -9261,12 +9456,15 @@ function appendLayerRow(
   });
   paste.disabled = !layerClipboard;
   actions.appendChild(paste);
+  if (layer.locked) {
+    actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = true; });
+  }
   expandedInner.append(meter, actions);
   expanded.appendChild(expandedInner);
   row.appendChild(expanded);
 
   if (opts.rootStack) {
-    bindStackRowReorder(row, panel, opts.stackIndex);
+    bindStackRowReorder(row, cont.container, opts.stackIndex);
   } else {
     handle.draggable = true;
     handle.addEventListener("dragstart", (e) => {
@@ -9314,21 +9512,7 @@ function appendLayerRow(
   row.onclick = (e) => {
     const t = e.target as HTMLElement;
     if (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.classList.contains("drag-handle")) return;
-    if (li === cont.getActiveLayerIndex() && !selectedSubPanelId) return;
-    toneToolActive = false;
-    toneToolPrevLayerIndex = null;
-    cont.setActiveLayerIndex(li);
-    selectedText = null;
-    selectedSubPanelId = null;
-    if (opts.rootStack) {
-      syncStackRowActiveStates(host, { activeLayerIndex: li, selectedSubPanelId: null });
-    } else {
-      syncLayerRowActiveStates(host, li);
-    }
-    syncBrushAvailability(true);
-    buildInspector();
-    buildBrushBar();
-    refreshTimelinePanelActionsBar();
+    activateSelection(e);
   };
   host.appendChild(row);
 }
@@ -9410,6 +9594,10 @@ function buildInspector() {
 
   if (selectedText) {
     appendTextInspector(host, selectedText);
+    if (selectedText.layer.locked || activeContainerIsLocked()) {
+      host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("input, button, select")
+        .forEach((control) => { control.disabled = true; });
+    }
     return;
   }
 
@@ -9442,6 +9630,13 @@ function buildInspector() {
   buildLayerCompositing();
   buildLayerToneEffects();
   buildLayerAnimation();
+  if (!activeLayerIsEditable()) {
+    for (const id of ["layer-compositing", "layer-tone-effects", "layer-animation", "layer-noise-displace"]) {
+      document.getElementById(id)?.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>(
+        "input, button, select",
+      ).forEach((control) => { control.disabled = true; });
+    }
+  }
 }
 
 function appendLayerGroupInspector(host: HTMLElement, group: SubPanel) {

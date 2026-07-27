@@ -228,6 +228,8 @@ export type Layer = {
   id: string;
   name: string;
   visible: boolean;
+  /** Locked layers render normally but editor tools must not mutate them. */
+  locked?: boolean;
   opacity: number;
   blendMode?: LayerBlendMode;
   mask?: LayerMask;
@@ -269,6 +271,8 @@ export type SubPanel = {
   name?: string;
   /** Groups can be hidden as a unit. Existing frames default to visible. */
   visible?: boolean;
+  /** A locked layer group protects every descendant from editor mutations. */
+  locked?: boolean;
   bounds: { x: number; y: number; w: number; h: number };
   shape: SubPanelShape;
   /** Closed outline for `shape: "custom"` (from Cut Subpanel). Ignored otherwise. */

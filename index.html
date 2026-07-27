@@ -849,6 +849,21 @@
     .layer-row:hover:not(.active) { background: rgba(255,251,242,.025);
       border-color: var(--border-strong); }
     .layer-row.active { border-color: var(--accent); background: var(--accent-soft); }
+    .layer-row.multi-selected {
+      border-color: color-mix(in srgb, var(--accent) 72%, var(--line));
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .layer-row.locked .layer-preview,
+    .layer-row.locked .layer-name-cell { opacity: .62; }
+    .layer-group-children {
+      display: grid; gap: 4px; margin-left: 18px; padding-left: 7px;
+      border-left: 1px solid var(--border-subtle);
+    }
+    .group-disclosure.iconbtn {
+      width: 20px; min-width: 20px; min-height: 20px; padding: 2px;
+      background: transparent; border-color: transparent;
+    }
+    .layer-top-actions { gap: 2px; }
     .layer-row > input[type=checkbox] {
       width: 14px; height: 14px; margin: 0; accent-color: var(--accent);
       cursor: pointer; flex-shrink: 0;

@@ -35,6 +35,8 @@ const expectedIcons = [
   "Clip",
   "ClipboardCheck",
   "ClipboardPaste",
+  "ChevronDown",
+  "ChevronRight",
   "Copy",
   "CopyCheck",
   "CutSubPanel",
@@ -47,6 +49,7 @@ const expectedIcons = [
   "Gradient",
   "LayerAdd",
   "Layers",
+  "Lock",
   "Move",
   "Note",
   "Pause",
@@ -66,6 +69,7 @@ const expectedIcons = [
   "Tone",
   "Trash",
   "Undo",
+  "Unlock",
 ];
 
 test("studio icon catalog exposes every app toolbar icon", () => {

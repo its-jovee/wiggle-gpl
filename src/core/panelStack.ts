@@ -154,6 +154,49 @@ export function stackRemoveSubPanel(container: StackContainer, subPanelId: strin
   );
 }
 
+/** Replace direct layers with one group at the top-most selected position.
+ * Child order remains bottom-to-top, matching the parent stack. */
+export function replaceLayersWithGroup(container: StackContainer, group: SubPanel): boolean {
+  if (!group.group || group.layers.length === 0) return false;
+  const selectedIds = new Set(group.layers.map((layer) => layer.id));
+  if (group.layers.some((layer) => !container.layers.some((candidate) => candidate.id === layer.id))) {
+    return false;
+  }
+  const stack = ensurePanelStack(container);
+  const selectedEntries = stack
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.kind === "layer" && selectedIds.has(item.id));
+  if (selectedEntries.length !== selectedIds.size) return false;
+  const topIndex = Math.max(...selectedEntries.map(({ index }) => index));
+  const insertAt = stack.slice(0, topIndex + 1)
+    .filter((item) => item.kind !== "layer" || !selectedIds.has(item.id)).length;
+  const layerById = new Map(container.layers.map((layer) => [layer.id, layer]));
+  group.layers = selectedEntries
+    .map(({ item }) => item.kind === "layer" ? layerById.get(item.id) : undefined)
+    .filter((layer): layer is Layer => !!layer);
+  group.stack = group.layers.map((layer) => ({ kind: "layer", id: layer.id }));
+  group.activeLayerIndex = Math.max(0, group.layers.length - 1);
+  container.layers = container.layers.filter((layer) => !selectedIds.has(layer.id));
+  (container.subPanels ??= []).push(group);
+  const nextStack = stack.filter((item) => item.kind !== "layer" || !selectedIds.has(item.id));
+  nextStack.splice(insertAt, 0, { kind: "subpanel", id: group.id });
+  container.stack = nextStack;
+  container.activeLayerIndex = Math.max(0, Math.min(
+    container.activeLayerIndex ?? 0,
+    container.layers.length - 1,
+  ));
+  return true;
+}
+
+/** Whether a container exposes any visible, unlocked drawing target. Locked
+ * groups block their complete descendant tree. */
+export function containerHasUnlockedLayer(container: StackContainer): boolean {
+  if (container.layers.some((layer) => layer.visible && !layer.locked)) return true;
+  return (container.subPanels ?? []).some((subPanel) =>
+    subPanel.visible !== false && !subPanel.locked && containerHasUnlockedLayer(subPanel)
+  );
+}
+
 /** Remap stack ids after panel/content id regeneration. */
 export function remapPanelStack(
   stack: PanelStackItem[] | undefined,

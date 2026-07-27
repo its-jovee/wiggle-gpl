@@ -132,6 +132,9 @@ function finitePoint(point: { x: number; y: number } | undefined): boolean {
 }
 
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
+  if (layer.locked !== undefined && typeof layer.locked !== "boolean") {
+    errors.push(`${path}: locked must be a boolean`);
+  }
   for (const [name, fade] of [["fadeIn", layer.fadeIn], ["fadeOut", layer.fadeOut]] as const) {
     if (fade && (!Number.isFinite(fade.durationTicks) || fade.durationTicks < 1)) {
       errors.push(`${path}: ${name} durationTicks must be a positive finite number`);
@@ -201,6 +204,9 @@ function validateSubPanelTree(subs: SubPanel[], pathPrefix: string, errors: stri
   for (let si = 0; si < subs.length; si++) {
     const sub = subs[si];
     const path = `${pathPrefix} sub-panel ${si + 1}`;
+    if (sub.locked !== undefined && typeof sub.locked !== "boolean") {
+      errors.push(`${path}: locked must be a boolean`);
+    }
     if (!Number.isFinite(sub.bounds.x) || !Number.isFinite(sub.bounds.y) ||
         !Number.isFinite(sub.bounds.w) || !Number.isFinite(sub.bounds.h)) {
       errors.push(`${path}: bounds must be finite numbers`);

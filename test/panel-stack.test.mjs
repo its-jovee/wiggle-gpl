@@ -55,6 +55,45 @@ test("newLayerGroup creates an unclipped nested stack around its layers", () => 
   assert.deepEqual(group.stack, [{ kind: "layer", id: layer.id }]);
 });
 
+test("replaceLayersWithGroup consumes a multi-selection and preserves child z-order", () => {
+  const a = types.newLayer("A");
+  const b = types.newLayer("B");
+  const c = types.newLayer("C");
+  const panel = {
+    layers: [a, b, c],
+    subPanels: [],
+    stack: [
+      { kind: "layer", id: a.id },
+      { kind: "layer", id: b.id },
+      { kind: "layer", id: c.id },
+    ],
+    activeLayerIndex: 2,
+  };
+  const group = types.newLayerGroup("Picked", 100, 100, [a, c]);
+  assert.equal(stack.replaceLayersWithGroup(panel, group), true);
+  assert.deepEqual(panel.layers.map((layer) => layer.id), [b.id]);
+  assert.deepEqual(group.layers.map((layer) => layer.id), [a.id, c.id]);
+  assert.deepEqual(group.stack, [
+    { kind: "layer", id: a.id },
+    { kind: "layer", id: c.id },
+  ]);
+  assert.deepEqual(panel.stack, [
+    { kind: "layer", id: b.id },
+    { kind: "subpanel", id: group.id },
+  ]);
+});
+
+test("containerHasUnlockedLayer ignores locked layers and locked group trees", () => {
+  const locked = { ...types.newLayer("Locked"), locked: true };
+  const child = types.newLayerGroup("Child", 100, 100, [types.newLayer("Ink")]);
+  const panel = { layers: [locked], subPanels: [child] };
+  assert.equal(stack.containerHasUnlockedLayer(panel), true);
+  child.locked = true;
+  assert.equal(stack.containerHasUnlockedLayer(panel), false);
+  locked.locked = false;
+  assert.equal(stack.containerHasUnlockedLayer(panel), true);
+});
+
 test("moveStackItem can place a layer above a subpanel", () => {
   const panel = {
     layers: [

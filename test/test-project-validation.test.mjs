@@ -39,6 +39,17 @@ test("validateProject accepts a fresh default project", () => {
   assert.deepEqual(validation.validateProject(baseProject()), { ok: true });
 });
 
+test("layer and group lock state must be boolean", () => {
+  const project = types.newProject();
+  project.panels[0].layers[0].locked = "yes";
+  assert.equal(validation.validateProject(project).ok, false);
+  project.panels[0].layers[0].locked = true;
+  const group = types.newLayerGroup("Locked group", project.width, project.height, []);
+  group.locked = "no";
+  project.panels[0].subPanels.push(group);
+  assert.equal(validation.validateProject(project).ok, false);
+});
+
 test("newProject includes default drawing smoothing settings", () => {
   assert.deepEqual(baseProject().drawingSettings.smoothing, {
     mode: "off",

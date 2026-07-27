@@ -30,6 +30,10 @@ import Grid9 from "reicon/icons/Grid9";
 import Hand from "reicon/icons/Hand";
 import Layers from "reicon/icons/Layers";
 import Layout from "reicon/icons/Layout";
+import Lock from "reicon/icons/Lock";
+import Unlock from "reicon/icons/Unlock";
+import ChevronDown from "reicon/icons/ChevronDown";
+import ChevronRight from "reicon/icons/ChevronRight";
 import Menu4 from "reicon/icons/Menu4";
 import Paintbucket from "reicon/icons/Paintbucket";
 import NoteText from "reicon/icons/NoteText";
@@ -68,6 +72,10 @@ export const StudioIcons = {
   FrameInsertBefore: Frame,
   FrameInsertAfter: Frame2,
   Layers,
+  Lock,
+  Unlock,
+  ChevronDown,
+  ChevronRight,
   LayerAdd: ElementPlus,
   Raster: Element3,
   DragGrip: Menu4,
