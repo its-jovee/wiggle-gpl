@@ -1129,9 +1129,17 @@ function exitToSubPanelPath(path: string[]) {
   clearSelection();
 }
 
+function enterSubPanelPath(path: string[]) {
+  activeSubPanelPath = sanitizeSubPanelPath(activePanel(), path);
+  selectedSubPanelId = null;
+  selectedText = null;
+  selectedLayerIds.clear();
+  selectedLayerAnchorId = null;
+  selectedLayerContainerKey = "";
+}
+
 function enterChildSubPanel(id: string) {
-  activeSubPanelPath = [...activeSubPanelPath, id];
-  selectedSubPanelId = id;
+  enterSubPanelPath([...activeSubPanelPath, id]);
 }
 
 function popActiveSubPanel() {
@@ -9021,7 +9029,24 @@ function buildLayers() {
     return;
   }
   const cont = activeContainer();
-  buildContainerStackLayers(host, panel, []);
+  // Groups stay visible as an inline tree. A geometric sub-panel, however,
+  // is a separate drawing context: once entered, show its local stack (and
+  // any groups inside it) rather than leaving the root layers on screen.
+  let treeContainer: StackContainer = panel;
+  let treePath: string[] = [];
+  let cursor: StackContainer = panel;
+  const cursorPath: string[] = [];
+  for (const id of activeSubPanelPath) {
+    const child = (cursor.subPanels ?? []).find((sp) => sp.id === id);
+    if (!child) break;
+    cursor = child;
+    cursorPath.push(id);
+    if (!child.group) {
+      treeContainer = child;
+      treePath = [...cursorPath];
+    }
+  }
+  buildContainerStackLayers(host, treeContainer, treePath);
 
   const addHost = document.getElementById("layer-add-actions") ?? host;
   if (addHost !== host) addHost.innerHTML = "";
@@ -9159,7 +9184,7 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer,
 
       const enterBtn = iconButton(StudioIcons.Layers, sp.group ? "Open group" : "Enter sub-panel", (e) => {
         e.stopPropagation();
-        enterChildSubPanel(sp.id);
+        enterSubPanelPath([...containerPath, sp.id]);
         buildBreadcrumb();
         buildLayers();
         buildInspector();
@@ -9220,7 +9245,7 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer,
       row.ondblclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        enterChildSubPanel(sp.id);
+        enterSubPanelPath([...containerPath, sp.id]);
         buildBreadcrumb();
         buildLayers();
         buildInspector();
@@ -9728,7 +9753,9 @@ function appendLayerGroupInspector(host: HTMLElement, group: SubPanel) {
   enter.className = "cellbtn";
   enter.textContent = "Open group";
   enter.onclick = () => {
-    enterChildSubPanel(group.id);
+    const path = findSubPanelPath(activePanel(), group.id);
+    if (!path) return;
+    enterSubPanelPath(path);
     buildBreadcrumb();
     buildLayers();
     buildInspector();
