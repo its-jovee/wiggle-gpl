@@ -1239,6 +1239,14 @@ function maskLayerCanvas(
 }
 
 function cloneCanvas(src: HTMLCanvasElement, width: number, height: number): HTMLCanvasElement {
+  const c = acquireFrameCanvas(width, height);
+  const oc = c.getContext("2d")!;
+  oc.drawImage(src, 0, 0);
+  return c;
+}
+
+/** Acquire a cleared canvas whose lifetime is the current renderPanel call. */
+function acquireFrameCanvas(width: number, height: number): HTMLCanvasElement {
   let c = _frameCanvasPool[_framePoolIdx];
   if (!c) {
     c = document.createElement("canvas");
@@ -1249,8 +1257,9 @@ function cloneCanvas(src: HTMLCanvasElement, width: number, height: number): HTM
   if (c.height !== height) c.height = height;
   const oc = c.getContext("2d")!;
   oc.setTransform(1, 0, 0, 1, 0, 0);
+  oc.globalCompositeOperation = "source-over";
+  oc.globalAlpha = 1;
   oc.clearRect(0, 0, width, height);
-  oc.drawImage(src, 0, 0);
   return c;
 }
 
@@ -1389,6 +1398,34 @@ function renderSubPanel(
   // Shift frame coords to canvas pixel coords for the sub-panel and all its contents.
   if (ox > 0 || oy > 0) ctx.translate(ox, oy);
 
+  // Layer groups share SubPanel's recursive stack but deliberately add no
+  // frame geometry: no clip, background, or border. Render the children into
+  // one isolated canvas so group opacity/fades apply once to the composite —
+  // applying alpha child-by-child makes overlaps incorrectly stay darker.
+  if (sp.group) {
+    const groupCanvas = acquireFrameCanvas(width, height);
+    const groupCtx = groupCanvas.getContext("2d")!;
+    const innerBudget = { remaining: Infinity };
+    const innerOpts = (ox > 0 || oy > 0) ? { ...opts, overscan: undefined } : opts;
+    drawContainerStack(
+      groupCtx, sp, tick, innerBudget, width, height, width, height,
+      innerOpts, parentLocalMs, parentDurMs, wiggleFps, skipAnim, "#000000"
+    );
+    if (!skipAnim) {
+      const envelope = computeAnim(sp.enter, sp.exit, parentLocalMs, parentDurMs, wiggleFps);
+      if (!isIdentity(envelope)) {
+        applyAnimTransform(ctx, envelope, width / 2, height / 2);
+      }
+      const motion = computeLayerAnim(sp.animation, parentLocalMs, wiggleFps);
+      if (!isIdentityLayerAnim(motion)) {
+        applyLayerAnimTransform(ctx, motion, width / 2, height / 2);
+      }
+    }
+    ctx.drawImage(groupCanvas, 0, 0);
+    ctx.restore();
+    return;
+  }
+
   if (!skipAnim) {
     const anim = computeAnim(sp.enter, sp.exit, parentLocalMs, parentDurMs, wiggleFps);
     if (!isIdentity(anim)) {
@@ -1396,20 +1433,6 @@ function renderSubPanel(
       const cy = sp.bounds.y + sp.bounds.h / 2;
       applyAnimTransform(ctx, anim, cx, cy);
     }
-  }
-
-  // Layer groups share SubPanel's recursive stack but deliberately add no
-  // frame geometry: no clip, background, or border. Their animation wraps
-  // the whole nested composite, which gives the group one fade envelope.
-  if (sp.group) {
-    const innerBudget = { remaining: Infinity };
-    const innerOpts = (ox > 0 || oy > 0) ? { ...opts, overscan: undefined } : opts;
-    drawContainerStack(
-      ctx, sp, tick, innerBudget, width, height, width, height,
-      innerOpts, parentLocalMs, parentDurMs, wiggleFps, skipAnim, "#000000"
-    );
-    ctx.restore();
-    return;
   }
 
   const pts = subPanelOutline(sp);

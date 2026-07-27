@@ -144,6 +144,49 @@ window.runNestedSubPanelClipTests = () => {
     mismatches.push(`expected half-faded group at (50,40), got rgba(${faded.r},${faded.g},${faded.b},${faded.a})`);
   }
 
+  // Fade the group as one isolated composite. Two overlapping opaque red
+  // children should still produce 50% red, not accumulate to 75% opacity.
+  {
+    const overlapPanel = makeLayerGroupPanel();
+    const group = overlapPanel.subPanels![0];
+    const duplicate = structuredClone(group.subPanels![0]);
+    duplicate.id = "red-frame-2";
+    duplicate.layers[0].id = "red-layer-2";
+    duplicate.stack = [{ kind: "layer", id: "red-layer-2" }];
+    group.subPanels!.push(duplicate);
+    group.stack!.push({ kind: "subpanel", id: duplicate.id });
+    renderPanel(ctx, overlapPanel, 2, WIDTH, HEIGHT, {
+      skipAnim: false, skipJitter: true, localMs: 250, wiggleFps: 8,
+    });
+    const overlap = sample(ctx, 50, 40);
+    if (overlap.g < 110 || overlap.g > 150 || overlap.b < 110 || overlap.b > 150) {
+      mismatches.push(`expected atomically faded overlap, got rgba(${overlap.r},${overlap.g},${overlap.b},${overlap.a})`);
+    }
+  }
+
+  // Layer-style motion applies to the complete group composite.
+  {
+    const movingPanel = makeLayerGroupPanel();
+    const group = movingPanel.subPanels![0];
+    group.enter = undefined;
+    group.animation = {
+      enabled: true,
+      startTick: 0,
+      durationTicks: 8,
+      from: { x: 0, y: 0, opacity: 1, scale: 1, rotation: 0 },
+      to: { x: 20, y: 0, opacity: 1, scale: 1, rotation: 0 },
+      easing: "linear",
+      loop: "none",
+    };
+    renderPanel(ctx, movingPanel, 4, WIDTH, HEIGHT, {
+      skipAnim: false, skipJitter: true, localMs: 500, wiggleFps: 8,
+    });
+    const moved = sample(ctx, 75, 40);
+    if (moved.r < 220 || moved.g > 40 || moved.b > 40) {
+      mismatches.push(`expected animated group motion at (75,40), got rgba(${moved.r},${moved.g},${moved.b},${moved.a})`);
+    }
+  }
+
   renderPanel(ctx, makeLayerGroupPanel(true), 2, WIDTH, HEIGHT, {
     skipAnim: false,
     skipJitter: true,

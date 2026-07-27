@@ -288,6 +288,8 @@ export type SubPanel = {
   stack?: PanelStackItem[];
   enter?: AnimationSpec;
   exit?: AnimationSpec;
+  /** Layer-style motion/opacity animation for an entire layer group. */
+  animation?: LayerAnimation;
 };
 
 // ---- Perspective guides -----------------------------------------------------

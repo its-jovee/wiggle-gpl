@@ -218,6 +218,7 @@ export function panelHasPlaybackContinuity(panel: Panel): boolean {
   }
   const visit = (sp: SubPanel) => {
     if (hasAnimSpec(sp.enter) || hasAnimSpec(sp.exit)) return true;
+    if (sp.animation?.enabled) return true;
     for (const layer of sp.layers) {
       if (layerHasPlaybackContinuity(layer)) return true;
     }

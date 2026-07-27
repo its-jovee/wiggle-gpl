@@ -1186,6 +1186,16 @@ function activeLayer(): Layer | null {
   return c.layers[c.getActiveLayerIndex()] ?? null;
 }
 
+function selectedLayerGroup(): SubPanel | null {
+  if (!selectedSubPanelId) return null;
+  const subPanel = findSubPanelById(activePanel(), selectedSubPanelId);
+  return subPanel?.group ? subPanel : null;
+}
+
+function activeAnimationTarget(): Layer | SubPanel | null {
+  return selectedLayerGroup() ?? activeLayer();
+}
+
 function activeContainerIsLocked(): boolean {
   let container: StackContainer = activePanel();
   for (const id of activeSubPanelPath) {
@@ -3678,7 +3688,7 @@ async function rasterizeActiveLayer() {
 }
 
 function copyActiveLayerAnimation() {
-  const anim = activeLayer()?.animation;
+  const anim = activeAnimationTarget()?.animation;
   if (!anim) return;
   animationClipboard = JSON.parse(JSON.stringify(anim)) as LayerAnimation;
   buildLayers();
@@ -3687,15 +3697,20 @@ function copyActiveLayerAnimation() {
 }
 
 function pasteAnimationToActiveLayer() {
-  const layer = activeLayer();
-  if (!layer || !animationClipboard) return;
-  if (!activeLayerIsEditable(true)) return;
-  layer.animation = JSON.parse(JSON.stringify(animationClipboard)) as LayerAnimation;
+  const target = activeAnimationTarget();
+  if (!target || !animationClipboard) return;
+  const group = selectedLayerGroup();
+  if (group?.locked) {
+    setStatus("Group is locked · unlock it before editing animation");
+    return;
+  }
+  if (!group && !activeLayerIsEditable(true)) return;
+  target.animation = JSON.parse(JSON.stringify(animationClipboard)) as LayerAnimation;
   commitHistory();
   buildTimeline();
   buildLayers();
   buildInspector();
-  setStatus(`pasted animation to ${layer.name}`);
+  setStatus(`pasted animation to ${group ? subPanelLabel(group) : (target as Layer).name}`);
 }
 
 function defaultLayerAnimation(): LayerAnimation {
@@ -3711,9 +3726,9 @@ function defaultLayerAnimation(): LayerAnimation {
   };
 }
 
-function ensureLayerAnimation(layer: Layer): LayerAnimation {
-  if (!layer.animation) layer.animation = defaultLayerAnimation();
-  return layer.animation;
+function ensureLayerAnimation(target: { animation?: LayerAnimation }): LayerAnimation {
+  if (!target.animation) target.animation = defaultLayerAnimation();
+  return target.animation;
 }
 
 function ensureNoiseDisplace(layer: Layer): LayerNoiseDisplace {
@@ -8210,6 +8225,32 @@ function buildTrackView(tl: HTMLElement) {
     tl.appendChild(row);
   };
 
+  const addMotionRow = (name: string, read: () => LayerAnimation | undefined, write: (animation: LayerAnimation) => void) => {
+    const animation = read();
+    if (!animation?.enabled) return;
+    const row = document.createElement("div");
+    row.className = "track-row";
+    const nm = document.createElement("span");
+    nm.textContent = name;
+    nm.className = "track-name";
+    row.appendChild(nm);
+    const track = document.createElement("div");
+    track.className = "track-strip";
+    for (let t = 1; t < totalTicks; t++) {
+      const grid = document.createElement("div");
+      grid.className = "tick-grid";
+      grid.style.left = `${(t / totalTicks) * 100}%`;
+      track.appendChild(grid);
+    }
+    track.appendChild(makeAnimBar("layer", animation, animation.startTick, totalTicks, (timing) => {
+      const current = read();
+      if (!current) return;
+      write({ ...current, startTick: timing.startTick, durationTicks: timing.durationTicks });
+    }));
+    row.appendChild(track);
+    tl.appendChild(row);
+  };
+
   addRow(
     `Panel`,
     () => panel.enter, (a) => { panel.enter = a; commitHistory(); },
@@ -8224,6 +8265,12 @@ function buildTrackView(tl: HTMLElement) {
       () => sp.enter, (a) => { sp.enter = a; commitHistory(); },
       () => sp.exit,  (a) => { sp.exit  = a; commitHistory(); },
     );
+    if (sp.group) {
+      addMotionRow(`Group motion: ${subPanelLabel(sp)}`, () => sp.animation, (animation) => {
+        sp.animation = animation;
+        commitHistory();
+      });
+    }
   });
 
   const allPanelLayers = [...panel.layers];
@@ -8238,33 +8285,10 @@ function buildTrackView(tl: HTMLElement) {
         (a) => { l.fadeOut = { durationTicks: a.durationTicks, startTick: a.startTick }; commitHistory(); },
       );
     }
-    if (l.animation?.enabled) {
-      const row = document.createElement("div");
-      row.className = "track-row";
-      const nm = document.createElement("span");
-      nm.textContent = `Layer: ${l.name}`;
-      nm.className = "track-name";
-      row.appendChild(nm);
-      const track = document.createElement("div");
-      track.className = "track-strip";
-      for (let t = 1; t < totalTicks; t++) {
-        const grid = document.createElement("div");
-        grid.className = "tick-grid";
-        grid.style.left = `${(t / totalTicks) * 100}%`;
-        track.appendChild(grid);
-      }
-      track.appendChild(makeAnimBar("layer", l.animation, l.animation.startTick, totalTicks, (timing) => {
-        if (!l.animation) return;
-        l.animation = {
-          ...l.animation,
-          startTick: timing.startTick,
-          durationTicks: timing.durationTicks,
-        };
-        commitHistory();
-      }));
-      row.appendChild(track);
-      tl.appendChild(row);
-    }
+    addMotionRow(`Layer: ${l.name}`, () => l.animation, (animation) => {
+      l.animation = animation;
+      commitHistory();
+    });
     (l.texts ?? []).forEach((t) => {
       addRow(
         `"${t.content.length > 12 ? t.content.slice(0, 12) + "…" : t.content}"`,
@@ -8277,7 +8301,7 @@ function buildTrackView(tl: HTMLElement) {
   // Empty-state hint
   let hasSubAnim = false;
   walkSubPanels(panel, (sp) => {
-    if ((sp.enter?.kind ?? "none") !== "none" || (sp.exit?.kind ?? "none") !== "none") hasSubAnim = true;
+    if ((sp.enter?.kind ?? "none") !== "none" || (sp.exit?.kind ?? "none") !== "none" || sp.animation?.enabled) hasSubAnim = true;
   });
   const hasAny = (panel.enter && panel.enter.kind !== "none") ||
                  (panel.exit && panel.exit.kind !== "none") ||
@@ -10124,9 +10148,10 @@ function buildLayerAnimation() {
   const toggleLabel = enableToggle?.closest(".brush-subtoggle");
   if (!host || !enableToggle) return;
 
-  const layer = activeLayer();
-  const enabled = !!layer?.animation?.enabled;
-  enableToggle.disabled = !layer;
+  const group = selectedLayerGroup();
+  const target = group ?? activeLayer();
+  const enabled = !!target?.animation?.enabled;
+  enableToggle.disabled = !target || !!group?.locked;
   enableToggle.checked = enabled;
   toggleLabel?.classList.toggle("is-on", enabled);
   host.removeAttribute("hidden");
@@ -10153,7 +10178,7 @@ function buildLayerAnimation() {
     return;
   }
 
-  if (!layer) return;
+  if (!target) return;
 
   let inner = host.querySelector<HTMLElement>(".layer-animation-inner");
   if (!inner) {
@@ -10162,7 +10187,8 @@ function buildLayerAnimation() {
     host.appendChild(inner);
   }
   inner.replaceChildren();
-  appendLayerInspector(inner, layer);
+  if (group) appendGroupAnimationInspector(inner, group);
+  else appendLayerInspector(inner, target as Layer);
 
   if (host.classList.contains("is-open")) return;
   // Start collapsed, then open on the next frame so the height can ease.
@@ -10190,18 +10216,25 @@ function fitInspectorPanelInViewport() {
 }
 
 function setLayerAnimationEnabled(on: boolean) {
-  const layer = activeLayer();
-  if (!layer) return;
+  const group = selectedLayerGroup();
+  const target = group ?? activeLayer();
+  if (!target) return;
+  if (group?.locked) {
+    setStatus("Group is locked · unlock it before editing animation");
+    buildLayerAnimation();
+    return;
+  }
   if (on) {
-    const anim = ensureLayerAnimation(layer);
+    const anim = ensureLayerAnimation(target);
     anim.enabled = true;
-    // Keep the current brush — use Set start (A) / Set end (B) to arm Move.
-    if (!animHintShown) {
+    // Group motion uses numeric A/B transforms; layers can additionally place
+    // those keyframes directly on the canvas.
+    if (!group && !animHintShown) {
       animHintShown = true;
       setStatus("Use Set start (A) / Set end (B), then drag on the canvas");
     }
-  } else if (layer.animation) {
-    layer.animation.enabled = false;
+  } else if (target.animation) {
+    target.animation.enabled = false;
     keyframeArm = null;
   }
   commitHistory();
@@ -10566,6 +10599,92 @@ function makeLayerAnimFold(title: string, key: string): { fold: HTMLDetailsEleme
   body.className = "sidebar-fold-body";
   fold.append(summary, body);
   return { fold, body };
+}
+
+function appendGroupAnimationInspector(host: HTMLElement, group: SubPanel) {
+  const anim = group.animation;
+  if (!anim?.enabled) return;
+  const section = document.createElement("div");
+  section.className = "inspector-section layer-anim-sections";
+  const { fold, body } = makeLayerAnimFold("Group motion", "group-motion");
+  fold.open = true;
+
+  const row = (label: string, child: HTMLElement) => {
+    const wrap = document.createElement("div");
+    wrap.className = "inspector-field";
+    const lab = document.createElement("span");
+    lab.className = "inspector-field-label";
+    lab.textContent = label;
+    wrap.append(lab, child);
+    body.appendChild(wrap);
+  };
+  const commit = () => {
+    commitHistory();
+    buildTimeline();
+  };
+
+  const timing = document.createElement("div");
+  timing.className = "inspector-field-pair";
+  for (const [key, label] of [["startTick", "Start"], ["durationTicks", "Ticks"]] as const) {
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = key === "durationTicks" ? "1" : "0";
+    input.step = "1";
+    input.value = String(anim[key]);
+    input.onchange = () => {
+      anim[key] = key === "durationTicks"
+        ? Math.max(1, +input.value || 1)
+        : Math.max(0, +input.value || 0);
+      commit();
+    };
+    lab.appendChild(input);
+    timing.appendChild(lab);
+  }
+  row("Timing", timing);
+
+  const easing = document.createElement("select");
+  for (const kind of EASINGS) {
+    const option = document.createElement("option");
+    option.value = kind;
+    option.textContent = kind;
+    option.selected = kind === anim.easing;
+    easing.appendChild(option);
+  }
+  easing.onchange = () => { anim.easing = easing.value as EasingKind; commit(); };
+  row("Easing", easing);
+
+  const loop = document.createElement("select");
+  for (const kind of LAYER_LOOPS) {
+    const option = document.createElement("option");
+    option.value = kind;
+    option.textContent = kind;
+    option.selected = kind === (anim.loop ?? "none");
+    loop.appendChild(option);
+  }
+  loop.onchange = () => { anim.loop = loop.value as LayerLoopKind; commit(); };
+  row("Loop", loop);
+
+  appendLayerTransformGrid(body, "From", anim.from, commit);
+  appendLayerTransformGrid(body, "To", anim.to, commit);
+
+  const buttons = document.createElement("div");
+  buttons.className = "inspector-buttons";
+  buttons.appendChild(iconButton(StudioIcons.CopyCheck, "Copy group animation", (event) => {
+    event.preventDefault();
+    copyActiveLayerAnimation();
+  }, "cellbtn iconbtn inspector-iconbtn"));
+  const paste = iconButton(StudioIcons.ClipboardCheck, "Paste group animation", (event) => {
+    event.preventDefault();
+    pasteAnimationToActiveLayer();
+  }, "cellbtn iconbtn inspector-iconbtn");
+  paste.disabled = !animationClipboard;
+  buttons.appendChild(paste);
+  body.appendChild(buttons);
+
+  section.appendChild(fold);
+  host.appendChild(section);
 }
 
 function appendLayerInspector(host: HTMLElement, layer: Layer) {

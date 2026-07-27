@@ -274,6 +274,22 @@ test("layer animation does not affect raw-layer localMs cache key", () => {
   }), true);
 });
 
+test("group animation requests continuous playback", () => {
+  const group = {
+    group: true,
+    layers: [],
+    subPanels: [],
+    animation: { enabled: true, startTick: 0, durationTicks: 8, from: {}, to: {}, easing: "linear" },
+  };
+  assert.equal(schedule.panelHasPlaybackContinuity({
+    durationMs: 1000,
+    bg: "#fff",
+    paletteId: null,
+    layers: [],
+    subPanels: [group],
+  }), true);
+});
+
 test("layer fades request continuous playback without invalidating raw pixels", () => {
   const fadedLayer = {
     texts: [],
