@@ -43,6 +43,18 @@ test("default stack is layers then subpanels", () => {
   ]);
 });
 
+test("newLayerGroup creates an unclipped nested stack around its layers", () => {
+  const layer = types.newLayer("Ink");
+  const group = types.newLayerGroup("Characters", 1080, 1920, [layer]);
+  assert.equal(group.group, true);
+  assert.equal(group.visible, true);
+  assert.equal(group.name, "Characters");
+  assert.deepEqual(group.bounds, { x: 0, y: 0, w: 1080, h: 1920 });
+  assert.equal(group.border.thickness, 0);
+  assert.deepEqual(group.layers, [layer]);
+  assert.deepEqual(group.stack, [{ kind: "layer", id: layer.id }]);
+});
+
 test("moveStackItem can place a layer above a subpanel", () => {
   const panel = {
     layers: [
@@ -227,4 +239,6 @@ test("subPanelLabel distinguishes manga frames from speech balloons", () => {
   const balloon = { ...frame, id: "b1", shape: "balloon" };
   assert.equal(stack.subPanelLabel(frame), "Sub-Panel (Rect)");
   assert.equal(stack.subPanelLabel(balloon), "Balloon (Balloon)");
+  assert.equal(stack.subPanelLabel({ ...frame, id: "g1", group: true, name: "Characters" }), "Characters");
+  assert.equal(stack.subPanelLabel({ ...frame, id: "g2", group: true }), "Layer Group");
 });

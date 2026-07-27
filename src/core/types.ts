@@ -263,6 +263,12 @@ export type SubPanelBorder = {
 
 export type SubPanel = {
   id: string;
+  /** Layer groups reuse the nested stack model without a frame clip/border. */
+  group?: boolean;
+  /** User-facing label for a layer group. Frames derive their label from shape. */
+  name?: string;
+  /** Groups can be hidden as a unit. Existing frames default to visible. */
+  visible?: boolean;
   bounds: { x: number; y: number; w: number; h: number };
   shape: SubPanelShape;
   /** Closed outline for `shape: "custom"` (from Cut Subpanel). Ignored otherwise. */
@@ -537,6 +543,30 @@ export function newSubPanel(
     activeLayerIndex: 0,
     subPanels: [],
     stack: [{ kind: "layer", id: layer.id }],
+  };
+}
+
+/** A group is a full-canvas, unclipped SubPanel container. This keeps nested
+ *  layer ordering and serialization on the existing, recursive stack model. */
+export function newLayerGroup(
+  name: string,
+  width: number,
+  height: number,
+  layers: Layer[] = []
+): SubPanel {
+  return {
+    id: crypto.randomUUID(),
+    group: true,
+    name,
+    visible: true,
+    bounds: { x: 0, y: 0, w: width, h: height },
+    shape: "rect",
+    border: { brush: "round", color: "#000000", thickness: 0, wiggleAmplitude: 0 },
+    bg: null,
+    layers,
+    activeLayerIndex: Math.max(0, layers.length - 1),
+    subPanels: [],
+    stack: layers.map((layer) => ({ kind: "layer", id: layer.id })),
   };
 }
 

@@ -840,7 +840,7 @@
       width: 30px; min-width: 30px; min-height: 30px; padding: 0;
       display: grid; place-items: center;
     }
-    .layer-row { display: grid; grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+    .layer-row { display: grid; grid-template-columns: 14px 16px 48px minmax(0, 1fr) auto;
       column-gap: 4px; row-gap: 0; align-items: center; padding: 4px 5px;
       border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer;
       position: relative;
@@ -908,7 +908,16 @@
     .layer-row.dragging { opacity: 0.4; }
     .layer-row.drop-above { box-shadow: 0 -2px 0 0 var(--accent); }
     .layer-row.drop-below { box-shadow: 0 2px 0 0 var(--accent); }
+    .layer-row.drop-into { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); }
     .layer-row.subpanel-row { border-style: dashed; }
+    .layer-preview { width: 48px; height: 36px; border: 1px solid var(--border-subtle);
+      border-radius: 3px; object-fit: contain;
+      background-color: #fff;
+      background-image: linear-gradient(45deg, #e8e8e8 25%, transparent 25%),
+        linear-gradient(-45deg, #e8e8e8 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #e8e8e8 75%),
+        linear-gradient(-45deg, transparent 75%, #e8e8e8 75%);
+      background-size: 8px 8px; background-position: 0 0, 0 4px, 4px -4px, -4px 0; }
     .layer-vis-spacer { width: 14px; height: 14px; flex-shrink: 0; }
     .layer-name { background:var(--bg); color:var(--ink); border:1px solid var(--line);
       border-radius:var(--radius-sm); padding:2px 4px; font-size:11px; font-family:inherit; min-width:0; }

@@ -980,7 +980,8 @@ function drawLayerWithBlend(
   if (at && (at.w <= 0 || at.h <= 0)) return;
   ctx.save();
   ctx.globalCompositeOperation = canvasBlendMode(mode);
-  ctx.globalAlpha = 1;
+  // Preserve inherited alpha from an animated parent frame/layer group. The
+  // layer's own opacity is already baked into `layerCanvas` when needed.
   if (at) ctx.drawImage(layerCanvas, at.x, at.y);
   else ctx.drawImage(layerCanvas, 0, 0);
   ctx.restore();
@@ -1379,6 +1380,7 @@ function renderSubPanel(
   wiggleFps: number,
   skipAnim: boolean
 ) {
+  if (sp.visible === false) return;
   const ox = opts?.overscan?.x ?? 0;
   const oy = opts?.overscan?.y ?? 0;
 
@@ -1394,6 +1396,20 @@ function renderSubPanel(
       const cy = sp.bounds.y + sp.bounds.h / 2;
       applyAnimTransform(ctx, anim, cx, cy);
     }
+  }
+
+  // Layer groups share SubPanel's recursive stack but deliberately add no
+  // frame geometry: no clip, background, or border. Their animation wraps
+  // the whole nested composite, which gives the group one fade envelope.
+  if (sp.group) {
+    const innerBudget = { remaining: Infinity };
+    const innerOpts = (ox > 0 || oy > 0) ? { ...opts, overscan: undefined } : opts;
+    drawContainerStack(
+      ctx, sp, tick, innerBudget, width, height, width, height,
+      innerOpts, parentLocalMs, parentDurMs, wiggleFps, skipAnim, "#000000"
+    );
+    ctx.restore();
+    return;
   }
 
   const pts = subPanelOutline(sp);

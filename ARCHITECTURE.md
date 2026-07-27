@@ -6,14 +6,21 @@ PRODUCT.md; for working rules, AGENTS.md.
 ## Data model (`src/core/types.ts`)
 ```
 Project { version, width=1080, height=1920, wiggleFps, panels[] }
-Panel   { id, durationMs, bg, paletteId, strokes[] }
-Stroke  { brush, color, size, points[] }   // points are RAW, un-jittered
+Panel    { id, durationMs, bg, paletteId, layers[], subPanels[], stack[] }
+Layer    { id, opacity, fadeIn?, fadeOut?, strokes[], fills[], texts[] }
+SubPanel { id, group?, layers[], subPanels[], stack[], enter?, exit? }
+Stroke   { brush, color, size, points[] }   // points are RAW, un-jittered
 ```
 The entire document state is one serializable `Project` object. Save/load is
 JSON in/out. Application-level library state lives separately in IndexedDB:
 the spatial Project Board stores project JSON records, cached static previews,
 card positions, and the last active panel/viewport. Board state is never
 embedded in exported project JSON.
+
+Layer groups reuse the recursive SubPanel container and stack. A group is
+full-canvas, borderless, and unclipped; its enter/exit fade wraps the complete
+nested composite. This keeps group ordering, nesting, save/load, and
+deterministic render timing on the same paths as sub-panels.
 
 Why raw points: storing un-jittered points means the wiggle can be recomputed at
 any time, at any scale, deterministically. If we stored jittered points we'd

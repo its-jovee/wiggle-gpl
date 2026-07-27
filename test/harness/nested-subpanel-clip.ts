@@ -56,6 +56,43 @@ function makeNestedPanel(): Panel {
   };
 }
 
+function makeLayerGroupPanel(hidden = false): Panel {
+  const redFrame: SubPanel = {
+    id: "red-frame",
+    bounds: { x: 20, y: 20, w: 50, h: 50 },
+    shape: "rect",
+    border: { brush: "round", color: "#ff0000", thickness: 0, wiggleAmplitude: 0 },
+    bg: "#ff0000",
+    layers: [emptyLayer("red-layer")],
+    subPanels: [],
+    stack: [{ kind: "layer", id: "red-layer" }],
+  };
+  const group: SubPanel = {
+    id: "group",
+    group: true,
+    name: "Characters",
+    visible: !hidden,
+    // Deliberately tiny: groups must not clip contents to these compatibility bounds.
+    bounds: { x: 0, y: 0, w: 5, h: 5 },
+    shape: "rect",
+    border: { brush: "round", color: "#000000", thickness: 0, wiggleAmplitude: 0 },
+    bg: null,
+    layers: [],
+    subPanels: [redFrame],
+    stack: [{ kind: "subpanel", id: "red-frame" }],
+    enter: { kind: "fade", durationTicks: 4 },
+  };
+  return {
+    id: "group-panel",
+    durationMs: 1000,
+    bg: "#ffffff",
+    paletteId: null,
+    layers: [],
+    subPanels: [group],
+    stack: [{ kind: "subpanel", id: "group" }],
+  };
+}
+
 function sample(ctx: CanvasRenderingContext2D, x: number, y: number) {
   const d = ctx.getImageData(x, y, 1, 1).data;
   return { r: d[0], g: d[1], b: d[2], a: d[3] };
@@ -92,6 +129,31 @@ window.runNestedSubPanelClipTests = () => {
   const outside = sample(ctx, 50, 30);
   if (outside.r < 200 || outside.g < 200 || outside.b < 200) {
     mismatches.push(`expected parent clip at (50,30), got rgba(${outside.r},${outside.g},${outside.b},${outside.a})`);
+  }
+
+  // A layer group is an unclipped nested stack and its fade wraps all content.
+  renderPanel(ctx, makeLayerGroupPanel(), 2, WIDTH, HEIGHT, {
+    skipAnim: false,
+    skipJitter: true,
+    localMs: 250,
+    wiggleFps: 8,
+    renderCache: createRenderCache(4),
+  });
+  const faded = sample(ctx, 50, 40);
+  if (faded.r < 245 || faded.g < 110 || faded.g > 150 || faded.b < 110 || faded.b > 150) {
+    mismatches.push(`expected half-faded group at (50,40), got rgba(${faded.r},${faded.g},${faded.b},${faded.a})`);
+  }
+
+  renderPanel(ctx, makeLayerGroupPanel(true), 2, WIDTH, HEIGHT, {
+    skipAnim: false,
+    skipJitter: true,
+    localMs: 250,
+    wiggleFps: 8,
+    renderCache: createRenderCache(4),
+  });
+  const hidden = sample(ctx, 50, 40);
+  if (hidden.r < 245 || hidden.g < 245 || hidden.b < 245) {
+    mismatches.push(`expected hidden group to show panel background, got rgba(${hidden.r},${hidden.g},${hidden.b},${hidden.a})`);
   }
 
   return mismatches;

@@ -175,6 +175,7 @@ export function remapPanelStack(
 }
 
 export function subPanelLabel(sp: SubPanel): string {
+  if (sp.group) return sp.name?.trim() || "Layer Group";
   const shape =
     sp.shape === "rect" ? "Rect"
     : sp.shape === "rounded" ? "Rounded"

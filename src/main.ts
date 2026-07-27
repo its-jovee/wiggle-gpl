@@ -11,7 +11,7 @@ import {
   EasingKind, LayerLoopKind, LayerAnimTransform, FrameGroup, BrushPreset,
   PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings, ToneStyle,
   LayerNoiseDisplace, ReferenceImage,
-  newProject as createProject, newPanel, newLayer, newSubPanel, newPerspectiveGuide, newReferenceImage, migrateProject,
+  newProject as createProject, newPanel, newLayer, newSubPanel, newLayerGroup, newPerspectiveGuide, newReferenceImage, migrateProject,
   isBlankQuickStartProject,
 } from "./core/types";
 import {
@@ -181,6 +181,7 @@ import {
 } from "./core/panelOps";
 import {
   MAX_PANEL_ANNOTATION_CHARS,
+  MAX_LAYERS_PER_PANEL,
   MAX_REFERENCE_DIMENSION,
   MAX_REFERENCE_IMAGES,
   MAX_SUBPANEL_DEPTH,
@@ -1006,6 +1007,12 @@ function activeStackContainer(): StackContainer {
   return sp ?? p;
 }
 
+/** Geometric sub-panels participate in canvas hit-testing. Layer groups are
+ *  stack-only containers and are opened from the Layers panel instead. */
+function frameSubPanels(container: StackContainer): SubPanel[] {
+  return (container.subPanels ?? []).filter((sp) => !sp.group);
+}
+
 function findSubPanelById(panel: Panel, id: string): SubPanel | null {
   let found: SubPanel | null = null;
   walkSubPanels(panel, (sp) => {
@@ -1026,6 +1033,87 @@ function removeSubPanelById(panel: Panel, subPanelId: string): boolean {
   if (!parent) return false;
   stackRemoveSubPanel(parent, subPanelId);
   parent.subPanels = (parent.subPanels ?? []).filter((s) => s.id !== subPanelId);
+  return true;
+}
+
+function groupActiveLayer(): void {
+  const cont = activeContainer();
+  const layer = cont.layers[cont.getActiveLayerIndex()];
+  if (!layer) return;
+  if (countSubPanels(activePanel()) >= MAX_SUBPANELS_PER_PANEL) {
+    setStatus(`Layer group limit reached (${MAX_SUBPANELS_PER_PANEL} nested containers)`);
+    return;
+  }
+  if (activeSubPanelPath.length >= MAX_SUBPANEL_DEPTH) {
+    setStatus(`Layer group nesting depth limit reached (${MAX_SUBPANEL_DEPTH})`);
+    return;
+  }
+  const container = cont.container;
+  const stack = ensurePanelStack(container);
+  const stackIndex = stack.findIndex((item) => item.kind === "layer" && item.id === layer.id);
+  if (stackIndex < 0) return;
+
+  const groupCount = (container.subPanels ?? []).filter((sp) => sp.group).length;
+  const group = newLayerGroup(`Group ${groupCount + 1}`, project.width, project.height, [layer]);
+  container.layers = container.layers.filter((candidate) => candidate.id !== layer.id);
+  (container.subPanels ??= []).push(group);
+  stack.splice(stackIndex, 1, { kind: "subpanel", id: group.id });
+  container.stack = stack;
+  container.activeLayerIndex = Math.max(0, Math.min(
+    container.activeLayerIndex ?? 0,
+    container.layers.length - 1,
+  ));
+  selectedSubPanelId = group.id;
+  selectedText = null;
+  commitHistory();
+  buildLayers();
+  buildInspector();
+}
+
+function moveLayerIntoGroup(container: StackContainer, layerId: string, group: SubPanel): boolean {
+  if (!group.group) return false;
+  if (group.layers.length >= MAX_LAYERS_PER_PANEL) {
+    setStatus(`Layer limit reached (${MAX_LAYERS_PER_PANEL})`);
+    return false;
+  }
+  const layerIndex = container.layers.findIndex((layer) => layer.id === layerId);
+  if (layerIndex < 0) return false;
+  const [layer] = container.layers.splice(layerIndex, 1);
+  stackRemoveLayer(container, layer.id);
+  group.layers.push(layer);
+  stackInsertLayer(group, layer.id);
+  group.activeLayerIndex = group.layers.length - 1;
+  container.activeLayerIndex = Math.max(0, Math.min(
+    container.activeLayerIndex ?? 0,
+    container.layers.length - 1,
+  ));
+  return true;
+}
+
+function ungroupLayerGroup(group: SubPanel): boolean {
+  if (!group.group) return false;
+  const parent = parentContainerOf(activePanel(), group.id);
+  if (!parent) return false;
+  const parentStack = ensurePanelStack(parent);
+  const groupIndex = parentStack.findIndex((item) => item.kind === "subpanel" && item.id === group.id);
+  if (groupIndex < 0) return false;
+  if (parent.layers.length + group.layers.length > MAX_LAYERS_PER_PANEL) {
+    setStatus(`Cannot ungroup: parent would exceed ${MAX_LAYERS_PER_PANEL} layers`);
+    return false;
+  }
+
+  const groupStack = ensurePanelStack(group);
+  parent.layers.push(...group.layers);
+  (parent.subPanels ??= []).push(...(group.subPanels ?? []));
+  parent.subPanels = parent.subPanels.filter((sp) => sp.id !== group.id);
+  parentStack.splice(groupIndex, 1, ...groupStack);
+  parent.stack = parentStack;
+  const firstLayer = groupStack.find((item) => item.kind === "layer");
+  if (firstLayer) {
+    const index = parent.layers.findIndex((layer) => layer.id === firstLayer.id);
+    if (index >= 0) parent.activeLayerIndex = index;
+  }
+  selectedSubPanelId = null;
   return true;
 }
 
@@ -2451,7 +2539,7 @@ function cutAtShape(shape: SelectionShape, inverted = false): MarqueeRef[] {
   const cont = activeContainer();
   const inSelection = (p: Vec2) => pointInRegionSelection(p, shape, inverted);
 
-  for (const sp of activeStackContainer().subPanels ?? []) {
+  for (const sp of frameSubPanels(activeStackContainer())) {
     const cx = sp.bounds.x + sp.bounds.w / 2;
     const cy = sp.bounds.y + sp.bounds.h / 2;
     if (inSelection({ x: cx, y: cy })) {
@@ -3695,7 +3783,7 @@ canvas.addEventListener("pointerdown", (e) => {
   // Select tool — universal mouse / picker. Priority: tail handle (when a
   // balloon/thought is selected) → text → sub-panel → deselect.
   if (currentBrush === SELECT_KEY) {
-    const sps = activeStackContainer().subPanels ?? [];
+    const sps = frameSubPanels(activeStackContainer());
     if (selectedSubPanelId) {
       const sp = findSubPanelById(activePanel(), selectedSubPanelId) ?? sps.find(s => s.id === selectedSubPanelId);
       if (sp && (sp.shape === "balloon" || sp.shape === "thought") && sp.tail) {
@@ -4593,7 +4681,7 @@ canvas.addEventListener("dblclick", (e) => {
       return;
     }
   }
-  const sps = activeStackContainer().subPanels ?? [];
+  const sps = frameSubPanels(activeStackContainer());
   for (let i = sps.length - 1; i >= 0; i--) {
     if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
       enterChildSubPanel(sps[i].id);
@@ -4620,7 +4708,7 @@ canvas.addEventListener("click", (e) => {
   if (playing) return;
   if (TOOL_KEYS.has(currentBrush)) return;
   const pos = canvasPos(e);
-  const sps = activeStackContainer().subPanels ?? [];
+  const sps = frameSubPanels(activeStackContainer());
   for (let i = sps.length - 1; i >= 0; i--) {
     if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
       selectedSubPanelId = sps[i].id;
@@ -4883,7 +4971,7 @@ function createSubPanel(bounds: { x: number; y: number; w: number; h: number }, 
  */
 function maybeEnterSubPanelAt(pos: { x: number; y: number }): boolean {
   if (activeSubPanelPath.length >= MAX_SUBPANEL_DEPTH) return false;
-  const sps = activeStackContainer().subPanels ?? [];
+  const sps = frameSubPanels(activeStackContainer());
   for (let i = sps.length - 1; i >= 0; i--) {
     if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
       enterChildSubPanel(sps[i].id);
@@ -4897,7 +4985,7 @@ function maybeEnterSubPanelAt(pos: { x: number; y: number }): boolean {
 }
 
 function findCutTargetSubPanel(a: { x: number; y: number }, b: { x: number; y: number }): SubPanel | null {
-  const sps = activeStackContainer().subPanels ?? [];
+  const sps = frameSubPanels(activeStackContainer());
   if (selectedSubPanelId) {
     const selected = sps.find((s) => s.id === selectedSubPanelId);
     if (selected && lineCrossesSubPanel(selected, a, b)) return selected;
@@ -5180,7 +5268,7 @@ function drawLiveStrokeOverlay() {
 
   let bg = panel.bg;
   let subPanelShapePoints: Vec2[] | null = null;
-  if (sp) {
+  if (sp && !sp.group) {
     subPanelShapePoints = subPanelOutline(sp);
     ctx.save();
     ctx.clip(pointsToPath(subPanelShapePoints));
@@ -5201,8 +5289,8 @@ function drawLiveStrokeOverlay() {
     skipJitter: !jitterEnabled,
   });
   if (clip) ctx.restore();
-  if (sp) ctx.restore();
-  if (sp && subPanelShapePoints) {
+  if (sp && !sp.group) ctx.restore();
+  if (sp && !sp.group && subPanelShapePoints) {
     strokeBorder(
       ctx,
       subPanelShapePoints,
@@ -5828,7 +5916,7 @@ function loop(now: number) {
       const sp = selectedSubPanelId
         ? findSubPanelById(activePanel(), selectedSubPanelId)
         : null;
-      if (sp) {
+      if (sp && !sp.group) {
         ctx.save();
         ctx.strokeStyle = "rgba(255,205,117,0.9)";
         ctx.setLineDash([8, 4]);
@@ -8041,13 +8129,15 @@ function buildTrackView(tl: HTMLElement) {
   walkSubPanels(panel, (sp) => {
     subAnimIndex++;
     addRow(
-      `Sub ${subAnimIndex} (${sp.shape})`,
+      sp.group ? `Group: ${subPanelLabel(sp)}` : `Sub ${subAnimIndex} (${sp.shape})`,
       () => sp.enter, (a) => { sp.enter = a; commitHistory(); },
       () => sp.exit,  (a) => { sp.exit  = a; commitHistory(); },
     );
   });
 
-  panel.layers.forEach((l) => {
+  const allPanelLayers = [...panel.layers];
+  walkSubPanels(panel, (sp) => allPanelLayers.push(...sp.layers));
+  allPanelLayers.forEach((l) => {
     if (l.fadeIn || l.fadeOut) {
       addRow(
         `Layer fade: ${l.name}`,
@@ -8101,8 +8191,8 @@ function buildTrackView(tl: HTMLElement) {
   const hasAny = (panel.enter && panel.enter.kind !== "none") ||
                  (panel.exit && panel.exit.kind !== "none") ||
                  hasSubAnim ||
-                 panel.layers.some(l => !!l.animation?.enabled || !!l.fadeIn || !!l.fadeOut) ||
-                 panel.layers.some(l => (l.texts ?? []).some(t => (t.enter?.kind ?? "none") !== "none" || (t.exit?.kind ?? "none") !== "none"));
+                 allPanelLayers.some(l => !!l.animation?.enabled || !!l.fadeIn || !!l.fadeOut) ||
+                 allPanelLayers.some(l => (l.texts ?? []).some(t => (t.enter?.kind ?? "none") !== "none" || (t.exit?.kind ?? "none") !== "none"));
   if (!hasAny) {
     const hint = document.createElement("div");
     hint.className = "track-hint";
@@ -8584,7 +8674,7 @@ function buildBreadcrumb() {
     const path = activeSubPanelPath.slice(0, depth + 1);
     const sp = subPanelAtPath(panel, path);
     const label = sp
-      ? `▸ ${isBalloonShape(sp.shape) ? "Balloon" : "Sub-Panel"} (${sp.shape})`
+      ? `▸ ${sp.group ? subPanelLabel(sp) : `${isBalloonShape(sp.shape) ? "Balloon" : "Sub-Panel"} (${sp.shape})`}`
       : "▸ Sub-Panel";
     host.appendChild(document.createTextNode(" "));
     const isLeaf = depth === activeSubPanelPath.length - 1;
@@ -8638,7 +8728,12 @@ function syncStackRowActiveStates(host: HTMLElement, opts: {
   });
 }
 
-function bindStackRowReorder(row: HTMLElement, container: StackContainer, stackIndex: number) {
+function bindStackRowReorder(
+  row: HTMLElement,
+  container: StackContainer,
+  stackIndex: number,
+  dropIntoGroup?: SubPanel,
+) {
   const handle = row.querySelector<HTMLElement>(".drag-handle");
   if (!handle) return;
   handle.draggable = true;
@@ -8650,25 +8745,41 @@ function bindStackRowReorder(row: HTMLElement, container: StackContainer, stackI
   handle.addEventListener("dragend", () => {
     row.classList.remove("dragging");
     document.querySelectorAll(".layer-row").forEach((r) =>
-      r.classList.remove("drop-above", "drop-below"));
+      r.classList.remove("drop-above", "drop-below", "drop-into"));
   });
   row.addEventListener("dragover", (e) => {
     if (!e.dataTransfer?.types.includes("text/plain")) return;
     e.preventDefault();
     const rect = row.getBoundingClientRect();
+    const intoGroup = !!dropIntoGroup?.group
+      && e.clientY >= rect.top + rect.height * 0.25
+      && e.clientY <= rect.bottom - rect.height * 0.25;
     const isAbove = e.clientY < rect.top + rect.height / 2;
     document.querySelectorAll(".layer-row").forEach((r) =>
-      r.classList.remove("drop-above", "drop-below"));
-    row.classList.add(isAbove ? "drop-above" : "drop-below");
+      r.classList.remove("drop-above", "drop-below", "drop-into"));
+    row.classList.add(intoGroup ? "drop-into" : isAbove ? "drop-above" : "drop-below");
   });
   row.addEventListener("drop", (e) => {
     e.preventDefault();
-    row.classList.remove("drop-above", "drop-below");
+    row.classList.remove("drop-above", "drop-below", "drop-into");
     const raw = e.dataTransfer!.getData("text/plain");
     if (!raw.startsWith("stack:")) return;
     const from = +raw.slice(6);
     if (Number.isNaN(from)) return;
     const rect = row.getBoundingClientRect();
+    const intoGroup = !!dropIntoGroup?.group
+      && e.clientY >= rect.top + rect.height * 0.25
+      && e.clientY <= rect.bottom - rect.height * 0.25;
+    if (intoGroup) {
+      const source = ensurePanelStack(container)[from];
+      if (source?.kind === "layer" && moveLayerIntoGroup(container, source.id, dropIntoGroup)) {
+        selectedSubPanelId = dropIntoGroup.id;
+        commitHistory();
+        buildLayers();
+        buildInspector();
+      }
+      return;
+    }
     const isAbove = e.clientY < rect.top + rect.height / 2;
     // Newest-on-top display: visual above → later in stack array.
     let to = isAbove ? stackIndex + 1 : stackIndex;
@@ -8681,7 +8792,61 @@ function bindStackRowReorder(row: HTMLElement, container: StackContainer, stackI
   });
 }
 
+type StackPreviewSource = { layer: Layer } | { subPanel: SubPanel };
+const stackPreviewQueue: Array<() => void> = [];
+let stackPreviewFrame = 0;
+
+function pumpStackPreviews() {
+  stackPreviewFrame = 0;
+  // One full-resolution composite per frame keeps a large layer stack from
+  // blocking the editor while its small previews populate.
+  stackPreviewQueue.shift()?.();
+  if (stackPreviewQueue.length) {
+    stackPreviewFrame = requestAnimationFrame(pumpStackPreviews);
+  }
+}
+
+function makeStackPreview(source: StackPreviewSource): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.className = "layer-preview";
+  canvas.width = 48;
+  canvas.height = 36;
+  canvas.setAttribute("aria-hidden", "true");
+  const panel = activePanel();
+  const previewPanel: Panel = {
+    ...panel,
+    bg: "#000000",
+    layers: "layer" in source ? [source.layer] : [],
+    subPanels: "subPanel" in source ? [source.subPanel] : [],
+    stack: "layer" in source
+      ? [{ kind: "layer", id: source.layer.id }]
+      : [{ kind: "subpanel", id: source.subPanel.id }],
+    enter: undefined,
+    exit: undefined,
+    transitionToNext: undefined,
+  };
+  stackPreviewQueue.push(() => {
+    if (!canvas.isConnected) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(canvas.width / project.width, canvas.height / project.height);
+    renderPanel(ctx, previewPanel, wiggleTick, project.width, project.height, {
+      skipBg: true,
+      skipAnim: true,
+      skipJitter: true,
+      renderCache: displayRenderCache,
+      contentVersion: renderContentVersion,
+      deferFillMasks: true,
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  });
+  if (!stackPreviewFrame) stackPreviewFrame = requestAnimationFrame(pumpStackPreviews);
+  return canvas;
+}
+
 function buildLayers() {
+  stackPreviewQueue.length = 0;
   const host = $("layers");
   host.innerHTML = "";
   const panel = activePanel();
@@ -8731,6 +8896,12 @@ function buildLayers() {
     buildInspector();
   }, "ghost iconbtn"));
 
+  const groupButton = iconButton(StudioIcons.Layers, "Group active layer", () => {
+    groupActiveLayer();
+  }, "ghost iconbtn");
+  groupButton.disabled = !activeLayer();
+  addRow.appendChild(groupButton);
+
   if (addHost === host) host.appendChild(addRow);
 
   // Rulers are layer-bound: switching layers can swap which ruler applies,
@@ -8764,36 +8935,53 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
       row.appendChild(handle);
 
       const spacer = document.createElement("span");
-      spacer.className = "layer-vis-spacer";
-      spacer.title = "Sub-panels stay visible; enter to edit their layers";
-      row.appendChild(spacer);
+      if (sp.group) {
+        const visible = document.createElement("input");
+        visible.type = "checkbox";
+        visible.checked = sp.visible !== false;
+        visible.title = "Show or hide this group";
+        visible.onchange = () => {
+          sp.visible = visible.checked;
+          commitHistory();
+        };
+        row.appendChild(visible);
+      } else {
+        spacer.className = "layer-vis-spacer";
+        spacer.title = "Sub-panels stay visible; enter to edit their layers";
+        row.appendChild(spacer);
+      }
+
+      row.appendChild(makeStackPreview({ subPanel: sp }));
 
       const nameCell = document.createElement("div");
       nameCell.className = "layer-name-cell";
       const nameEl = document.createElement("span");
       nameEl.className = "layer-label";
       nameEl.textContent = subPanelLabel(sp);
-      nameEl.title = "Click to select · double-click to enter";
+      nameEl.title = sp.group
+        ? "Click to select · double-click to open · drop layers here to group"
+        : "Click to select · double-click to enter";
       nameCell.appendChild(nameEl);
       const kindTag = document.createElement("span");
       kindTag.className = "layer-tag";
-      kindTag.textContent = isBalloonShape(sp.shape) ? "BLN" : "SUB";
-      kindTag.title = isBalloonShape(sp.shape)
+      kindTag.textContent = sp.group ? "GRP" : isBalloonShape(sp.shape) ? "BLN" : "SUB";
+      kindTag.title = sp.group
+        ? "Layer group — nested layers share visibility and fade timing"
+        : isBalloonShape(sp.shape)
         ? "Speech balloon — drag to place above or below"
         : "Sub-panel frame — drag to place drawings above or below";
       nameCell.appendChild(kindTag);
       row.appendChild(nameCell);
 
-      const enterBtn = iconButton(StudioIcons.Layers, "Enter sub-panel", (e) => {
+      const enterBtn = iconButton(StudioIcons.Layers, sp.group ? "Open group" : "Enter sub-panel", (e) => {
         e.stopPropagation();
         enterChildSubPanel(sp.id);
         buildBreadcrumb();
         buildLayers();
         buildInspector();
       });
-      row.appendChild(enterBtn);
 
-      const del = iconButton(StudioIcons.Trash, "Delete sub-panel", (e) => {
+      const del = iconButton(StudioIcons.Trash, sp.group ? "Delete group and its contents" : "Delete sub-panel", (e) => {
         e.stopPropagation();
         removeSubPanelById(panel, sp.id);
         if (activeSubPanelPath.includes(sp.id)) {
@@ -8805,9 +8993,12 @@ function buildContainerStackLayers(host: HTMLElement, container: StackContainer)
         buildLayers();
         buildInspector();
       });
-      row.appendChild(del);
+      const rowActions = document.createElement("div");
+      rowActions.className = "layer-actions";
+      rowActions.append(enterBtn, del);
+      row.appendChild(rowActions);
 
-      bindStackRowReorder(row, container, si);
+      bindStackRowReorder(row, container, si, sp.group ? sp : undefined);
 
       row.onclick = (e) => {
         const t = e.target as HTMLElement;
@@ -8866,6 +9057,8 @@ function appendLayerRow(
   vis.type = "checkbox"; vis.checked = layer.visible;
   vis.onchange = () => { layer.visible = vis.checked; commitHistory(); };
   row.appendChild(vis);
+
+  row.appendChild(makeStackPreview({ layer }));
 
   const nameEl = document.createElement("span");
   nameEl.className = "layer-label";
@@ -9174,7 +9367,7 @@ function buildInspector() {
     if (summaryEl) {
       setInspectorModuleSummaryLabel(
         summaryEl,
-        sp && isBalloonShape(sp.shape) ? "Balloon Properties" : "Sub-Panel Properties",
+        sp?.group ? "Layer Group" : sp && isBalloonShape(sp.shape) ? "Balloon Properties" : "Sub-Panel Properties",
       );
     }
   } else {
@@ -9193,7 +9386,9 @@ function buildInspector() {
   if (selectedSubPanelId) {
     const sp = findSubPanelById(activePanel(), selectedSubPanelId);
     if (!sp) { selectedSubPanelId = null; return; }
-    if (isBalloonShape(sp.shape)) {
+    if (sp.group) {
+      appendLayerGroupInspector(subPanelHost, sp);
+    } else if (isBalloonShape(sp.shape)) {
       const shapes = sp.shape === "custom" ? (["custom", ...BALLOON_SHAPES] as SubPanelShape[]) : BALLOON_SHAPES;
       appendSubPanelInspector(balloonHost, sp, shapes, (shape) => {
         pendingBalloonShape = isBalloonShape(shape) ? shape : pendingBalloonShape;
@@ -9217,6 +9412,86 @@ function buildInspector() {
   buildLayerCompositing();
   buildLayerToneEffects();
   buildLayerAnimation();
+}
+
+function appendLayerGroupInspector(host: HTMLElement, group: SubPanel) {
+  const row = (label: string, child: HTMLElement) => {
+    const wrap = document.createElement("div");
+    wrap.className = "inspector-field";
+    const lab = document.createElement("span");
+    lab.className = "inspector-field-label";
+    lab.textContent = label;
+    wrap.append(lab, child);
+    host.appendChild(wrap);
+  };
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.value = group.name ?? "Layer Group";
+  name.onchange = () => {
+    group.name = name.value.trim() || "Layer Group";
+    commitHistory();
+    buildBreadcrumb();
+    buildLayers();
+  };
+  row("Name", name);
+
+  const visible = document.createElement("input");
+  visible.type = "checkbox";
+  visible.checked = group.visible !== false;
+  visible.onchange = () => {
+    group.visible = visible.checked;
+    commitHistory();
+    buildLayers();
+  };
+  row("Visible", visible);
+
+  appendFadePicker(host, "Fade in", () => group.enter?.kind === "fade"
+    ? { durationTicks: group.enter.durationTicks, startTick: group.enter.startTick }
+    : undefined, (fade) => {
+      group.enter = fade ? { kind: "fade", ...fade } : undefined;
+      commitHistory();
+      buildTimeline();
+    });
+  appendFadePicker(host, "Fade out", () => group.exit?.kind === "fade"
+    ? { durationTicks: group.exit.durationTicks, startTick: group.exit.startTick }
+    : undefined, (fade) => {
+      group.exit = fade ? { kind: "fade", ...fade } : undefined;
+      commitHistory();
+      buildTimeline();
+    });
+
+  const note = document.createElement("div");
+  note.className = "property-note";
+  note.textContent = `${group.layers.length} direct layer${group.layers.length === 1 ? "" : "s"}. Drag another layer onto the middle of this row to add it.`;
+  host.appendChild(note);
+
+  const actions = document.createElement("div");
+  actions.className = "inspector-buttons";
+  const enter = document.createElement("button");
+  enter.type = "button";
+  enter.className = "cellbtn";
+  enter.textContent = "Open group";
+  enter.onclick = () => {
+    enterChildSubPanel(group.id);
+    buildBreadcrumb();
+    buildLayers();
+    buildInspector();
+  };
+  const ungroup = document.createElement("button");
+  ungroup.type = "button";
+  ungroup.className = "cellbtn";
+  ungroup.textContent = "Ungroup";
+  ungroup.title = "Move this group's contents back into its parent stack";
+  ungroup.onclick = () => {
+    if (!ungroupLayerGroup(group)) return;
+    commitHistory();
+    buildBreadcrumb();
+    buildLayers();
+    buildInspector();
+  };
+  actions.append(enter, ungroup);
+  host.appendChild(actions);
 }
 
 /** Tone texture controls — shown for tone layers only, outside Layer Animation. */
