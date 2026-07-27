@@ -85,6 +85,7 @@ import {
   simplifyStroke,
 } from "./core/input";
 import { bumpLayerVersion, layerVersion } from "./core/layerVersion";
+import { applyToneGradient } from "./core/tone";
 import { canMergeLayerDown, clearLayerContents, duplicateLayer, mergeLayerDown, pasteLayerAbove } from "./core/layerOps";
 import {
   countSubPanels,
@@ -2088,9 +2089,14 @@ function commitGradient(start: Vec2, end: Vec2) {
   if (!activeLayerIsEditable(true)) return;
 
   if (layer.kind === "tone" && layer.tone) {
-    layer.tone.gradient = { kind: currentGradientKind, start: { ...start }, end: { ...end } };
+    const hasPaintedMask = layer.strokes.some((stroke) => !stroke.erase && stroke.points.length > 0);
+    applyToneGradient(layer.tone, currentGradientKind, start, end, hasPaintedMask);
     commitHistory([layer]);
+    buildLayers();
     buildLayerToneEffects();
+    setStatus(hasPaintedMask
+      ? "Tone gradient applied inside the painted mask"
+      : "Tone gradient applied across the layer");
     return;
   }
 

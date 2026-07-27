@@ -5,7 +5,20 @@
 // saved settings rasterize identically in the editor and every export frame.
 // ============================================================================
 
-import type { ToneSettings } from "./types";
+import type { ToneSettings, Vec2 } from "./types";
+
+/** Apply a gradient drag to a tone. Empty painted-tone layers have no reveal
+ * mask, so promote them to full coverage to make the new gradient visible. */
+export function applyToneGradient(
+  tone: ToneSettings,
+  kind: "linear" | "radial",
+  start: Vec2,
+  end: Vec2,
+  hasPaintedMask: boolean,
+): void {
+  tone.gradient = { kind, start: { ...start }, end: { ...end } };
+  if (tone.coverage === "painted" && !hasPaintedMask) tone.coverage = "full";
+}
 
 /** Paint a static halftone, hatch, or crosshatch texture into a layer canvas. */
 export function renderTone(

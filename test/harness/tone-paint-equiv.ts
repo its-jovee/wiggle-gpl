@@ -1,4 +1,5 @@
 import { renderPanel } from "../../src/core/render";
+import { applyToneGradient } from "../../src/core/tone";
 import type { Layer, Panel, Project } from "../../src/core/types";
 
 const W = 100;
@@ -81,6 +82,17 @@ function renderToCanvas(panel: Panel, project: Project, tick = 0): CanvasRenderi
 
 async function runToneEquivTests(): Promise<string[]> {
   const failures: string[] = [];
+
+  // A gradient dragged onto a new painted-tone layer must become visible;
+  // existing painted masks stay constrained to their strokes.
+  {
+    const empty = toneLayer("painted");
+    applyToneGradient(empty.tone!, "linear", { x: 0, y: 50 }, { x: 100, y: 50 }, false);
+    if (empty.tone!.coverage !== "full") failures.push("empty tone gradient: expected full coverage");
+    const masked = toneLayer("painted", [inkStroke(40, 50, 60, 50)]);
+    applyToneGradient(masked.tone!, "radial", { x: 50, y: 50 }, { x: 100, y: 50 }, true);
+    if (masked.tone!.coverage !== "painted") failures.push("masked tone gradient: expected painted coverage");
+  }
 
   // Painted: pattern only shows up under ink.
   {
