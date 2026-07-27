@@ -9726,6 +9726,21 @@ function appendLayerGroupInspector(host: HTMLElement, group: SubPanel) {
   };
   row("Visible", visible);
 
+  appendFadePicker(host, "Fade in", () => group.enter?.kind === "fade"
+    ? { durationTicks: group.enter.durationTicks, startTick: group.enter.startTick }
+    : undefined, (fade) => {
+      group.enter = fade ? { kind: "fade", ...fade } : undefined;
+      commitHistory();
+      buildTimeline();
+    });
+  appendFadePicker(host, "Fade out", () => group.exit?.kind === "fade"
+    ? { durationTicks: group.exit.durationTicks, startTick: group.exit.startTick }
+    : undefined, (fade) => {
+      group.exit = fade ? { kind: "fade", ...fade } : undefined;
+      commitHistory();
+      buildTimeline();
+    });
+
   const note = document.createElement("div");
   note.className = "property-note";
   note.textContent = `${group.layers.length} direct layer${group.layers.length === 1 ? "" : "s"}. Drag another layer onto the middle of this row to add it.`;
@@ -10162,8 +10177,6 @@ function buildLayerAnimation() {
 
   const group = selectedLayerGroup();
   const target = group ?? activeLayer();
-  const toggleText = toggleLabel?.querySelector<HTMLElement>(".brush-subtoggle-label");
-  if (toggleText) toggleText.textContent = group ? "Group Animation" : "Layer Animation";
   const enabled = !!target?.animation?.enabled;
   enableToggle.disabled = !target || !!group?.locked;
   enableToggle.checked = enabled;
@@ -10620,25 +10633,6 @@ function appendGroupAnimationInspector(host: HTMLElement, group: SubPanel) {
   if (!anim?.enabled) return;
   const section = document.createElement("div");
   section.className = "inspector-section layer-anim-sections";
-
-  const { fold: fadesFold, body: fadesBody } = makeLayerAnimFold("Fades", "group-fades");
-  fadesFold.open = true;
-  appendFadePicker(fadesBody, "Fade in", () => group.enter?.kind === "fade"
-    ? { durationTicks: group.enter.durationTicks, startTick: group.enter.startTick }
-    : undefined, (fade) => {
-      group.enter = fade ? { kind: "fade", ...fade } : undefined;
-      commitHistory();
-      buildTimeline();
-    });
-  appendFadePicker(fadesBody, "Fade out", () => group.exit?.kind === "fade"
-    ? { durationTicks: group.exit.durationTicks, startTick: group.exit.startTick }
-    : undefined, (fade) => {
-      group.exit = fade ? { kind: "fade", ...fade } : undefined;
-      commitHistory();
-      buildTimeline();
-    });
-  section.appendChild(fadesFold);
-
   const { fold, body } = makeLayerAnimFold("Group motion", "group-motion");
   fold.open = true;
 
@@ -10995,7 +10989,6 @@ function appendFadePicker(
 
   const current = read();
   const mode = document.createElement("select");
-  mode.setAttribute("aria-label", label);
   for (const [value, text] of [["none", "Off"], ["fade", "Fade"]] as const) {
     const option = document.createElement("option");
     option.value = value;
