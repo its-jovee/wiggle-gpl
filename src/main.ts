@@ -8354,9 +8354,13 @@ function makeAnimBar(
     e.preventDefault();
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const pointerId = e.pointerId;
     const track = bar.parentElement as HTMLElement;
     const trackRect = track.getBoundingClientRect();
-    if (!trackRect.width) return;
+    if (!trackRect.width) {
+      try { bar.releasePointerCapture(pointerId); } catch {}
+      return;
+    }
     const startX = e.clientX;
     const target = e.target as HTMLElement;
     const mode = target.classList.contains("anim-bar-handle-left")
@@ -8387,18 +8391,26 @@ function makeAnimBar(
       bar.style.left = `${(latestStart / totalTicks) * 100}%`;
       bar.style.width = `${Math.max(2, (latestDuration / totalTicks) * 100)}%`;
     };
-    const up = () => {
+    const finish = (cancelled: boolean) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", up);
+      window.removeEventListener("pointercancel", cancel);
       bar.classList.remove("dragging");
+      // Release capture while the bar is still connected. Rebuilding first can
+      // leave Electron routing this pointer to a detached animation bar, which
+      // makes the Timeline tabs appear unclickable after selecting a bar.
+      try { bar.releasePointerCapture(pointerId); } catch {}
+      const changed = latestStart !== initialStart || latestDuration !== initialDuration;
+      if (cancelled || !changed) return;
       commit({ startTick: latestStart, durationTicks: latestDuration });
       buildTimeline();
       buildInspector();
     };
+    const up = () => finish(false);
+    const cancel = () => finish(true);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", up);
+    window.addEventListener("pointercancel", cancel);
   });
   return bar;
 }
