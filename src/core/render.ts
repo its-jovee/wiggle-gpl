@@ -1432,17 +1432,21 @@ function renderSubPanel(
   ctx.restore(); // lift clip
 
   // Border stamped along the polyline (wiggles!) — still under any parent clip
-  strokeBorder(
-    ctx,
-    pts,
-    sp.border.brush,
-    sp.border.color,
-    sp.border.thickness,
-    tick,
-    opts?.skipJitter ? 0 : sp.border.wiggleAmplitude,
-    hashId(sp.id),
-    sp.bg ?? "#000000"
-  );
+  // A zero-width frame is intentionally borderless. Sending it through the
+  // stamp walker produces zero spacing and can never advance along the path.
+  if (sp.border.thickness > 0) {
+    strokeBorder(
+      ctx,
+      pts,
+      sp.border.brush,
+      sp.border.color,
+      sp.border.thickness,
+      tick,
+      opts?.skipJitter ? 0 : sp.border.wiggleAmplitude,
+      hashId(sp.id),
+      sp.bg ?? "#000000"
+    );
+  }
 
   ctx.restore();
 }
