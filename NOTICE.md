@@ -1,6 +1,6 @@
 # Notices and Attribution
 
-Wiggle GPL is Copyright (c) 2026 Wiggle GPL contributors and is licensed under
+Wigo Studio is Copyright (c) 2026 Wigo Studio contributors and is licensed under
 GPLv3-only. Some incorporated or referenced
 materials keep their original compatible licenses and attribution requirements.
 

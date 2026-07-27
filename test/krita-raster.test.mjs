@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = join(tmpdir(), "wigglestudio-krita-raster-test");
+const outDir = join(tmpdir(), "wigostudio-krita-raster-test");
 
 function bundleHarness() {
   rmSync(outDir, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-brush-presets-test");
+const outDir = join(tmpdir(), "wigostudio-brush-presets-test");
 
 function compileBrushPresets() {
   rmSync(outDir, { recursive: true, force: true });
@@ -40,7 +40,7 @@ test("v7 project migrates to current version with empty project brush presets", 
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
 
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 13);
   assert.deepEqual(migrated.brushPresets, []);
 });
 
@@ -81,4 +81,20 @@ test("brush presets normalize apply update delete and round-trip", () => {
   const roundTrip = JSON.parse(JSON.stringify(updated));
   assert.deepEqual(roundTrip, updated);
   assert.deepEqual(presets.deleteBrushPreset(updated, "p1"), []);
+});
+
+test("brush presets allow hairline sizes down to 0.1", () => {
+  const hairline = presets.normalizeBrushPreset({
+    id: "thin",
+    name: "Hairline",
+    brush: "ink",
+    size: 0.1,
+  });
+  assert.equal(hairline.size, 0.1);
+
+  const half = presets.normalizeBrushPreset({ size: 0.5 });
+  assert.equal(half.size, 0.5);
+
+  const clamped = presets.normalizeBrushPreset({ size: 0 });
+  assert.equal(clamped.size, 0.1);
 });

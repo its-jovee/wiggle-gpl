@@ -1,9 +1,10 @@
-# Wiggle GPL
+# Wigo Studio
 
 An experimental, local-first animation editor for hand-drawn, wiggly video.
 This GPLv3-only fork of WiggleStudio is the home for GPL-compatible Krita ports,
-drawing research, and artist workflow experiments. The separate WiggleStudio
-project remains MIT and must not receive GPL-derived code from this repository.
+drawing research, and artist workflow experiments. The separate MIT sibling
+project (historically WiggleStudio) must not receive GPL-derived code from this
+repository.
 
 > **Project status:** pre-release. The source and browser development build are
 > usable, but no signed public desktop release has been published yet.
@@ -43,7 +44,7 @@ git submodule update --init --recursive
 
 ## macOS install and updates
 
-Open the release DMG and drag **Wiggle GPL** into **Applications**. The desktop
+Open the release DMG and drag **Wigo Studio** into **Applications**. The desktop
 app checks the public GitHub Releases feed at launch. When a newer signed
 release is available, it asks before downloading and asks again before restart
 and installation.
@@ -53,7 +54,7 @@ should follow [`docs/RELEASING.md`](docs/RELEASING.md); pushing an arbitrary tag
 without the matching package version and release credentials fails closed.
 
 ## GPL experiment scope
-- Keep WiggleStudio's vector-first animation core unless a GPL import clearly
+- Keep the vector-first animation core unless a GPL import clearly
   earns a product-level rewrite.
 - Use Krita as a source for drawing feel, canvas interaction, brush/preset
   architecture, layer ergonomics, dock/panel structure, shortcuts, and tool UX.

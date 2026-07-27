@@ -1,10 +1,10 @@
-# Krita → Wiggle Raster Brush Mapping
+# Krita → Wigo Raster Brush Mapping
 
 Pinned source: `https://invent.kde.org/graphics/krita.git` @
 `bd6b58cbb8216b02740dab3241c25ac1fec0673d` (see `IMPORT_LEDGER.md`).
 
 Scope: compatible **default** presets and paintops from that pin — not community
-brushes, not arbitrary user `.kpp` files. Wiggle ports are registry stamps with
+brushes, not arbitrary user `.kpp` files. Wigo ports are registry stamps with
 baked behavior. Exact pixel compatibility is **not** required; recognizability is.
 
 Primary preset corpus: `krita/data/bundles/Krita_4_Default_Resources.bundle`
@@ -15,7 +15,7 @@ Status legend:
 
 | Status | Meaning |
 | --- | --- |
-| **supported** | Planned / shipped as a Wiggle registry stamp approximation |
+| **supported** | Planned / shipped as a Wigo registry stamp approximation |
 | **approximated** | Related feel, material fidelity gaps documented |
 | **skipped** | Explicitly out of scope (engine or stateful ops) |
 
@@ -45,14 +45,14 @@ Status legend:
 
 ---
 
-## Curated preset → Wiggle key map
+## Curated preset → Wigo key map
 
 Keys use the `krita.*` namespace. All Krita-derived entries are `rasterOnly: true`
 and appear only while a raster layer is active.
 
 ### Pixel / Quick / everyday (`paintbrush`, `roundmarker`)
 
-| Krita preset / engine | Source path | Wiggle key | Status | Fidelity notes |
+| Krita preset / engine | Source path | Wigo key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
 | Quick / `roundmarker` (`b)_Basic-1`) | `…/roundmarker/`, bundle `b)_Basic-1.kpp` | `krita.quick` | supported | Opaque round; no auto-spacing coeff curve |
 | Pixel hard (`b)_Basic-5_Size_default`) | bundle + `defaultpaintops/brush/` | `krita.pixelHard` | supported | Hard disc; AA differs from KisBrush |
@@ -70,11 +70,11 @@ and appear only while a raster layer is active.
 | Eraser soft (`a)_Eraser_Soft`) | bundle | `krita.eraserSoft` | supported | Soft alpha punch |
 | Basic flow/opacity variants (`b)_Basic-2`…`6`) | bundle | — | skipped | Redundant size/flow variants; use brush settings |
 | Pencil large/tilt/shade (`c)_Pencil-3/5/6`) | bundle | — | skipped | Tilt / oversized tip assets |
-| Sumi / rough ink extras | bundle | — | skipped | Overlap with existing Wiggle ink/Sumi |
+| Sumi / rough ink extras | bundle | — | skipped | Overlap with existing Wigo ink/Sumi |
 
 ### Chalk / dry media
 
-| Krita preset | Source | Wiggle key | Status | Fidelity notes |
+| Krita preset | Source | Wigo key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
 | `h)_Chalk_Soft` | bundle (`scribbles.png` tip in Krita) | `krita.chalkSoft` | approximated | Generated chalk grain tip |
 | `h)_Chalk_Grainy` | bundle | `krita.chalkGrainy` | approximated | Coarser thresholded grain |
@@ -84,7 +84,7 @@ and appear only while a raster layer is active.
 
 ### Spray
 
-| Krita preset / engine | Source | Wiggle key | Status | Fidelity notes |
+| Krita preset / engine | Source | Wigo key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
 | Engine default `spraybrush.kpp` | `plugins/paintops/defaultpresets/` | `krita.spray` | supported | Bounded particle count; seeded pos/size/opacity |
 | `y)_Texture_Spray` | bundle (`paintbrush`) | `krita.sprayTexture` | approximated | Textured particles via mask, not full spray op |
@@ -93,7 +93,7 @@ and appear only while a raster layer is active.
 
 ### Hatching / Grid
 
-| Krita preset / engine | Source | Wiggle key | Status | Fidelity notes |
+| Krita preset / engine | Source | Wigo key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
 | `hatchingbrush.kpp` parallel | `plugins/paintops/hatching/` | `krita.hatchParallel` | approximated | Short parallel ticks in dab |
 | Crosshatch preference | same | `krita.hatchCross` | approximated | Two angles per dab |
@@ -103,13 +103,13 @@ and appear only while a raster layer is active.
 
 ### Bristle / Tangent Normal
 
-| Krita preset / engine | Source | Wiggle key | Status | Fidelity notes |
+| Krita preset / engine | Source | Wigo key | Status | Fidelity notes |
 | --- | --- | --- | --- | --- |
 | `hairybrush.kpp` | `plugins/paintops/hairy/` | `krita.bristle` | approximated | Fixed bristle count; no connected-path ink, shear physics, or mouse-pressure bristle dynamics |
 | Bundle bristles (`f)_Bristles-*`) | mostly `paintbrush` tips | — | skipped | Tip-bitmap family; one simplified hairy stamp covers the ask |
 | `tangentnormal.kpp` / `w)_Texture_Normal_Map` | `plugins/paintops/tangentnormal/` | `krita.tangentNormal` | approximated | Encodes stroke **heading** in RGB; fixed Z stand-in — no pen tilt/elevation channel mix |
 
-**Shipped material differences (Phase 6):** Krita’s hairy brush maintains per-bristle state along a stroke (ink, connectivity, shear). Wiggle stamps independent seeded strands each dab. Krita’s tangent normal mixes tilt sensors into channel swizzles; Wiggle only maps `atan2(delta)` into a unit normal with constant elevation.
+**Shipped material differences (Phase 6):** Krita’s hairy brush maintains per-bristle state along a stroke (ink, connectivity, shear). Wigo stamps independent seeded strands each dab. Krita’s tangent normal mixes tilt sensors into channel swizzles; Wigo only maps `atan2(delta)` into a unit normal with constant elevation.
 
 ### Explicitly skipped families (do not implement)
 

@@ -12,7 +12,7 @@ export type SaveRecordingPayload = {
   directory?: string;
 };
 
-export type WiggleAudioBridge = {
+export type WigoAudioBridge = {
   pickFiles(): Promise<PickedAudioFile[]>;
   readFile(path: string): Promise<ArrayBuffer>;
   fileExists(path: string): Promise<boolean>;
@@ -22,10 +22,10 @@ export type WiggleAudioBridge = {
 
 declare global {
   interface Window {
-    wiggleAudio?: WiggleAudioBridge;
+    wigoAudio?: WigoAudioBridge;
   }
 }
 
-export function audioBridge(): WiggleAudioBridge | null {
-  return window.wiggleAudio ?? null;
+export function audioBridge(): WigoAudioBridge | null {
+  return window.wigoAudio ?? null;
 }

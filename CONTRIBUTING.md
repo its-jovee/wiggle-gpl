@@ -1,6 +1,6 @@
 # CONTRIBUTING.md
 
-Conventions for working on Wiggle GPL, whether you're the author, a
+Conventions for working on Wigo Studio, whether you're the author, a
 collaborator, or an AI agent (agents should also read AGENTS.md).
 
 ## Setup
@@ -67,4 +67,4 @@ description of what changed during adaptation.
 This project is GPLv3-only (see LICENSE). Brush techniques ported from Decker by
 John Earnest remain under their original MIT/CC0 terms and are compatible with
 this GPL fork. Do not copy GPL-derived code from this repository back into the
-separate MIT WiggleStudio project.
+separate MIT sibling project (historically WiggleStudio).

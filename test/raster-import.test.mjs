@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-raster-import-test");
+const outDir = join(tmpdir(), "wigostudio-raster-import-test");
 
 rmSync(outDir, { recursive: true, force: true });
 execFileSync("npx", [
@@ -32,8 +32,8 @@ test("accepts PNG and JPEG clipboard files", () => {
 
 test("derives a useful raster layer name", () => {
   assert.equal(rasterImport.rasterLayerName({ name: "character.JPG", type: "image/jpeg" }), "character");
-  assert.equal(rasterImport.rasterLayerName({ name: "image.png", type: "image/png" }), "Pasted image");
-  assert.equal(rasterImport.rasterLayerName({ name: "", type: "image/png" }), "Pasted image");
+  assert.equal(rasterImport.rasterLayerName({ name: "image.png", type: "image/png" }), "Imported image");
+  assert.equal(rasterImport.rasterLayerName({ name: "", type: "image/png" }), "Imported image");
 });
 
 test("centers small images without upscaling", () => {

@@ -57,8 +57,8 @@ On a Mac that did not build the app:
 
 1. Compare downloaded artifacts with `SHA256SUMS.txt`.
 2. Open the DMG, install the app, and confirm Gatekeeper does not warn.
-3. Run `codesign --verify --deep --strict --verbose=2 /Applications/Wiggle\ GPL.app`.
-4. Run `spctl --assess --type execute --verbose=4 /Applications/Wiggle\ GPL.app`.
+3. Run `codesign --verify --deep --strict --verbose=2 /Applications/Wigo\ Studio.app`.
+4. Run `spctl --assess --type execute --verbose=4 /Applications/Wigo\ Studio.app`.
 5. Confirm the About version, save/load, WebM export, MP4 export with audio, and
    updater behavior.
 6. Confirm `LICENSE`, `NOTICE.md`, `THIRD_PARTY_NOTICES.md`, the Chromium

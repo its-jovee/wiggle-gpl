@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Wiggle GPL is experimental. Security fixes target the latest release and the
+Wigo Studio is experimental. Security fixes target the latest release and the
 current `main` branch. Older releases may not receive backports.
 
 ## Reporting a vulnerability

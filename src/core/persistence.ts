@@ -45,12 +45,15 @@ type FilePickerWindow = Window & {
 export type RecentFile = { name: string; timestamp: number };
 export type RecoverySnapshot = { savedAt: number; json: string };
 
-const RECENTS_KEY = "wigglestudio.recents";
-const RECOVERY_KEY = "wigglestudio.recovery";
+const RECENTS_KEY = "wigostudio.recents";
+const RECOVERY_KEY = "wigostudio.recovery";
+/** Legacy keys from pre-rebrand installs — read as fallback, migrate on write. */
+const LEGACY_RECENTS_KEY = "wigglestudio.recents";
+const LEGACY_RECOVERY_KEY = "wigglestudio.recovery";
 
 const PROJECT_TYPES: PickerAccept[] = [{
-  description: "Wiggle GPL project",
-  accept: { "application/json": [".wiggle.json", ".json"] },
+  description: "Wigo Studio project",
+  accept: { "application/json": [".wigo.json", ".wiggle.json", ".json"] },
 }];
 
 export const persistenceState: {
@@ -93,7 +96,7 @@ export async function writeHandle(handle: FileSystemFileHandle, project: Project
 
 export async function saveAsProject(
   project: Project,
-  suggestedName = "wigglestudio-project.wiggle.json",
+  suggestedName = "wigo-studio-project.wigo.json",
   serialized?: string
 ) {
   const json = serialized ?? serializeProject(project);
@@ -175,7 +178,9 @@ export function downloadProjectString(json: string, filename: string) {
 
 export function readRecents(): RecentFile[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]") as RecentFile[];
+    const rawJson =
+      localStorage.getItem(RECENTS_KEY) ?? localStorage.getItem(LEGACY_RECENTS_KEY) ?? "[]";
+    const raw = JSON.parse(rawJson) as RecentFile[];
     return raw.filter((r) => r && typeof r.name === "string" && typeof r.timestamp === "number").slice(0, 5);
   } catch {
     return [];
@@ -185,12 +190,14 @@ export function readRecents(): RecentFile[] {
 export function pushRecent(name: string) {
   const next = [{ name, timestamp: Date.now() }, ...readRecents().filter((r) => r.name !== name)].slice(0, 5);
   localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+  localStorage.removeItem(LEGACY_RECENTS_KEY);
 }
 
 export function writeRecoverySnapshotString(json: string): RecoverySnapshot | null {
   const snapshot: RecoverySnapshot = { savedAt: Date.now(), json };
   try {
     localStorage.setItem(RECOVERY_KEY, JSON.stringify(snapshot));
+    localStorage.removeItem(LEGACY_RECOVERY_KEY);
     return snapshot;
   } catch {
     // Quota errors are expected for large raster-heavy projects. The caller
@@ -205,7 +212,9 @@ export function writeRecoverySnapshot(project: Project) {
 
 export function readRecoverySnapshot(): RecoverySnapshot | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(RECOVERY_KEY) ?? "null") as RecoverySnapshot | null;
+    const rawJson =
+      localStorage.getItem(RECOVERY_KEY) ?? localStorage.getItem(LEGACY_RECOVERY_KEY) ?? "null";
+    const raw = JSON.parse(rawJson) as RecoverySnapshot | null;
     if (!raw || typeof raw.savedAt !== "number" || typeof raw.json !== "string") return null;
     return raw;
   } catch {
@@ -219,4 +228,5 @@ export function recoverProject(snapshot: RecoverySnapshot): Project {
 
 export function clearRecoverySnapshot() {
   localStorage.removeItem(RECOVERY_KEY);
+  localStorage.removeItem(LEGACY_RECOVERY_KEY);
 }

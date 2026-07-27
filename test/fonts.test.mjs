@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wiggle-gpl-fonts-test");
+const outDir = join(tmpdir(), "wigo-studio-fonts-test");
 
 rmSync(outDir, { recursive: true, force: true });
 execFileSync("npx", [

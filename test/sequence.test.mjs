@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-sequence-test");
+const outDir = join(tmpdir(), "wigostudio-sequence-test");
 
 function compileSequence() {
   rmSync(outDir, { recursive: true, force: true });
@@ -157,4 +157,17 @@ test("sequenceAtTime wraps elapsed time", () => {
   const pos = sequence.sequenceAtTime(project, 2500);
   assert.equal(pos.index, 0);
   assert.equal(pos.localMs, 500);
+});
+
+test("sequenceStartMsForPanel returns the first expanded start of a panel", () => {
+  const project = makeProject([100, 200, 300], [{
+    id: "g1",
+    panelIds: ["p1"],
+    repeat: 2,
+  }]);
+  assert.equal(sequence.sequenceStartMsForPanel(project, 0), 0);
+  assert.equal(sequence.sequenceStartMsForPanel(project, 1), 100);
+  assert.equal(sequence.sequenceStartMsForPanel(project, 2), 100 + 200 + 200);
+  assert.equal(sequence.sequenceStartMsForPanel(project, -1), 0);
+  assert.equal(sequence.sequenceStartMsForPanel(project, 99), 0);
 });

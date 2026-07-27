@@ -1,8 +1,8 @@
 {
-  "name": "wiggle-gpl",
+  "name": "wigo-studio",
   "private": true,
   "version": "0.1.1",
-  "description": "A local-first GPLv3 animation editor for hand-drawn, wiggly video.",
+  "description": "A local-first GPLv3 animation editor for hand-drawn, wiggly video — Wigo Studio.",
   "author": "its-jovee",
   "license": "GPL-3.0-only",
   "homepage": "https://github.com/its-jovee/wiggle-gpl#readme",
@@ -35,7 +35,8 @@
     "perf:project": "node scripts/perf-project.mjs",
     "electron:dev": "VITE_DEV_URL=http://localhost:5173 electron .",
     "electron:build": "npm run build && electron-builder --mac",
-    "electron:release": "npm run build && electron-builder --mac --publish always -c.forceCodeSigning=true -c.mac.notarize=true"
+    "electron:release": "npm run build && electron-builder --mac --publish always -c.forceCodeSigning=true -c.mac.notarize=true",
+    "perf:bench": "node scripts/perf-bench.mjs"
   },
   "devDependencies": {
     "electron": "^43.2.0",
@@ -53,8 +54,8 @@
     "reicon": "^1.1.103"
   },
   "build": {
-    "appId": "com.wigglegpl.app",
-    "productName": "Wiggle GPL",
+    "appId": "com.wigostudio.app",
+    "productName": "Wigo Studio",
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -69,7 +70,7 @@
         "zip"
       ],
       "category": "public.app-category.graphics-design",
-      "icon": "build/wiggle-gpl.icns",
+      "icon": "build/wigo-studio.icns",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "hardenedRuntime": true

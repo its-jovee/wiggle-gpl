@@ -40,6 +40,20 @@ export function renderTone(
     }
   }
   ctx.restore();
+  if (tone.gradient) {
+    ctx.save();
+    const { start, end } = tone.gradient;
+    const radius = Math.max(1, Math.hypot(end.x - start.x, end.y - start.y));
+    const gradient = tone.gradient.kind === "radial"
+      ? ctx.createRadialGradient(start.x, start.y, 0, start.x, start.y, radius)
+      : ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+    gradient.addColorStop(0, tone.gradient.reverse ? "rgba(0,0,0,0)" : "rgba(0,0,0,1)");
+    gradient.addColorStop(1, tone.gradient.reverse ? "rgba(0,0,0,1)" : "rgba(0,0,0,0)");
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
 }
 
 function strokeHatch(ctx: CanvasRenderingContext2D, spacing: number, extent: number): void {

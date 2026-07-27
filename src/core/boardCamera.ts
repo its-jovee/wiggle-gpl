@@ -143,18 +143,20 @@ export function activeCoverage(
 }
 
 export type FadeRange = {
-  /** Coverage at or above which chrome is fully opaque. */
+  /** Fit-relative zoom at or above which chrome is fully opaque. */
   full: number;
-  /** Coverage at or below which chrome is fully hidden. */
+  /** Fit-relative zoom at or below which chrome is fully hidden (and non-interactive). */
   hidden: number;
 };
 
+/** Fit-relative zoom: solid chrome above `full`, gone at/below `hidden`. */
 export const DEFAULT_CHROME_FADE: FadeRange = { full: 0.55, hidden: 0.3 };
 
 /**
- * Opacity (0..1) for the surrounding editor chrome given the active project's
- * screen coverage: fully visible while you're focused on a project, fading to
- * nothing as you pull back into board/overview territory.
+ * Opacity (0..1) for the surrounding editor chrome given fit-relative zoom
+ * (`viewport.scale / fitScale`). Solid while editing at a comfortable pull-back;
+ * fades only once you're clearly into board/overview territory. Callers should
+ * keep chrome interactive while opacity > 0 and only disable hit-testing at 0.
  */
 export function chromeOpacity(
   coverage: number,

@@ -1,7 +1,7 @@
 # macOS Editor Redesign Design
 
 Date: 2026-06-07
-Project: WiggleStudio
+Project: Wigo Studio
 
 ## Scope
 
@@ -42,7 +42,7 @@ must preserve this behavior.
 
 ## Product Direction
 
-WiggleStudio should feel like a focused creator tool: closer to a small native
+Wigo Studio should feel like a focused creator tool: closer to a small native
 macOS editor than a browser demo. The visual tone should be quiet, crisp, and
 professional while preserving the playful drawing output.
 

@@ -2,17 +2,17 @@
 // core/electronMenu.ts — typed renderer access to the Electron app-menu bridge.
 // ============================================================================
 
-export type WiggleMenuBridge = {
+export type WigoMenuBridge = {
   onMenuUndo(cb: () => void): void;
   onMenuRedo(cb: () => void): void;
 };
 
 declare global {
   interface Window {
-    wiggleMenu?: WiggleMenuBridge;
+    wigoMenu?: WigoMenuBridge;
   }
 }
 
-export function menuBridge(): WiggleMenuBridge | null {
-  return window.wiggleMenu ?? null;
+export function menuBridge(): WigoMenuBridge | null {
+  return window.wigoMenu ?? null;
 }

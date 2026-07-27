@@ -1,11 +1,25 @@
 // ============================================================================
-// core/tiktokOverlay.ts — editor-only TikTok UI and safe-area preview.
+// core/tiktokOverlay.ts — editor-only TikTok UI visibility preview.
 //
 // This module deliberately sits outside renderPanel: the overlay is transient
 // editor chrome and must never appear in thumbnails, saved projects, or export.
 // Reference measurements use a 1080×1920 frame and scale proportionally to
-// other project sizes. TikTok's live UI varies by device and app revision, so
-// the template is a conservative placement guide rather than a pixel contract.
+// other project sizes. TikTok's live UI varies by device, caption length, post
+// type, and app revision, so this is a conservative organic-feed visibility
+// guide rather than a crop boundary or pixel contract.
+//
+// Layout (1080×1920 reference) — content-covering FYP chrome only:
+//   topRisk    130px  Following / For You / search
+//   rightRisk  140px  avatar + like / comment / bookmark / share
+//   bottomRisk 340px  username, caption, and sound ticker
+//   safeArea   880×1450 at (60, 130)
+//
+// The Home / Friends / + / Inbox / Profile tab bar is deliberately not drawn
+// as though TikTok removes that slice from the exported video. It is app chrome,
+// not evidence of an export crop. Likewise, the system home indicator is not an
+// extra export margin. The shaded lower band is retained because captions and
+// sound attribution can cover important text.
+// See docs/research/tiktok-safe-area.md for sources and rationale.
 // ============================================================================
 
 export type OverlayRect = {
@@ -25,14 +39,38 @@ export type TikTokOverlayLayout = {
 const REFERENCE_WIDTH = 1080;
 const REFERENCE_HEIGHT = 1920;
 
+/** Conservative organic-feed top UI risk band. */
+const TOP_RISK = 130;
+/** Conservative caption/sound UI risk band; not an export crop. */
+const BOTTOM_RISK = 340;
+const LEFT_PAD = 60;
+const RIGHT_RISK = 140;
+const SAFE_HEIGHT = REFERENCE_HEIGHT - TOP_RISK - BOTTOM_RISK; // 1450
+const SAFE_WIDTH = REFERENCE_WIDTH - LEFT_PAD - RIGHT_RISK; // 880
+
 export function tiktokOverlayLayout(width: number, height: number): TikTokOverlayLayout {
   const sx = width / REFERENCE_WIDTH;
   const sy = height / REFERENCE_HEIGHT;
   return {
-    safeArea: { x: 44 * sx, y: 130 * sy, width: 896 * sx, height: 1306 * sy },
-    topRisk: { x: 0, y: 0, width, height: 130 * sy },
-    rightRisk: { x: 940 * sx, y: 130 * sy, width: 140 * sx, height: 1306 * sy },
-    bottomRisk: { x: 0, y: 1436 * sy, width, height: 484 * sy },
+    safeArea: {
+      x: LEFT_PAD * sx,
+      y: TOP_RISK * sy,
+      width: SAFE_WIDTH * sx,
+      height: SAFE_HEIGHT * sy,
+    },
+    topRisk: { x: 0, y: 0, width, height: TOP_RISK * sy },
+    rightRisk: {
+      x: (REFERENCE_WIDTH - RIGHT_RISK) * sx,
+      y: TOP_RISK * sy,
+      width: RIGHT_RISK * sx,
+      height: SAFE_HEIGHT * sy,
+    },
+    bottomRisk: {
+      x: 0,
+      y: (REFERENCE_HEIGHT - BOTTOM_RISK) * sy,
+      width,
+      height: BOTTOM_RISK * sy,
+    },
   };
 }
 
@@ -137,13 +175,13 @@ export function drawTikTokOverlay(
   ctx.rect(0, 0, width, height);
   ctx.clip();
 
-  // Conservative UI-risk regions.
+  // Conservative UI-occlusion regions. These do not represent export crops.
   ctx.fillStyle = "rgba(8, 10, 14, .18)";
   for (const zone of [layout.topRisk, layout.rightRisk, layout.bottomRisk]) {
     ctx.fillRect(zone.x, zone.y, zone.width, zone.height);
   }
 
-  // Content-safe guide.
+  // UI-safe text guide.
   ctx.strokeStyle = "rgba(37, 244, 211, .95)";
   ctx.lineWidth = u(3);
   ctx.setLineDash([u(14), u(10)]);
@@ -154,14 +192,14 @@ export function drawTikTokOverlay(
     layout.safeArea.height
   );
   ctx.setLineDash([]);
-  roundedRect(ctx, x(58), y(150), u(188), u(42), u(21));
+  roundedRect(ctx, x(74), y(150), u(188), u(42), u(21));
   ctx.fillStyle = "rgba(6, 20, 22, .82)";
   ctx.fill();
   ctx.fillStyle = "#7fffe9";
   ctx.font = `700 ${u(20)}px system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("SAFE CONTENT", x(152), y(171));
+  ctx.fillText("UI-SAFE TEXT", x(168), y(171));
 
   // Top navigation/search chrome.
   ctx.fillStyle = "rgba(255,255,255,.98)";
@@ -189,30 +227,30 @@ export function drawTikTokOverlay(
   ctx.textAlign = "center";
   ctx.lineWidth = u(4);
   ctx.beginPath();
-  ctx.arc(actionX, y(770), u(42), 0, Math.PI * 2);
+  ctx.arc(actionX, y(970), u(42), 0, Math.PI * 2);
   ctx.fillStyle = "rgba(35,35,40,.92)";
   ctx.fill();
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(actionX, y(758), u(13), 0, Math.PI * 2);
+  ctx.arc(actionX, y(958), u(13), 0, Math.PI * 2);
   ctx.fillStyle = "rgba(255,255,255,.9)";
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(actionX, y(792), u(24), Math.PI, 0);
+  ctx.arc(actionX, y(992), u(24), Math.PI, 0);
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(actionX, y(817), u(14), 0, Math.PI * 2);
+  ctx.arc(actionX, y(1017), u(14), 0, Math.PI * 2);
   ctx.fillStyle = "#fe2c55";
   ctx.fill();
   ctx.fillStyle = "#fff";
   ctx.font = `800 ${u(22)}px system-ui, sans-serif`;
-  ctx.fillText("+", actionX, y(815));
+  ctx.fillText("+", actionX, y(1015));
 
   const actionItems = [
-    { cy: 940, count: "24.8K", draw: drawHeart },
-    { cy: 1110, count: "326", draw: drawComment },
-    { cy: 1280, count: "1,204", draw: drawBookmark },
-    { cy: 1450, count: "Share", draw: drawShare },
+    { cy: 1140, count: "24.8K", draw: drawHeart },
+    { cy: 1310, count: "326", draw: drawComment },
+    { cy: 1480, count: "1,204", draw: drawBookmark },
+    { cy: 1650, count: "Share", draw: drawShare },
   ];
   for (const item of actionItems) {
     ctx.fillStyle = "rgba(255,255,255,.98)";
@@ -225,62 +263,29 @@ export function drawTikTokOverlay(
     ctx.shadowBlur = 0;
   }
 
-  // Caption, description, and sound attribution.
+  // Caption, description, and sound attribution (real FYP overlays).
   ctx.textAlign = "left";
   ctx.fillStyle = "#fff";
   ctx.shadowColor = "rgba(0,0,0,.75)";
   ctx.shadowBlur = u(5);
   ctx.font = `750 ${u(25)}px system-ui, sans-serif`;
-  ctx.fillText("@yourname", x(52), y(1540));
+  ctx.fillText("@yourname", x(52), y(1660));
   ctx.font = `500 ${u(23)}px system-ui, sans-serif`;
-  ctx.fillText("Your description will appear here…", x(52), y(1590));
+  ctx.fillText("Your description will appear here…", x(52), y(1710));
   ctx.font = `700 ${u(22)}px system-ui, sans-serif`;
-  ctx.fillText("#animation  #art", x(52), y(1632));
+  ctx.fillText("#animation  #art", x(52), y(1752));
   ctx.font = `600 ${u(21)}px system-ui, sans-serif`;
-  ctx.fillText("♪  Original sound · yourname", x(86), y(1696));
+  ctx.fillText("♪  Original sound · yourname", x(86), y(1816));
   ctx.shadowBlur = 0;
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = u(3);
   ctx.beginPath();
-  ctx.arc(x(62), y(1690), u(13), 0, Math.PI * 2);
+  ctx.arc(x(62), y(1810), u(13), 0, Math.PI * 2);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(x(72), y(1681));
-  ctx.lineTo(x(72), y(1657));
+  ctx.moveTo(x(72), y(1801));
+  ctx.lineTo(x(72), y(1777));
   ctx.stroke();
-
-  // Bottom navigation and create control.
-  ctx.fillStyle = "rgba(0,0,0,.58)";
-  ctx.fillRect(0, y(1770), width, height - y(1770));
-  const navItems = [
-    { cx: 92, label: "Home" },
-    { cx: 292, label: "Friends" },
-    { cx: 788, label: "Inbox" },
-    { cx: 982, label: "Profile" },
-  ];
-  ctx.fillStyle = "#fff";
-  ctx.textAlign = "center";
-  ctx.font = `600 ${u(19)}px system-ui, sans-serif`;
-  for (const item of navItems) {
-    ctx.beginPath();
-    ctx.arc(x(item.cx), y(1828), u(17), 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,.95)";
-    ctx.lineWidth = u(4);
-    ctx.stroke();
-    ctx.fillText(item.label, x(item.cx), y(1872));
-  }
-  roundedRect(ctx, x(486), y(1802), x(108), y(52), u(12));
-  ctx.fillStyle = "#25f4ee";
-  ctx.fill();
-  roundedRect(ctx, x(500), y(1802), x(108), y(52), u(12));
-  ctx.fillStyle = "#fe2c55";
-  ctx.fill();
-  roundedRect(ctx, x(493), y(1802), x(108), y(52), u(12));
-  ctx.fillStyle = "#fff";
-  ctx.fill();
-  ctx.fillStyle = "#111";
-  ctx.font = `700 ${u(36)}px system-ui, sans-serif`;
-  ctx.fillText("+", x(547), y(1827));
 
   ctx.restore();
 }

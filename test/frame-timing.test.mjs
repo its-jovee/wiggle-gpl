@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-frame-timing-test");
+const outDir = join(tmpdir(), "wigostudio-frame-timing-test");
 
 function compileFrameTiming() {
   rmSync(outDir, { recursive: true, force: true });
@@ -45,4 +45,26 @@ test("quick exposure commands clamp to one exposure tick", () => {
   assert.equal(panel.durationMs, 500);
   assert.equal(timing.adjustPanelExposureTicks(panel, -8, 8), 125);
   assert.equal(panel.durationMs, 125);
+});
+
+test("seconds convert to milliseconds with a 100ms floor", () => {
+  assert.equal(timing.secondsToDurationMs(1), 1000);
+  assert.equal(timing.secondsToDurationMs(0.25), 250);
+  assert.equal(timing.secondsToDurationMs(0), 100);
+  assert.equal(timing.durationMsToSeconds(1250), 1.25);
+});
+
+test("setPanelDurationSeconds writes durationMs", () => {
+  const panel = { durationMs: 1000 };
+  assert.equal(timing.setPanelDurationSeconds(panel, 2.5), 2500);
+  assert.equal(panel.durationMs, 2500);
+});
+
+test("timeline time formats for frames and seconds", () => {
+  assert.equal(timing.formatTimelineTime(1000, "frames", 8), "8f");
+  assert.equal(timing.formatTimelineTime(65000, "seconds", 8), "1:05");
+  assert.equal(timing.formatHoldDuration(500, "frames", 8), "4fr");
+  assert.equal(timing.formatHoldDuration(500, "seconds", 8), "0.5s");
+  assert.equal(timing.formatSecondsValue(1), "1");
+  assert.equal(timing.formatSecondsValue(0.125), "0.125");
 });

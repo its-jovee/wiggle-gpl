@@ -3,7 +3,7 @@
 Threat-model context: this is a **local-first, single-user** app (no accounts, no
 server, no multi-tenant data). That correctly deflates most classic web risks. The
 real attack surface is: (a) the Electron desktop shell, (b) opening a malicious
-`.wiggle.json` project file, and (c) the one outbound network call (Lospec). Ranked
+`.wigo.json` (legacy `.wiggle.json`) project file, and (c) the one outbound network call (Lospec). Ranked
 by that reality.
 
 ---
@@ -94,7 +94,7 @@ that later hits canvas `fillStyle`).
 ## 5. `localStorage` recovery snapshot — SEVERITY: LOW
 
 `writeRecoverySnapshot` (persistence.ts:161) stores the full serialized project in
-`localStorage` under `wigglestudio.recovery`. Two notes:
+`localStorage` under `wigostudio.recovery`. Two notes:
 - On a **shared machine / shared browser profile**, unsaved creative work sits in
   localStorage in cleartext until the next save clears it. For a "local, private"
   tool this is a mild privacy surprise (the user thinks nothing is saved because they

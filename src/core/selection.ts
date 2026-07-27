@@ -510,12 +510,37 @@ export function transformRotateHandleCenter(bounds: Rect, scale = 1): Vec2 {
   return { x: bounds.x + bounds.w / 2, y: bounds.y - ROTATE_HANDLE_OFFSET / scale };
 }
 
+/** True when `pos` is on the rotate knob or the stem that connects it to the
+ *  top edge of `bounds`. The stem is part of the rotate chrome — clicks there
+ *  must not fall through as "outside the selection". */
+export function hitTestRotateHandle(pos: Vec2, bounds: Rect, scale = 1): boolean {
+  const safeScale = Math.max(scale, 0.001);
+  const hs = HANDLE_SIZE / safeScale;
+  const rot = transformRotateHandleCenter(bounds, safeScale);
+  // Generous knob hit — larger than the drawn circle so a fingertip/stylus
+  // click on the visible handle still registers.
+  if (Math.hypot(pos.x - rot.x, pos.y - rot.y) <= hs * 2) return true;
+  // Stem between the top-center of the box and the knob. Skip the portion that
+  // overlaps the north edge handle so scale-from-top still works.
+  const stemTop = { x: bounds.x + bounds.w / 2, y: bounds.y - hs };
+  if (stemTop.y <= rot.y) return false;
+  const dx = rot.x - stemTop.x;
+  const dy = rot.y - stemTop.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < EPS) return false;
+  const t = Math.max(0, Math.min(1, ((pos.x - stemTop.x) * dx + (pos.y - stemTop.y) * dy) / len2));
+  const nearestX = stemTop.x + t * dx;
+  const nearestY = stemTop.y + t * dy;
+  return Math.hypot(pos.x - nearestX, pos.y - nearestY) <= hs * 0.75;
+}
+
 export function hitTestTransformHandle(
   pos: Vec2,
   bounds: Rect,
   scale = 1
 ): TransformHandleId | null {
-  const hs = HANDLE_SIZE / scale;
+  const safeScale = Math.max(scale, 0.001);
+  const hs = HANDLE_SIZE / safeScale;
   const corners: [TransformHandleId, Vec2][] = [
     ["nw", { x: bounds.x, y: bounds.y }],
     ["ne", { x: bounds.x + bounds.w, y: bounds.y }],
@@ -534,8 +559,10 @@ export function hitTestTransformHandle(
   for (const [id, p] of mids) {
     if (Math.abs(pos.x - p.x) <= hs && Math.abs(pos.y - p.y) <= hs) return id;
   }
-  const rot = transformRotateHandleCenter(bounds, scale);
-  if (Math.hypot(pos.x - rot.x, pos.y - rot.y) <= hs * 1.5) return "rotate";
+  // Rotate chrome sits above the box — checked after edge handles so the
+  // north-edge scale grip keeps priority on the top-center square, while the
+  // knob/stem above still rotate instead of starting a new marquee.
+  if (hitTestRotateHandle(pos, bounds, safeScale)) return "rotate";
   return null;
 }
 
@@ -609,6 +636,7 @@ export type ItemSnapshot = {
   textRotation?: number;
   subBounds?: Rect;
   subTail?: Vec2;
+  subPoints?: Vec2[];
   rasterFrame?: Rect;
   rasterRotation?: number;
 };
@@ -631,6 +659,7 @@ export function snapshotItems(items: MarqueeRef[]): ItemSnapshot[] {
     } else if (ref.kind === "subpanel") {
       snap.subBounds = { ...ref.subPanel.bounds };
       snap.subTail = ref.subPanel.tail ? { ...ref.subPanel.tail } : undefined;
+      snap.subPoints = ref.subPanel.points?.map((p) => ({ x: p.x, y: p.y }));
     } else if (ref.kind === "raster") {
       snap.rasterFrame = { ...ref.selection.frame };
       snap.rasterRotation = ref.selection.rotation;
@@ -660,6 +689,7 @@ export function restoreFromSnapshot(snap: ItemSnapshot): void {
   } else if (ref.kind === "subpanel" && snap.subBounds) {
     ref.subPanel.bounds = { ...snap.subBounds };
     ref.subPanel.tail = snap.subTail ? { ...snap.subTail } : undefined;
+    ref.subPanel.points = snap.subPoints?.map((p) => ({ x: p.x, y: p.y }));
   } else if (ref.kind === "raster" && snap.rasterFrame) {
     ref.selection.frame = { ...snap.rasterFrame };
     ref.selection.rotation = snap.rasterRotation ?? 0;
@@ -697,22 +727,35 @@ export function applyTransformToSnapshot(
     if (snap.textSize !== undefined) ref.text.fontSize = snap.textSize * sizeScale;
     if (allowRotation) ref.text.rotation = (snap.textRotation ?? 0) + angleRad;
   } else if (ref.kind === "subpanel" && snap.subBounds) {
-    const b = snap.subBounds;
-    const corners = [
-      { x: b.x, y: b.y },
-      { x: b.x + b.w, y: b.y },
-      { x: b.x + b.w, y: b.y + b.h },
-      { x: b.x, y: b.y + b.h },
-    ].map((p) => transformPoint(p, pivot, scaleX, scaleY, 0));
-    let minX = corners[0].x, maxX = corners[0].x, minY = corners[0].y, maxY = corners[0].y;
-    for (const c of corners) {
-      minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
-      minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
-    }
-    ref.subPanel.bounds = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-    if (snap.subTail) {
-      const tt = transformPoint(snap.subTail, pivot, scaleX, scaleY, 0);
-      ref.subPanel.tail = tt;
+    if (snap.subPoints && snap.subPoints.length >= 3) {
+      const pts = snap.subPoints.map((p) => transformPoint(p, pivot, scaleX, scaleY, 0));
+      let minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
+      for (const c of pts) {
+        minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
+        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+      }
+      ref.subPanel.shape = "custom";
+      ref.subPanel.points = pts;
+      ref.subPanel.bounds = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+      ref.subPanel.tail = undefined;
+    } else {
+      const b = snap.subBounds;
+      const corners = [
+        { x: b.x, y: b.y },
+        { x: b.x + b.w, y: b.y },
+        { x: b.x + b.w, y: b.y + b.h },
+        { x: b.x, y: b.y + b.h },
+      ].map((p) => transformPoint(p, pivot, scaleX, scaleY, 0));
+      let minX = corners[0].x, maxX = corners[0].x, minY = corners[0].y, maxY = corners[0].y;
+      for (const c of corners) {
+        minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
+        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+      }
+      ref.subPanel.bounds = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+      if (snap.subTail) {
+        const tt = transformPoint(snap.subTail, pivot, scaleX, scaleY, 0);
+        ref.subPanel.tail = tt;
+      }
     }
   } else if (ref.kind === "raster" && snap.rasterFrame) {
     const frame = snap.rasterFrame;
@@ -778,6 +821,9 @@ export function moveMarqueeItems(items: MarqueeRef[], dx: number, dy: number): v
     } else if (ref.kind === "subpanel") {
       ref.subPanel.bounds.x += dx;
       ref.subPanel.bounds.y += dy;
+      if (ref.subPanel.points) {
+        for (const p of ref.subPanel.points) { p.x += dx; p.y += dy; }
+      }
       if (ref.subPanel.tail) {
         ref.subPanel.tail.x += dx;
         ref.subPanel.tail.y += dy;

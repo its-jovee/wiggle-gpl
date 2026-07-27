@@ -6,7 +6,7 @@
 // thumbnails.
 // ============================================================================
 
-import type { AnimationSpec, Layer, Panel } from "./types";
+import type { AnimationSpec, Layer, Panel, SubPanel } from "./types";
 
 export type IdleRenderState = {
   tickChanged: boolean;
@@ -15,6 +15,35 @@ export type IdleRenderState = {
 
 export function shouldRenderIdleFrame(state: IdleRenderState): boolean {
   return state.tickChanged || state.interacting;
+}
+
+export type DiscreteClockAdvance = {
+  tick: number;
+  lastMs: number;
+  changed: boolean;
+};
+
+/** Advance a quantized clock from elapsed wall time, catching up across
+ * throttled or delayed redraws without rendering the skipped ticks. */
+export function advanceDiscreteClock(
+  tick: number,
+  lastMs: number,
+  nowMs: number,
+  fps: number
+): DiscreteClockAdvance {
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 8;
+  const intervalMs = 1000 / safeFps;
+  if (!Number.isFinite(nowMs)) return { tick, lastMs, changed: false };
+  if (!Number.isFinite(lastMs) || nowMs < lastMs) {
+    return { tick, lastMs: nowMs, changed: false };
+  }
+  const elapsedTicks = Math.floor((nowMs - lastMs) / intervalMs);
+  if (elapsedTicks < 1) return { tick, lastMs, changed: false };
+  return {
+    tick: tick + elapsedTicks,
+    lastMs: lastMs + elapsedTicks * intervalMs,
+    changed: true,
+  };
 }
 
 export const ONION_PREV_TINT = "#73eff7";
@@ -187,11 +216,18 @@ export function panelHasPlaybackContinuity(panel: Panel): boolean {
   for (const layer of panel.layers) {
     if (layerHasPlaybackContinuity(layer)) return true;
   }
-  for (const sp of panel.subPanels ?? []) {
+  const visit = (sp: SubPanel) => {
     if (hasAnimSpec(sp.enter) || hasAnimSpec(sp.exit)) return true;
     for (const layer of sp.layers) {
       if (layerHasPlaybackContinuity(layer)) return true;
     }
+    for (const child of sp.subPanels ?? []) {
+      if (visit(child)) return true;
+    }
+    return false;
+  };
+  for (const sp of panel.subPanels ?? []) {
+    if (visit(sp)) return true;
   }
   return false;
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-export-progress-test");
+const outDir = join(tmpdir(), "wigostudio-export-progress-test");
 
 function compileExportProgress() {
   rmSync(outDir, { recursive: true, force: true });
@@ -54,6 +54,14 @@ test("export progress status text names render, encode, done, and failed phases"
   );
   assert.equal(progress.exportProgressStatus({ format: "MP4", phase: "encode", progress: 1 }), "MP4 encoding");
   assert.equal(progress.exportProgressStatus({ format: "WebM", phase: "done", progress: 1 }), "WebM done");
+  assert.equal(
+    progress.exportProgressStatus({ format: "GIF", phase: "encode", progress: 1 }),
+    "GIF encoding"
+  );
+  assert.equal(
+    progress.exportProgressStatus({ format: "PNG", phase: "done", progress: 1 }),
+    "PNG done"
+  );
   assert.equal(
     progress.exportProgressStatus({ format: "MP4", phase: "failed", progress: 0, error: "no core" }),
     "MP4 failed: no core"

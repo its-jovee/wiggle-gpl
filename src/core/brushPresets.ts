@@ -8,7 +8,11 @@
 import type { BrushPreset, BrushSettings } from "./types";
 import { DEFAULT_BRUSH_SETTINGS, normalizeBrushSettings } from "./brushSettings";
 
-const clampSize = (v: number) => Math.max(1, Math.min(200, Number.isFinite(v) ? v : 2));
+/** Brush size is a stroke radius scale; allow hairlines down to 0.1. */
+const MIN_BRUSH_SIZE = 0.1;
+const MAX_BRUSH_SIZE = 200;
+const clampSize = (v: number) =>
+  Math.max(MIN_BRUSH_SIZE, Math.min(MAX_BRUSH_SIZE, Number.isFinite(v) ? v : 2));
 
 export type BrushPresetApplyState = {
   brush: string;

@@ -2,7 +2,8 @@
 // core/audioTypes.ts — serializable audio model for project-level clips.
 //
 // Audio files are external media. The project stores paths, clip timing, and
-// waveform peaks, not binary audio data, so .wiggle.json files stay small.
+// waveform peaks, not binary audio data, so .wigo.json files stay small
+// (legacy .wiggle.json remains supported for open/import).
 // ============================================================================
 
 export type AudioAssetKind = "recording" | "import";

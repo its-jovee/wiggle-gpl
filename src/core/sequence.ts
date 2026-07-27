@@ -137,6 +137,19 @@ export function expandedDurationMs(project: Project): number {
   return expandTimeline(project).reduce((sum, e) => sum + e.durationMs, 0);
 }
 
+/** Start time (ms) of the first expanded occurrence of a panel. Used so Play
+ *  begins at the selected / currently edited frame rather than a stale playhead. */
+export function sequenceStartMsForPanel(project: Project, panelIndex: number): number {
+  if (panelIndex < 0 || panelIndex >= project.panels.length) return 0;
+  const entries = expandTimeline(project);
+  let startMs = 0;
+  for (const e of entries) {
+    if (e.panelIndex === panelIndex) return startMs;
+    startMs += e.durationMs;
+  }
+  return 0;
+}
+
 export function sequenceAtTime(project: Project, elapsedMs: number): SequencePosition {
   const entries = expandTimeline(project);
   const total = entries.reduce((sum, e) => sum + e.durationMs, 0) || 1;

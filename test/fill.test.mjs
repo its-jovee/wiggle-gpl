@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-fill-test");
+const outDir = join(tmpdir(), "wigostudio-fill-test");
 
 function compileFill() {
   rmSync(outDir, { recursive: true, force: true });

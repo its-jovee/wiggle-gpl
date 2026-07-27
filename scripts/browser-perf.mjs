@@ -1,21 +1,40 @@
 /**
- * Headless browser perf smoke test.
- * Usage: node scripts/browser-perf.mjs <projectPath>
+ * Browser perf smoke test.
+ * Usage: node scripts/browser-perf.mjs <projectPath> [--gpu]
+ *
+ * Default is headless, which software-rasterizes canvas (SwiftShader). That is
+ * fine for regression comparisons — the deltas are real — but the absolute
+ * milliseconds are much worse than a GPU-composited build. Pass --gpu to run
+ * headed with hardware acceleration when you need honest absolute numbers to
+ * set a budget against.
  */
 import { chromium } from "playwright";
 import { resolve } from "node:path";
 
-if (!process.argv[2]) throw new Error("usage: node scripts/browser-perf.mjs <projectPath>");
-const projectPath = resolve(process.argv[2]);
+const args = process.argv.slice(2);
+const gpu = args.includes("--gpu");
+const target = args.find((a) => !a.startsWith("--"));
+if (!target) throw new Error("usage: node scripts/browser-perf.mjs <projectPath> [--gpu]");
+const projectPath = resolve(target);
 const projectUrl = `/@fs${projectPath.startsWith("/") ? projectPath : `/${projectPath}`}`;
 const appUrl = `http://localhost:5173/?perf=1&project=${encodeURIComponent(projectUrl)}`;
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch(
+  gpu
+    ? {
+        headless: false,
+        args: ["--ignore-gpu-blocklist", "--enable-gpu-rasterization", "--enable-zero-copy"],
+      }
+    : { headless: true }
+);
 const page = await browser.newPage();
 
 const consoleErrors = [];
 page.on("console", (msg) => {
-  if (msg.type() === "error") consoleErrors.push(msg.text());
+  if (msg.type() === "error") {
+    const source = msg.location().url;
+    consoleErrors.push(source ? `${msg.text()} (${source})` : msg.text());
+  }
 });
 page.on("pageerror", (err) => consoleErrors.push(String(err)));
 
@@ -51,6 +70,7 @@ await browser.close();
 const report = {
   projectPath,
   appUrl,
+  renderer: gpu ? "gpu (headed)" : "swiftshader (headless)",
   status,
   consoleErrors,
   idle: summarize(idlePerf),

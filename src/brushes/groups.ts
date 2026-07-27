@@ -31,7 +31,7 @@ export const RASTER_ONLY_FALLBACK_KEY = "round";
 export function brushToolForBrush(brush: Brush): BrushToolKey {
   if (brush.erase) return "eraser";
   if (brush.group === "Texture") return "texture";
-  if (brush.group === "Scatter & FX") return "scatter";
+  if (brush.group === "Scatter & FX" || brush.group === "Manga FX") return "scatter";
   // Krita-inspired family groups still map into the nearest tool chrome.
   if (brush.group?.startsWith("Krita")) {
     if (brush.group.includes("Spray") || brush.group.includes("FX")) return "scatter";

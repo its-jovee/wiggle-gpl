@@ -191,13 +191,22 @@ function buildAppMenu() {
 }
 
 function createWindow() {
+  const isMac = process.platform === "darwin";
   const win = new BrowserWindow({
     width: 1280,
     height: 1000,
     minWidth: 900,
     minHeight: 700,
-    title: "Wiggle GPL",
-    backgroundColor: "#0e0e16",
+    title: "Wigo Studio",
+    backgroundColor: "#e4e0d8",
+    // Fold the native title bar into the content so the floating topbar sits
+    // flush with the window edge. Traffic lights stay; the renderer pads left.
+    ...(isMac
+      ? {
+          titleBarStyle: "hiddenInset",
+          trafficLightPosition: { x: 14, y: 18 },
+        }
+      : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -249,7 +258,7 @@ function configureAutoUpdates() {
       defaultId: 0,
       cancelId: 1,
       title: "Update available",
-      message: `Wiggle GPL ${info.version} is ready.`,
+      message: `Wigo Studio ${info.version} is ready.`,
       detail: "Download it now and choose when to restart the editor.",
     });
     if (result.response === 0) await autoUpdater.downloadUpdate();
@@ -265,7 +274,7 @@ function configureAutoUpdates() {
       defaultId: 0,
       cancelId: 1,
       title: "Update downloaded",
-      message: `Wiggle GPL ${info.version} is ready to install.`,
+      message: `Wigo Studio ${info.version} is ready to install.`,
       detail: "Restarting now closes the editor and installs the update.",
     });
     if (result.response === 0) autoUpdater.quitAndInstall();

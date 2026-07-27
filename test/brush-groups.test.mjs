@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-brush-groups-test");
+const outDir = join(tmpdir(), "wigostudio-brush-groups-test");
 
 function compileGroups() {
   rmSync(outDir, { recursive: true, force: true });
@@ -43,8 +43,12 @@ test("brush tools split classic texture scatter and eraser brushes", () => {
 });
 
 test("scatter tool excludes erasers and eraser tool includes both erasers", () => {
+  const scatterKeys = groups.brushesForTool("scatter").map((brush) => brush.key);
+  assert.ok(scatterKeys.includes("spray"));
+  assert.ok(scatterKeys.includes("mangaSpeed"));
+  assert.ok(scatterKeys.includes("mangaFocus"));
   assert.deepEqual(
-    groups.brushesForTool("scatter").map((brush) => brush.key),
+    scatterKeys.filter((key) => !key.startsWith("manga") && !key.startsWith("krita.")),
     ["spray", "glitter", "cloud", "foliage"]
   );
   assert.deepEqual(

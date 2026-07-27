@@ -2,7 +2,7 @@
 // core/brushSettings.ts — serializable brush option controls for strokes.
 //
 // Krita's brush options split serializable option data, normalized effective
-// paint settings, and UI widgets. Wiggle keeps the same smaller split: options
+// paint settings, and UI widgets. Wigo keeps the same smaller split: options
 // are data here, the registry remains `{ key, label, spacing, stamp }`, and
 // render consumes one normalized effective settings object per stroke.
 // ============================================================================

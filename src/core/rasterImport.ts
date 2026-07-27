@@ -1,9 +1,9 @@
 // ============================================================================
-// core/rasterImport.ts — clipboard-image validation and placement geometry.
+// core/rasterImport.ts — PNG/JPEG validation and placement geometry.
 //
-// Clipboard PNG/JPEG images become full-project raster canvases. Images keep
-// their aspect ratio, are centered in the frame, and are never enlarged:
-// small pasted art stays crisp while oversized art is contained safely.
+// Pasted PNG/JPEG images become full-project raster canvases (drawing layers).
+// Dropped images become board reference overlays (see main.ts). Images keep
+// their aspect ratio; raster imports are centered and never enlarged.
 // ============================================================================
 
 const RASTER_IMAGE_MIME_TYPES = new Set([
@@ -25,13 +25,19 @@ export type RasterImagePlacement = {
 export function isSupportedRasterImageFile(file: RasterImageFile): boolean {
   const mime = file.type.trim().toLowerCase();
   if (RASTER_IMAGE_MIME_TYPES.has(mime)) return true;
-  // Some desktop clipboard providers omit MIME but retain the filename.
+  // Some desktop clipboard / Finder providers omit MIME but retain the filename.
   return mime === "" && /\.(?:png|jpe?g)$/i.test(file.name);
 }
 
 export function rasterLayerName(file: RasterImageFile): string {
   const stem = file.name.replace(/\.(?:png|jpe?g)$/i, "").trim();
-  return stem && stem.toLowerCase() !== "image" ? stem : "Pasted image";
+  return stem && stem.toLowerCase() !== "image" ? stem : "Imported image";
+}
+
+/** Label for a board reference image — same stem rule, different default. */
+export function referenceImageName(file: RasterImageFile): string {
+  const stem = file.name.replace(/\.(?:png|jpe?g)$/i, "").trim();
+  return stem && stem.toLowerCase() !== "image" ? stem : "Reference";
 }
 
 export function containRasterImage(

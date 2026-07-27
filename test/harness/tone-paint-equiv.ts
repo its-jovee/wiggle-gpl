@@ -47,7 +47,7 @@ function panelWith(layer: Layer): { project: Project; panel: Panel } {
     layers: [layer],
   };
   const project: Project = {
-    version: 10,
+    version: 13,
     width: W,
     height: H,
     wiggleFps: 8,
@@ -60,6 +60,10 @@ function panelWith(layer: Layer): { project: Project; panel: Panel } {
 
 function alphaAt(ctx: CanvasRenderingContext2D, x: number, y: number): number {
   return ctx.getImageData(x, y, 1, 1).data[3];
+}
+
+function rgbaAt(ctx: CanvasRenderingContext2D, x: number, y: number): number[] {
+  return [...ctx.getImageData(x, y, 1, 1).data];
 }
 
 function renderToCanvas(panel: Panel, project: Project, tick = 0): CanvasRenderingContext2D {
@@ -120,6 +124,36 @@ async function runToneEquivTests(): Promise<string[]> {
     const a = renderToCanvas(panel, project, 0).canvas.toDataURL();
     const b = renderToCanvas(panel, project, 7).canvas.toDataURL();
     if (a !== b) failures.push("painted tone differs between ticks — should be static");
+  }
+
+  // Linear and radial manga-tone gradients fade pattern density.
+  for (const kind of ["linear", "radial"] as const) {
+    const layer = toneLayer("full");
+    layer.tone!.gradient = kind === "linear"
+      ? { kind, start: { x: 0, y: 50 }, end: { x: 100, y: 50 } }
+      : { kind, start: { x: 50, y: 50 }, end: { x: 100, y: 50 } };
+    const { project, panel } = panelWith(layer);
+    const ctx = renderToCanvas(panel, project);
+    const near = alphaAt(ctx, kind === "linear" ? 10 : 50, 50);
+    const far = alphaAt(ctx, 90, 50);
+    if (near <= far) failures.push(`${kind} tone gradient: expected density to fade outward`);
+  }
+
+  // Normal draw-layer gradients interpolate both linear and radial fills.
+  for (const kind of ["linear", "radial"] as const) {
+    const start = kind === "linear" ? { x: 1, y: 50 } : { x: 50, y: 50 };
+    const end = kind === "linear" ? { x: 99, y: 50 } : { x: 99, y: 50 };
+    const layer: Layer = {
+      id: `gradient-${kind}`, name: "Gradient", visible: true, opacity: 1, kind: "draw",
+      strokes: [], texts: [],
+      fills: [{ point: start, color: "#ff0000", seed: 1, afterStrokeIndex: -1,
+        gradient: { kind, start, end, endColor: "#0000ff" } }],
+    };
+    const { project, panel } = panelWith(layer);
+    const ctx = renderToCanvas(panel, project);
+    const first = rgbaAt(ctx, start.x, start.y);
+    const last = rgbaAt(ctx, 90, 50);
+    if (first[0] <= first[2] || last[2] <= last[0]) failures.push(`${kind} color gradient did not interpolate red to blue`);
   }
 
   return failures;

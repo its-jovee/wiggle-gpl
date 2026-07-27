@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-render-schedule-test");
+const outDir = join(tmpdir(), "wigostudio-render-schedule-test");
 
 function compileSchedule() {
   rmSync(outDir, { recursive: true, force: true });
@@ -32,6 +32,26 @@ test("idle canvas renders only on tick changes or live editor interaction", () =
   assert.equal(schedule.shouldRenderIdleFrame({ tickChanged: false, interacting: false }), false);
   assert.equal(schedule.shouldRenderIdleFrame({ tickChanged: true, interacting: false }), true);
   assert.equal(schedule.shouldRenderIdleFrame({ tickChanged: false, interacting: true }), true);
+});
+
+test("discrete clock catches up when preview redraws are throttled", () => {
+  assert.deepEqual(
+    schedule.advanceDiscreteClock(10, 1000, 1250, 8),
+    { tick: 12, lastMs: 1250, changed: true }
+  );
+  assert.deepEqual(
+    schedule.advanceDiscreteClock(12, 1250, 1300, 8),
+    { tick: 12, lastMs: 1250, changed: false }
+  );
+});
+
+test("discrete clock preserves fractional remainder instead of accumulating drift", () => {
+  const first = schedule.advanceDiscreteClock(0, 0, 260, 8);
+  assert.deepEqual(first, { tick: 2, lastMs: 250, changed: true });
+  assert.deepEqual(
+    schedule.advanceDiscreteClock(first.tick, first.lastMs, 375, 8),
+    { tick: 3, lastMs: 375, changed: true }
+  );
 });
 
 test("editor onion passes render behind active preview and stay out of playback", () => {

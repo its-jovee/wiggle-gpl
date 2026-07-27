@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-stroke-length-memo-test");
+const outDir = join(tmpdir(), "wigostudio-stroke-length-memo-test");
 
 function compile() {
   rmSync(outDir, { recursive: true, force: true });

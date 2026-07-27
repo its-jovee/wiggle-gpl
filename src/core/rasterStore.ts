@@ -14,7 +14,7 @@
 // snapshot always contains the latest pixels.
 // ============================================================================
 
-import type { Layer, Project } from "./types";
+import type { Layer, Project, SubPanel } from "./types";
 
 export type DecodedImage = { width: number; height: number } & CanvasImageSource;
 export type ImageDecoder = (dataUrl: string) => Promise<DecodedImage>;
@@ -141,7 +141,13 @@ function rasterLayersForProject(project: Project, panelIds?: Set<string>): Layer
   for (const panel of project.panels) {
     if (panelIds && !panelIds.has(panel.id)) continue;
     layers.push(...panel.layers);
-    for (const subPanel of panel.subPanels ?? []) layers.push(...subPanel.layers);
+    const visit = (subs: SubPanel[] | undefined) => {
+      for (const subPanel of subs ?? []) {
+        layers.push(...subPanel.layers);
+        visit(subPanel.subPanels);
+      }
+    };
+    visit(panel.subPanels);
   }
   return layers.filter(layer => layer.kind === "raster" && !!layer.raster);
 }

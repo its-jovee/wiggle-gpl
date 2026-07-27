@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-history-test");
+const outDir = join(tmpdir(), "wigostudio-history-test");
 
 function compileHistory() {
   rmSync(outDir, { recursive: true, force: true });

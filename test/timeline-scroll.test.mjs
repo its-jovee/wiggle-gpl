@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-timeline-scroll-test");
+const outDir = join(tmpdir(), "wigostudio-timeline-scroll-test");
 
 function compileTimelineScroll() {
   rmSync(outDir, { recursive: true, force: true });

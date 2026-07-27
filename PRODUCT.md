@@ -1,4 +1,4 @@
-# Wiggle GPL — Product
+# Wigo Studio — Product
 
 ## What it is
 A GPLv3 product fork of WiggleStudio for combining WiggleStudio's short-form
@@ -17,7 +17,7 @@ A solo content creator / indie animator who:
 
 ## The core insight
 WigglyPaint (and the Decker engine its brushes come from) throws away stroke
-structure on export — it flattens to frames. WiggleStudio KEEPS the vector
+structure on export — it flattens to frames. Wigo Studio KEEPS the vector
 structure (strokes = lists of points), which is what makes re-wiggling,
 rescaling to 9:16, per-frame palette swaps, and frame-accurate export possible.
 Vector-first is the whole product, not an implementation detail.
@@ -75,5 +75,6 @@ assets) by John Earnest. Keep the attribution intact.
 
 This repository is GPLv3-only. Krita as a whole is GPLv3, and direct Krita-
 derived imports are allowed here if they are tracked in
-`docs/research/krita/IMPORT_LEDGER.md`. The original WiggleStudio repository
-remains MIT and must not receive GPL-derived code from this fork.
+`docs/research/krita/IMPORT_LEDGER.md`. The original MIT sibling repository
+(historically WiggleStudio) remains MIT and must not receive GPL-derived code
+from this fork.

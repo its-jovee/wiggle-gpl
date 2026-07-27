@@ -1,12 +1,14 @@
 // ============================================================================
-// core/export.ts — render the sequence and individual panels to video.
+// core/export.ts — render panels / sequences to downloadable files.
 //
-// TWO PATHS:
-//   exportWebM()  — MediaRecorder, ~real-time capture. Good for quick previews.
-//   exportMP4()   — deterministic frame-by-frame → ffmpeg.wasm → H.264 MP4.
-//                   Frame-accurate TikTok output; no MediaRecorder timing drift.
-//                   ffmpeg core loads from public/ffmpeg/ (same-origin, bundled
-//                   at build time from @ffmpeg/core — see scripts/copy-ffmpeg.mjs).
+// PATHS:
+//   exportStillImage() — single-frame PNG or JPEG (optional transparent PNG).
+//   exportWebM()       — MediaRecorder, ~real-time capture. Good for quick previews.
+//   exportMP4()        — deterministic frame-by-frame → ffmpeg.wasm → H.264 MP4.
+//   exportGIF()        — same frame loop → ffmpeg.wasm palette GIF.
+//
+// ffmpeg core loads from public/ffmpeg/ (same-origin, bundled at build time
+// from @ffmpeg/core — see scripts/copy-ffmpeg.mjs).
 // ============================================================================
 
 import { Project } from "./types";
@@ -38,13 +40,226 @@ export type MP4ExportOptions = {
   skipJitter?: boolean;
 };
 
-/** Offscreen canvas at full TikTok resolution. */
+export type StillImageFormat = "png" | "jpeg";
+
+export type StillExportOptions = {
+  /** Panel to export. Defaults to 0. */
+  panelIndex?: number;
+  /** Wiggle tick for the still. Defaults to 0. */
+  tick?: number;
+  /** Omit panel background (PNG only — JPEG always fills opaque). */
+  transparent?: boolean;
+  /** JPEG quality 0–1. Defaults to 0.92. */
+  quality?: number;
+  contentVersion?: number;
+  skipJitter?: boolean;
+  onProgressEvent?: ExportProgressCallback;
+  shouldCancel?: () => boolean;
+};
+
+export type GIFExportOptions = {
+  /** Restrict the export to one panel. */
+  panelIndex?: number;
+  contentVersion?: number;
+  onProgressEvent?: ExportProgressCallback;
+  shouldCancel?: () => boolean;
+  skipJitter?: boolean;
+};
+
+/** Offscreen canvas at full project resolution. */
 function makeStage(project: Project) {
   const canvas = document.createElement("canvas");
   canvas.width = project.width;
   canvas.height = project.height;
   const ctx = canvas.getContext("2d")!;
   return { canvas, ctx };
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) reject(new Error(`Failed to encode ${type}`));
+        else resolve(blob);
+      },
+      type,
+      quality
+    );
+  });
+}
+
+/**
+ * Render every frame and stage it in ffmpeg's virtual FS as `frame%05d.png`.
+ *
+ * The naive form of this loop is strictly serial — render, await the PNG
+ * encode, await the wasm FS write, then start the next frame — so the main
+ * thread sits idle during the encode (which the browser performs off-thread)
+ * and again during the write. Overlapping them keeps one frame's encode/write
+ * in flight while the next frame renders.
+ *
+ * This is safe because `canvas.toBlob` snapshots the bitmap at call time: the
+ * canvas may be redrawn for the next frame while the previous encode is still
+ * running. Writes are chained through a single promise so ffmpeg's FS is never
+ * touched concurrently, and frames still land in strict index order.
+ *
+ * Determinism is untouched — `elapsedMs` is derived from the frame index, not
+ * a wall clock, exactly as before.
+ */
+export async function stageFramesForFFmpeg(
+  ffmpeg: { writeFile(name: string, data: Uint8Array): Promise<unknown> },
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  frameTarget: FrameRenderTarget,
+  totalFrames: number,
+  exportFps: number,
+  visualMs: number,
+  onFrame: (frame: number) => void,
+  shouldCancel?: () => boolean
+): Promise<void> {
+  const { fetchFile } = await import("@ffmpeg/util");
+  let inFlight: Promise<void> = Promise.resolve();
+
+  try {
+    for (let f = 0; f < totalFrames; f++) {
+      if (shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
+      const elapsedMs = (f / exportFps) * 1000;
+      const visualElapsedMs = Math.min(elapsedMs, Math.max(0, visualMs - 1));
+      renderExportFrame(ctx, frameTarget, visualElapsedMs);
+
+      // Snapshot now; the encode proceeds while the next frame renders.
+      const blobPromise = canvasToBlob(canvas, "image/png");
+      const name = `frame${String(f).padStart(5, "0")}.png`;
+      const previous = inFlight;
+      inFlight = (async () => {
+        const bytes = await fetchFile(await blobPromise);
+        await previous; // preserve write order
+        await ffmpeg.writeFile(name, bytes);
+        onFrame(f + 1);
+      })();
+      // Bound the pipeline to one outstanding frame so a long export cannot
+      // accumulate hundreds of 8MB blobs in memory.
+      if (f > 0) await previous;
+    }
+    await inFlight;
+  } catch (err) {
+    // Never leave the trailing frame's promise unobserved — an abandoned
+    // rejection here would surface as an unhandled rejection long after the
+    // export already failed.
+    await inFlight.catch(() => {});
+    throw err;
+  }
+}
+
+async function loadFFmpeg() {
+  const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+  const { toBlobURL } = await import("@ffmpeg/util");
+  const ffmpeg = new FFmpeg();
+  const base = new URL("ffmpeg/", window.location.href).href;
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${base}ffmpeg-core.js`, "text/javascript"),
+    wasmURL: await toBlobURL(`${base}ffmpeg-core.wasm`, "application/wasm"),
+  });
+  return ffmpeg;
+}
+
+type FrameRenderTarget = {
+  project: Project;
+  panelIndex?: number;
+  contentVersion: number;
+  skipJitter: boolean;
+};
+
+function renderExportFrame(
+  ctx: CanvasRenderingContext2D,
+  target: FrameRenderTarget,
+  visualElapsedMs: number,
+  opts?: { skipBg?: boolean }
+) {
+  const { project, panelIndex, contentVersion, skipJitter } = target;
+  const panel = panelIndex === undefined ? undefined : project.panels[panelIndex];
+  if (panelIndex !== undefined && !panel) throw new Error("Cannot export a missing panel");
+
+  if (opts?.skipBg) {
+    ctx.clearRect(0, 0, project.width, project.height);
+  }
+
+  if (panel) {
+    const localMs = visualElapsedMs;
+    const tick = Math.floor((localMs / 1000) * project.wiggleFps);
+    renderPanel(ctx, panel, tick, project.width, project.height, {
+      allPanels: project.panels,
+      timelapseProgress: panel.kind === "timelapse"
+        ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+      localMs,
+      wiggleFps: project.wiggleFps,
+      contentVersion,
+      skipJitter,
+      skipBg: opts?.skipBg,
+    });
+  } else {
+    renderSequenceFrame(ctx, project, visualElapsedMs, {
+      contentVersion,
+      skipJitter,
+      skipBg: opts?.skipBg,
+    });
+  }
+}
+
+// --- Still image (PNG / JPEG) ----------------------------------------------
+export async function exportStillImage(
+  project: Project,
+  format: StillImageFormat,
+  opts?: StillExportOptions
+): Promise<Blob> {
+  clearTimelapseCache();
+  const progress = createExportProgressReporter(
+    format === "png" ? "PNG" : "JPEG",
+    undefined,
+    opts?.onProgressEvent
+  );
+  try {
+    if (opts?.shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
+    const panelIndex = opts?.panelIndex ?? 0;
+    const panel = project.panels[panelIndex];
+    if (!panel) throw new Error("Cannot export a missing panel");
+
+    const transparent = format === "png" && !!opts?.transparent;
+    const { canvas, ctx } = makeStage(project);
+    // skipBg leaves the target uncleared — wipe first for a clean alpha channel.
+    ctx.clearRect(0, 0, project.width, project.height);
+    progress.render(0.3);
+
+    const tick = opts?.tick ?? 0;
+    const localMs = Math.min(panel.durationMs * 0.5, Math.max(0, panel.durationMs - 1));
+    renderPanel(ctx, panel, tick, project.width, project.height, {
+      allPanels: project.panels,
+      timelapseProgress: panel.kind === "timelapse"
+        ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
+      localMs,
+      wiggleFps: project.wiggleFps,
+      contentVersion: opts?.contentVersion ?? 0,
+      skipJitter: opts?.skipJitter ?? false,
+      skipBg: transparent,
+    });
+
+    if (opts?.shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
+    progress.render(0.8);
+
+    const mime = format === "png" ? "image/png" : "image/jpeg";
+    const quality = format === "jpeg" ? (opts?.quality ?? 0.92) : undefined;
+    const blob = await canvasToBlob(canvas, mime, quality);
+    progress.done();
+    return blob;
+  } catch (err) {
+    progress.failed(err);
+    throw err;
+  } finally {
+    clearTimelapseCache();
+  }
 }
 
 // --- Path 1: MediaRecorder WebM (validate the pipeline end-to-end) ----------
@@ -123,45 +338,21 @@ export async function exportMP4(
     const totalMs = panel ? visualMs : (opts?.includeAudioTail ? Math.max(visualMs, audioMs) : visualMs);
     const totalFrames = Math.max(1, Math.round((totalMs / 1000) * exportFps));
     const contentVersion = opts?.contentVersion ?? 0;
+    const skipJitter = opts?.skipJitter ?? false;
 
-    // Lazy-load ffmpeg so it doesn't bloat initial page load.
-    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-    const ffmpeg = new FFmpeg();
-    const base = new URL("ffmpeg/", window.location.href).href;
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${base}ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${base}ffmpeg-core.wasm`, "application/wasm"),
-    });
+    const ffmpeg = await loadFFmpeg();
+    const frameTarget: FrameRenderTarget = {
+      project,
+      panelIndex: opts?.panelIndex,
+      contentVersion,
+      skipJitter,
+    };
 
-    for (let f = 0; f < totalFrames; f++) {
-      if (opts?.shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
-      const elapsedMs = (f / exportFps) * 1000;
-      const visualElapsedMs = Math.min(elapsedMs, Math.max(0, visualMs - 1));
-      if (panel) {
-        const localMs = visualElapsedMs;
-        const tick = Math.floor((localMs / 1000) * project.wiggleFps);
-        renderPanel(ctx, panel, tick, project.width, project.height, {
-          allPanels: project.panels,
-          timelapseProgress: panel.kind === "timelapse"
-            ? timelapseProgressQuantized(localMs, panel.durationMs, project.wiggleFps) : undefined,
-          localMs,
-          wiggleFps: project.wiggleFps,
-          contentVersion,
-          skipJitter: opts?.skipJitter ?? false,
-        });
-      } else {
-        renderSequenceFrame(ctx, project, visualElapsedMs, {
-          contentVersion,
-          skipJitter: opts?.skipJitter ?? false,
-        });
-      }
-
-      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/png"));
-      const name = `frame${String(f).padStart(5, "0")}.png`;
-      await ffmpeg.writeFile(name, await fetchFile(blob));
-      progress.render((f + 1) / totalFrames, f + 1, totalFrames);
-    }
+    await stageFramesForFFmpeg(
+      ffmpeg, ctx, canvas, frameTarget, totalFrames, exportFps, visualMs,
+      (done) => progress.render(done / totalFrames, done, totalFrames),
+      opts?.shouldCancel
+    );
 
     const audioArgs = panel ? { inputs: [], output: ["-an"] } : await writeAudioInputs(ffmpeg, project);
     progress.encode();
@@ -201,6 +392,69 @@ export async function exportMP4(
     // data is Uint8Array; copy into a fresh ArrayBuffer-backed view for Blob.
     const bytes = data as Uint8Array;
     const blob = new Blob([new Uint8Array(bytes)], { type: "video/mp4" });
+    progress.done();
+    return blob;
+  } catch (err) {
+    progress.failed(err);
+    throw err;
+  } finally {
+    clearTimelapseCache();
+  }
+}
+
+// --- Animated GIF via ffmpeg.wasm ------------------------------------------
+// Two-pass palette (palettegen → paletteuse) for cleaner colors than a single
+// quantized encode. Default 12fps keeps file size reasonable at full res.
+export async function exportGIF(
+  project: Project,
+  exportFps = 12,
+  opts?: GIFExportOptions
+): Promise<Blob> {
+  clearTimelapseCache();
+  const progress = createExportProgressReporter("GIF", undefined, opts?.onProgressEvent);
+  try {
+    const { canvas, ctx } = makeStage(project);
+    const panel = opts?.panelIndex === undefined ? undefined : project.panels[opts.panelIndex];
+    if (opts?.panelIndex !== undefined && !panel) throw new Error("Cannot export a missing panel");
+    const totalMs = panel?.durationMs ?? expandedDurationMs(project);
+    const totalFrames = Math.max(1, Math.round((totalMs / 1000) * exportFps));
+    const contentVersion = opts?.contentVersion ?? 0;
+    const skipJitter = opts?.skipJitter ?? false;
+
+    const ffmpeg = await loadFFmpeg();
+    const frameTarget: FrameRenderTarget = {
+      project,
+      panelIndex: opts?.panelIndex,
+      contentVersion,
+      skipJitter,
+    };
+
+    await stageFramesForFFmpeg(
+      ffmpeg, ctx, canvas, frameTarget, totalFrames, exportFps, totalMs,
+      // Reserve the last ~20% of the progress bar for palette encode.
+      (done) => progress.render((done / totalFrames) * 0.8, done, totalFrames),
+      opts?.shouldCancel
+    );
+
+    progress.encode();
+    await ffmpeg.exec([
+      "-framerate", String(exportFps),
+      "-i", "frame%05d.png",
+      "-vf", `fps=${exportFps},scale=iw:ih:flags=lanczos,palettegen=stats_mode=diff`,
+      "palette.png",
+    ]);
+    await ffmpeg.exec([
+      "-framerate", String(exportFps),
+      "-i", "frame%05d.png",
+      "-i", "palette.png",
+      "-lavfi", `fps=${exportFps},scale=iw:ih:flags=lanczos [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=5`,
+      "-loop", "0",
+      "out.gif",
+    ]);
+
+    const data = await ffmpeg.readFile("out.gif");
+    const bytes = data as Uint8Array;
+    const blob = new Blob([new Uint8Array(bytes)], { type: "image/gif" });
     progress.done();
     return blob;
   } catch (err) {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-project-validation-test");
+const outDir = join(tmpdir(), "wigo-studio-project-validation-test");
 
 function compileProjectValidation() {
   rmSync(outDir, { recursive: true, force: true });
@@ -22,6 +22,7 @@ function compileProjectValidation() {
     "src/core/audioTypes.ts",
     "src/core/types.ts",
     "src/core/brushSettings.ts",
+    "src/core/panelStack.ts",
     "src/core/projectValidation.ts",
   ], { stdio: "inherit" });
 }
@@ -61,7 +62,7 @@ test("new tone layer stores static manga texture settings", () => {
   });
 });
 
-test("v9 project with a tone layer migrates to v10 with full coverage", () => {
+test("v9 project with a tone layer migrates to current with full coverage", () => {
   const v9Tone = {
     id: "tone-1",
     name: "Manga tone",
@@ -89,12 +90,12 @@ test("v9 project with a tone layer migrates to v10 with full coverage", () => {
     }],
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 13);
   assert.equal(migrated.panels[0].layers[0].tone.coverage, "full");
   assert.equal(migrated.panels[0].subPanels[0].layers[0].tone.coverage, "full");
 });
 
-test("older project versions still chain through to v10", () => {
+test("older project versions still chain through to current", () => {
   const migrated = types.migrateProject({
     version: 8,
     width: 1080,
@@ -104,7 +105,8 @@ test("older project versions still chain through to v10", () => {
     panels: [types.newPanel()],
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 13);
+  assert.deepEqual(migrated.referenceImages, []);
 });
 
 test("new raster layer stores a valid empty PNG data URL", () => {
@@ -199,6 +201,51 @@ test("validateProject rejects too many stroke points", () => {
   const result = validation.validateProject(project);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /points exceeds max/);
+});
+
+test("validateProject rejects malformed gradient geometry and colors", () => {
+  const project = baseProject();
+  project.panels[0].layers[0].fills.push({
+    point: { x: 10, y: 10 }, color: "#fff", seed: 1, afterStrokeIndex: -1,
+    gradient: {
+      kind: "linear",
+      start: { x: Number.NaN, y: 0 },
+      end: { x: 100, y: 0 },
+      endColor: "not-a-color",
+    },
+  });
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /gradient points must be finite/);
+  assert.match(result.errors.join("; "), /gradient end color must be a hex color/);
+
+  const tone = types.newLayer("Tone", "tone");
+  tone.tone.gradient = {
+    kind: "radial",
+    start: { x: 0, y: 0 },
+    end: { x: Number.POSITIVE_INFINITY, y: 10 },
+  };
+  project.panels[0].layers = [tone];
+  const toneResult = validation.validateProject(project);
+  assert.equal(toneResult.ok, false);
+  assert.match(toneResult.errors.join("; "), /tone gradient points must be finite/);
+});
+
+test("validateProject bounds custom sub-panel outlines", () => {
+  const project = baseProject();
+  const frame = types.newSubPanel(
+    { x: 0, y: 0, w: 100, h: 100 },
+    { brush: "round", color: "#000", thickness: 2, wiggleAmplitude: 0 },
+  );
+  frame.shape = "custom";
+  frame.points = Array.from(
+    { length: validation.MAX_SUBPANEL_POINTS + 1 },
+    (_, i) => ({ x: i, y: i % 2 }),
+  );
+  project.panels[0].subPanels = [frame];
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /custom points exceeds max/);
 });
 
 test("capProjectFillLimits clamps fill tolerance and gap close", () => {
@@ -360,4 +407,78 @@ test("migrateProject throws on invalid dimensions", () => {
     }),
     /invalid project/
   );
+});
+
+test("validateProject rejects nesting deeper than MAX_SUBPANEL_DEPTH", () => {
+  const project = baseProject();
+  let node = {
+    id: "d0",
+    bounds: { x: 0, y: 0, w: 10, h: 10 },
+    shape: "rect",
+    border: { brush: "round", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+    bg: null,
+    layers: [types.newLayer()],
+    subPanels: [],
+    stack: [],
+  };
+  node.stack = [{ kind: "layer", id: node.layers[0].id }];
+  project.panels[0].subPanels = [node];
+  for (let d = 1; d <= validation.MAX_SUBPANEL_DEPTH; d++) {
+    const child = {
+      id: `d${d}`,
+      bounds: { x: 0, y: 0, w: 10, h: 10 },
+      shape: "rect",
+      border: { brush: "round", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+      bg: null,
+      layers: [types.newLayer()],
+      subPanels: [],
+      stack: [],
+    };
+    child.stack = [{ kind: "layer", id: child.layers[0].id }];
+    node.subPanels = [child];
+    node.stack = [
+      { kind: "layer", id: node.layers[0].id },
+      { kind: "subpanel", id: child.id },
+    ];
+    node = child;
+  }
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /nesting depth/);
+});
+
+test("validateProject counts nested sub-panels toward the panel cap", () => {
+  const project = baseProject();
+  const many = [];
+  for (let i = 0; i < validation.MAX_SUBPANELS_PER_PANEL + 1; i++) {
+    const layer = types.newLayer();
+    many.push({
+      id: `s${i}`,
+      bounds: { x: 0, y: 0, w: 10, h: 10 },
+      shape: "rect",
+      border: { brush: "round", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+      bg: null,
+      layers: [layer],
+      subPanels: [],
+      stack: [{ kind: "layer", id: layer.id }],
+    });
+  }
+  // Nest half under the first root frame so tree-wide count still exceeds.
+  const rootLayer = types.newLayer();
+  project.panels[0].subPanels = [{
+    id: "root-frame",
+    bounds: { x: 0, y: 0, w: 100, h: 100 },
+    shape: "rect",
+    border: { brush: "round", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+    bg: null,
+    layers: [rootLayer],
+    subPanels: many,
+    stack: [
+      { kind: "layer", id: rootLayer.id },
+      ...many.map((s) => ({ kind: "subpanel", id: s.id })),
+    ],
+  }];
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /sub-panels exceeds max/);
 });

@@ -1,7 +1,7 @@
 # Audio Timeline Design
 
 Date: 2026-06-06
-Project: WiggleStudio
+Project: Wigo Studio
 
 ## Scope
 
@@ -130,7 +130,7 @@ project has not been saved yet, recordings are written to an app-managed media
 folder and remain referenced from there until a future collect/relocate workflow
 is added.
 
-The `.wiggle.json` project file stores only metadata, file paths, and waveform
+The `.wigo.json` (legacy `.wiggle.json`) project file stores only metadata, file paths, and waveform
 peaks. Moving a project to another computer requires moving the referenced media
 files as well.
 
@@ -310,4 +310,4 @@ These items are intentionally outside v1 but should be tracked for later:
 - Audio ducking for lowering music under narration.
 - Noise cleanup or basic voice enhancement.
 - Panel-attached audio clips.
-- Project package export that bundles `.wiggle.json` plus media.
+- Project package export that bundles `.wigo.json` (legacy `.wiggle.json`) plus media.

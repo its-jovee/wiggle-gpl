@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-selection-test");
+const outDir = join(tmpdir(), "wigostudio-selection-test");
 
 function compileSelection() {
   rmSync(outDir, { recursive: true, force: true });
@@ -165,6 +165,34 @@ test("transform handle geometry stays aligned across zoom levels", () => {
   assert.deepEqual(
     sel.transformRotateHandleCenter({ x: 50, y: 100, w: 40, h: 20 }, 0.5),
     { x: 70, y: 28 }
+  );
+});
+
+test("rotate knob and stem hit; north edge handle still scales", () => {
+  const bounds = { x: 100, y: 200, w: 200, h: 100 };
+  for (const scale of [0.5, 1, 2]) {
+    const rot = sel.transformRotateHandleCenter(bounds, scale);
+    assert.equal(sel.hitTestTransformHandle(rot, bounds, scale), "rotate");
+    // Midpoint of the stem between the top edge and the knob.
+    const stem = { x: rot.x, y: (bounds.y + rot.y) / 2 };
+    assert.equal(sel.hitTestTransformHandle(stem, bounds, scale), "rotate");
+    // Exact top-center still scales via the north edge handle.
+    assert.equal(
+      sel.hitTestTransformHandle({ x: bounds.x + bounds.w / 2, y: bounds.y }, bounds, scale),
+      "n"
+    );
+  }
+});
+
+test("rotate handle hit sits outside the selection bounds", () => {
+  const bounds = { x: 100, y: 200, w: 200, h: 80 };
+  const rot = sel.transformRotateHandleCenter(bounds, 1);
+  assert.ok(rot.y < bounds.y);
+  assert.equal(sel.hitTestTransformHandle(rot, bounds, 1), "rotate");
+  // A point above the box but off the stem/knob is outside transform chrome.
+  assert.equal(
+    sel.hitTestTransformHandle({ x: bounds.x - 40, y: rot.y }, bounds, 1),
+    null
   );
 });
 

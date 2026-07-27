@@ -33,6 +33,8 @@ export type ProjectBoardMeta = {
   worldMigrated?: boolean;
 };
 
+// IndexedDB name kept stable so existing Project Board libraries survive the
+// Wigo Studio rebrand. Do not rename without a migration path.
 const DB_NAME = "wiggle-gpl-project-library";
 const DB_VERSION = 1;
 const PROJECT_STORE = "projects";

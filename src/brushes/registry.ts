@@ -18,6 +18,7 @@ import { Vec2 } from "../core/types";
 import { pickIndex, noise } from "../core/rng";
 import { stampTexture } from "./textures";
 import { KRITA_RASTER_BRUSHES } from "./kritaRaster";
+import { MANGA_FX_BRUSHES } from "./mangaFx";
 
 export type BrushContext = {
   ctx: CanvasRenderingContext2D;
@@ -38,6 +39,8 @@ export type BrushContext = {
   /** Accumulated distance along the (jittered) stroke at this stamp, px.
    *  Deterministic per (tick, stroke). Optional. */
   dist?: number;
+  /** Radial manga FX: ray length scales to this radius (px). Optional. */
+  radialRadius?: number;
 };
 
 export type Brush = {
@@ -56,6 +59,9 @@ export type Brush = {
   /** When true, the brush is offered only while a raster layer is paintable.
    *  UI metadata only — does not change stamp(BrushContext). */
   rasterOnly?: boolean;
+  /** Click-drag radial tool: stroke stores center + radius edge in `points`;
+   *  render passes `radialRadius` (px) into BrushContext. */
+  radial?: boolean;
 };
 
 const heading = (d: Vec2) => Math.atan2(d.y, d.x);
@@ -444,16 +450,19 @@ export const BRUSHES: Brush[] = [
     },
   },
   {
-    // Spray: shotgun scatter of specks inside a wide radius.
+    // Spray: layered scatter starts close to the tip and expands outward.
     key: "spray", label: "Spray", spacing: 5, group: "Scatter & FX",
     stamp: (b) => {
       const { ctx, pos, color, size } = b;
       ctx.fillStyle = color;
       ctx.globalAlpha = 0.8;
-      for (let i = 0; i < 6; i++) {
-        const ox = noise(b.tick + i * 13, b.seed + i * 7) * 6 * size;
-        const oy = noise(b.tick + i * 29, b.seed + i * 17) * 6 * size;
-        const r = (0.4 + 0.5 * Math.abs(noise(b.tick + i * 41, b.seed + i * 23))) * size;
+      for (let i = 0; i < 12; i++) {
+        const ring = (i + 1) / 12;
+        const radius = (0.75 + ring * 5.25) * size;
+        const angle = Math.PI * 2 * Math.abs(noise(b.tick + i * 13, b.seed + i * 7));
+        const ox = Math.cos(angle) * radius * Math.abs(noise(b.tick + i * 29, b.seed + i * 17));
+        const oy = Math.sin(angle) * radius * Math.abs(noise(b.tick + i * 37, b.seed + i * 31));
+        const r = (0.2 + 0.55 * ring * Math.abs(noise(b.tick + i * 41, b.seed + i * 23))) * size;
         ctx.beginPath();
         ctx.arc(pos.x + ox, pos.y + oy, r, 0, Math.PI * 2);
         ctx.fill();
@@ -518,6 +527,9 @@ export const BRUSHES: Brush[] = [
     key: "eraser_grain", label: "Grainy Eraser", spacing: 3, erase: true, group: "Scatter & FX",
     stamp: (b) => stampTexture(b, "charcoalGrain", 5 * b.size, 0.7),
   },
+
+  // Manga FX — speed/focus lines and expression stamps (see mangaFx.ts).
+  ...MANGA_FX_BRUSHES,
 
   // Krita-inspired raster-only presets (see kritaRaster.ts / RASTER_BRUSH_MAPPING.md).
   ...KRITA_RASTER_BRUSHES,

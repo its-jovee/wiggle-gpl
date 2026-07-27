@@ -48,6 +48,38 @@ export function activeNoiseDisplace(
   return clampNoiseDisplace(raw);
 }
 
+/**
+ * Push clamped noise-displace settings onto every eligible layer in a panel.
+ * Raster always; tone only when `includeTone`. Returns layers that were written
+ * (for history). Draw / text / other kinds are skipped.
+ *
+ * When `enabled` is false (Clear), existing amp/cell/speed are preserved and
+ * layers with no displace settings are left untouched.
+ */
+export function applyNoiseDisplaceToPanelLayers(
+  layers: Layer[],
+  settings: LayerNoiseDisplace,
+  opts: { includeTone: boolean; enabled: boolean }
+): Layer[] {
+  const next = clampNoiseDisplace({ ...settings, enabled: opts.enabled });
+  const changed: Layer[] = [];
+  for (const layer of layers) {
+    if (!layerSupportsNoiseDisplace(layer)) continue;
+    if (!opts.includeTone && (layer.kind ?? "draw") === "tone") continue;
+    if (opts.enabled) {
+      layer.noiseDisplace = { ...next };
+    } else {
+      if (!layer.noiseDisplace) continue;
+      layer.noiseDisplace = clampNoiseDisplace({
+        ...layer.noiseDisplace,
+        enabled: false,
+      });
+    }
+    changed.push(layer);
+  }
+  return changed;
+}
+
 /** Stable numeric seed from a layer id (same algorithm as subpanel.hashId). */
 export function noiseDisplaceSeed(layerId: string): number {
   let h = 0;
@@ -64,7 +96,11 @@ export function cellDisplaceOffset(
   amplitude: number,
   speed: number
 ): { dx: number; dy: number } {
-  const t = tick * speed;
+  // Displacement is a boil animation: speed scales its deterministic phase.
+  // Quantizing the phase makes fractional speeds real holds (0.25x changes
+  // once every four wiggle ticks) instead of unrelated fractional hash inputs.
+  // Speeds above 1x advance through multiple deterministic phases per tick.
+  const t = Math.floor(tick * speed);
   return {
     dx: noise(t, seed + cellX * 17.1, cellY * 31.7) * amplitude,
     dy: noise(t + 50.5, seed + cellX * 23.3, cellY * 11.9) * amplitude,

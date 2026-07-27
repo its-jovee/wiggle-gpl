@@ -1,6 +1,6 @@
 # Code of conduct
 
-Wiggle GPL welcomes constructive participation from artists, developers, and
+Wigo Studio welcomes constructive participation from artists, developers, and
 researchers. Be respectful, specific, and generous when discussing work.
 
 Unacceptable behavior includes harassment, discrimination, threats, deliberate

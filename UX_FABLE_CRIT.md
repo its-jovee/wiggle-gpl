@@ -40,7 +40,7 @@ art." The labels fight the user's intuition. Consider renaming to something like
 ## 3. Recent Files menu is a lie — SEVERITY: MEDIUM
 
 Every entry under "Recent" calls `openProject()` (main.ts:7112) — the generic open
-picker — not the specific file. So clicking "my-comic.wiggle.json" in Recents pops the
+picker — not the specific file. So clicking "my-comic.wigo.json" in Recents pops the
 OS file browser instead of opening that file. This is worse than having no recents
 list: it looks like a feature and betrays the click. Either implement it (File System
 Access API can persist handles in IndexedDB for real re-open) or remove the section.

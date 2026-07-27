@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-eraser-preview-test");
+const outDir = join(tmpdir(), "wigostudio-eraser-preview-test");
 
 function compileEraserPreview() {
   rmSync(outDir, { recursive: true, force: true });

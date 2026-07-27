@@ -7,8 +7,14 @@
 //  - Color is a real hex string per stroke (Path B / color-native).
 //  - durationMs (how long a panel shows) is kept SEPARATE from wiggleFps.
 //  - Panels own Layers; Layers can hold strokes, fills, and texts.
-//  - Panels also own SubPanels — comic-panel-style nested frames that clip
-//    their own layers to a shape (rect / rounded / balloon / thought / burst).
+//  - Panels also own SubPanels — comic-panel-style frames that clip their
+//    contents to a shape (rect / rounded / balloon / thought / burst).
+//  - SubPanels may nest: each has its own layers, child subPanels, and stack
+//    so drawings and child frames share one local z-order. Children render
+//    inside the parent clip.
+//  - Panel.stack is the root z-order: layer and sub-panel ids interleaved
+//    bottom→top so drawings can sit above or below frames. Entities stay in
+//    `layers` / `subPanels`; the stack only orders them.
 //  - Animations (enter/exit) live on Panel, SubPanel, and TextElement.
 //    LayerAnimation is separate: it is a render-time transform for layer
 //    motion, not an edit to stored stroke geometry.
@@ -148,6 +154,13 @@ export type Fill = {
   /** When set, flood fill is intersected with this shape at render time. */
   clipShape?: SelectionShape;
   clipInverted?: boolean;
+  /** Optional drag-defined color gradient inside the flood-filled region. */
+  gradient?: {
+    kind: "linear" | "radial";
+    start: Vec2;
+    end: Vec2;
+    endColor: string;
+  };
 };
 
 export type LayerBlendMode =
@@ -196,6 +209,13 @@ export type ToneSettings = {
   /** "full": legacy whole-canvas texture. "painted": strokes reveal the
    *  pattern as a mask (source-in composite) — the manga-correct paintable tone. */
   coverage: "full" | "painted";
+  /** Optional density fade applied to the generated tone pattern. */
+  gradient?: {
+    kind: "linear" | "radial";
+    start: Vec2;
+    end: Vec2;
+    reverse?: boolean;
+  };
 };
 
 export type LayerKind = "draw" | "text" | "tone" | "raster";
@@ -232,7 +252,7 @@ export type Layer = {
 
 // ---- SubPanels (comic frames) ----------------------------------------------
 
-export type SubPanelShape = "rect" | "rounded" | "balloon" | "thought" | "burst";
+export type SubPanelShape = "rect" | "rounded" | "balloon" | "thought" | "burst" | "custom";
 
 export type SubPanelBorder = {
   brush: string;
@@ -245,11 +265,17 @@ export type SubPanel = {
   id: string;
   bounds: { x: number; y: number; w: number; h: number };
   shape: SubPanelShape;
+  /** Closed outline for `shape: "custom"` (from Cut Subpanel). Ignored otherwise. */
+  points?: Vec2[];
   tail?: Vec2;
   border: SubPanelBorder;
   bg: string | null;
   layers: Layer[];
   activeLayerIndex?: number;
+  /** Nested comic frames; clipped by this sub-panel's outline at render time. */
+  subPanels?: SubPanel[];
+  /** Local z-order (bottom→top): this frame's layers + child sub-panels. */
+  stack?: PanelStackItem[];
   enter?: AnimationSpec;
   exit?: AnimationSpec;
 };
@@ -309,9 +335,60 @@ export function newPerspectiveGuide(
   };
 }
 
+// ---- Reference images (editor-only board overlays) -------------------------
+
+/** PNG/JPEG dropped onto the infinite board as a non-exporting reference.
+ *  Position is relative to this project's export-frame origin so moving the
+ *  library card keeps refs attached. Never drawn by renderPanel / export. */
+export type ReferenceImage = {
+  id: string;
+  name: string;
+  /** PNG data URL (JPEG is converted on import, matching raster layers). */
+  data: string;
+  /** Intrinsic pixel size of `data`. */
+  width: number;
+  height: number;
+  /** Top-left relative to this project's export frame origin. */
+  x: number;
+  y: number;
+  /** Display scale in world space (1 = 1 source pixel = 1 world unit). */
+  scale: number;
+  /** Overlay opacity 0..1. */
+  opacity: number;
+  visible: boolean;
+};
+
+export function newReferenceImage(
+  name: string,
+  data: string,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  scale = 1
+): ReferenceImage {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    data,
+    width,
+    height,
+    x,
+    y,
+    scale,
+    opacity: 1,
+    visible: true,
+  };
+}
+
 // ---- Panel / Project -------------------------------------------------------
 
 export type PanelKind = "normal" | "timelapse";
+
+/** Root composite order entry — layer and sub-panel ids may interleave. */
+export type PanelStackItem =
+  | { kind: "layer"; id: string }
+  | { kind: "subpanel"; id: string };
 
 export type Panel = {
   id: string;
@@ -325,6 +402,9 @@ export type Panel = {
   kind?: PanelKind;
   timelapse?: { sourceId: string };
   subPanels?: SubPanel[];
+  /** Root composite order (bottom→top). Layer and sub-panel ids may interleave.
+   *  Absent stacks resolve to [...layers, ...subPanels]. */
+  stack?: PanelStackItem[];
   guides?: PerspectiveGuide[];
   enter?: AnimationSpec;
   exit?: AnimationSpec;
@@ -341,7 +421,7 @@ export type FrameGroup = {
 };
 
 export type Project = {
-  version: 10;
+  version: 13;
   width: number;
   height: number;
   wiggleFps: number;
@@ -350,6 +430,8 @@ export type Project = {
   drawingSettings: DrawingSettings;
   groups?: FrameGroup[];
   audio?: AudioProject;
+  /** Editor-only board overlays. Omitted/empty on older saves. */
+  referenceImages?: ReferenceImage[];
 };
 
 export const TIKTOK_WIDTH = 1080;
@@ -359,15 +441,37 @@ export const TIKTOK_HEIGHT = 1920;
 
 export function newProject(width = TIKTOK_WIDTH, height = TIKTOK_HEIGHT): Project {
   return {
-    version: 10,
+    version: 13,
     width,
     height,
     wiggleFps: 8,
     panels: [newPanel()],
     brushPresets: [],
     drawingSettings: newDrawingSettings(),
+    referenceImages: [],
     audio: newAudioProject(),
   };
+}
+
+/** True when a project still looks like an untouched quick-start canvas:
+ *  one empty draw panel, no presets/audio/groups. Used to drop unused
+ *  Untitled library records when the user opens or creates something else. */
+export function isBlankQuickStartProject(project: Project): boolean {
+  if (project.brushPresets.length > 0) return false;
+  if ((project.groups?.length ?? 0) > 0) return false;
+  if ((project.referenceImages?.length ?? 0) > 0) return false;
+  const audio = project.audio;
+  if (audio && (audio.assets.length > 0 || audio.tracks.some((track) => track.clips.length > 0))) {
+    return false;
+  }
+  if (project.panels.length !== 1) return false;
+  const panel = project.panels[0];
+  if ((panel.subPanels?.length ?? 0) > 0) return false;
+  if (panel.layers.length !== 1) return false;
+  const layer = panel.layers[0];
+  if ((layer.kind ?? "draw") !== "draw") return false;
+  if (layer.strokes.length || layer.fills.length || (layer.texts?.length ?? 0)) return false;
+  return true;
 }
 
 export function newDrawingSettings(): DrawingSettings {
@@ -377,15 +481,17 @@ export function newDrawingSettings(): DrawingSettings {
 }
 
 export function newPanel(): Panel {
+  const layer = newLayer("Layer 1");
   return {
     id: crypto.randomUUID(),
     durationMs: 1000,
     bg: "#ffffff",
     paletteId: null,
-    layers: [newLayer("Layer 1")],
+    layers: [layer],
     activeLayerIndex: 0,
     kind: "normal",
     subPanels: [],
+    stack: [{ kind: "layer", id: layer.id }],
   };
 }
 
@@ -420,28 +526,37 @@ export function newSubPanel(
   bounds: { x: number; y: number; w: number; h: number },
   border: SubPanelBorder
 ): SubPanel {
+  const layer = newLayer("Layer 1");
   return {
     id: crypto.randomUUID(),
     bounds,
     shape: "rect",
     border,
     bg: null,
-    layers: [newLayer("Layer 1")],
+    layers: [layer],
     activeLayerIndex: 0,
+    subPanels: [],
+    stack: [{ kind: "layer", id: layer.id }],
   };
 }
 
 // ---- Migration -------------------------------------------------------------
 
-/** Loads any prior version (v1-v9) and returns a v10 project. */
+/** Loads any prior version (v1–v12) and returns a v13 project. */
 export function migrateProject(raw: unknown): Project {
   if (!raw || typeof raw !== "object") throw new Error("not a project");
   const p = raw as Record<string, unknown>;
-  const project = p.version === 10
-    ? normalizeV10(raw as Project)
-    : p.version === 9
-      ? migrateV9toV10(normalizeV9(raw as V9Project))
-      : migrateV9toV10(migrateV8toV9(migrateLegacyToV8(p)));
+  const project = p.version === 13
+    ? normalizeV13(raw as Project)
+    : p.version === 12
+      ? migrateV12toV13(normalizeV12(raw as V12Project))
+      : p.version === 11
+        ? migrateV12toV13(migrateV11toV12(normalizeV11(raw as V11Project)))
+        : p.version === 10
+          ? migrateV12toV13(migrateV11toV12(migrateV10toV11(normalizeV10(raw as V10Project))))
+          : p.version === 9
+            ? migrateV12toV13(migrateV11toV12(migrateV10toV11(migrateV9toV10(normalizeV9(raw as V9Project)))))
+            : migrateV12toV13(migrateV11toV12(migrateV10toV11(migrateV9toV10(migrateV8toV9(migrateLegacyToV8(p))))));
   capProjectFillLimits(project);
   capProjectBrushSettings(project);
   capProjectDrawingSettings(project);
@@ -483,6 +598,61 @@ type V6Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> &
 type V7Project = Omit<Project, "version" | "brushPresets" | "drawingSettings"> & { version: 7; brushPresets?: BrushPreset[] };
 type V8Project = Omit<Project, "version"> & { version: 8 };
 type V9Project = Omit<Project, "version"> & { version: 9 };
+type V10Project = Omit<Project, "version"> & { version: 10 };
+/** v11: Panel.stack, flat SubPanels (no nested subPanels/stack on frames). */
+type V11SubPanel = {
+  id: string;
+  bounds: { x: number; y: number; w: number; h: number };
+  shape: SubPanelShape;
+  points?: Vec2[];
+  tail?: Vec2;
+  border: SubPanelBorder;
+  bg: string | null;
+  layers: Layer[];
+  activeLayerIndex?: number;
+  enter?: AnimationSpec;
+  exit?: AnimationSpec;
+};
+type V11Panel = {
+  id: string;
+  durationMs: number;
+  annotation?: string;
+  bg: string;
+  paletteId: string | null;
+  layers: Layer[];
+  activeLayerIndex?: number;
+  kind?: PanelKind;
+  timelapse?: { sourceId: string };
+  subPanels?: V11SubPanel[];
+  stack?: PanelStackItem[];
+  guides?: PerspectiveGuide[];
+  enter?: AnimationSpec;
+  exit?: AnimationSpec;
+  transitionToNext?: PanelTransition;
+};
+type V11Project = {
+  version: 11;
+  width: number;
+  height: number;
+  wiggleFps: number;
+  panels: V11Panel[];
+  brushPresets: BrushPreset[];
+  drawingSettings: DrawingSettings;
+  groups?: FrameGroup[];
+  audio?: AudioProject;
+};
+/** v12: nested SubPanels; no referenceImages. */
+type V12Project = {
+  version: 12;
+  width: number;
+  height: number;
+  wiggleFps: number;
+  panels: Panel[];
+  brushPresets: BrushPreset[];
+  drawingSettings: DrawingSettings;
+  groups?: FrameGroup[];
+  audio?: AudioProject;
+};
 
 function migrateLegacyToV8(p: Record<string, unknown>): V8Project {
   if (p.version === 8) return p as V8Project;
@@ -668,7 +838,7 @@ function tonizeLayerV10(layer: Layer): Layer {
 }
 
 /** v9 tone layers were always full-bleed; existing ones keep that look. */
-function migrateV9toV10(p: V9Project): Project {
+function migrateV9toV10(p: V9Project): V10Project {
   return normalizeV10({
     ...p,
     version: 10,
@@ -683,7 +853,7 @@ function migrateV9toV10(p: V9Project): Project {
   });
 }
 
-function normalizeV10(p: Project): Project {
+function normalizeV10(p: V10Project): V10Project {
   return {
     ...p,
     version: 10,
@@ -702,5 +872,136 @@ function normalizeV10(p: Project): Project {
         layers: sp.layers.map(normalizeLayerV7).map(tonizeLayerV10),
       })),
     })),
+  };
+}
+
+/** v11 adds Panel.stack so root layers and sub-panels share one z-order. */
+function migrateV10toV11(p: V10Project): V11Project {
+  return normalizeV11({
+    ...p,
+    version: 11,
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      stack: panel.stack ?? [
+        ...panel.layers.map((l) => ({ kind: "layer" as const, id: l.id })),
+        ...(panel.subPanels ?? []).map((sp) => ({ kind: "subpanel" as const, id: sp.id })),
+      ],
+    })),
+  });
+}
+
+function normalizeSubPanelV12(sp: SubPanel): SubPanel {
+  const layers = sp.layers.map(normalizeLayerV7).map(tonizeLayerV10);
+  const subPanels = (sp.subPanels ?? []).map(normalizeSubPanelV12);
+  return {
+    ...sp,
+    layers,
+    subPanels,
+    stack: sp.stack ?? [
+      ...layers.map((l) => ({ kind: "layer" as const, id: l.id })),
+      ...subPanels.map((child) => ({ kind: "subpanel" as const, id: child.id })),
+    ],
+  };
+}
+
+/** v12: SubPanels may nest (child frames + local stack). */
+function migrateV11toV12(p: V11Project): V12Project {
+  return normalizeV12({
+    ...p,
+    version: 12,
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      subPanels: (panel.subPanels ?? []).map((sp) => ({
+        ...sp,
+        subPanels: [],
+        stack: [
+          ...sp.layers.map((l) => ({ kind: "layer" as const, id: l.id })),
+        ],
+      })),
+    })),
+  });
+}
+
+/** v13: project-owned reference images on the infinite board. */
+function migrateV12toV13(p: V12Project): Project {
+  return normalizeV13({
+    ...p,
+    version: 13,
+    referenceImages: [],
+  });
+}
+
+function normalizeV11(p: V11Project): V11Project {
+  return {
+    ...p,
+    version: 11,
+    audio: p.audio ?? newAudioProject(),
+    brushPresets: p.brushPresets ?? [],
+    drawingSettings: {
+      ...newDrawingSettings(),
+      ...(p.drawingSettings ?? {}),
+      smoothing: normalizeStrokeSmoothingSettings(p.drawingSettings?.smoothing),
+    },
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      layers: panel.layers.map(normalizeLayerV7).map(tonizeLayerV10),
+      subPanels: (panel.subPanels ?? []).map((sp) => ({
+        ...sp,
+        layers: sp.layers.map(normalizeLayerV7).map(tonizeLayerV10),
+      })),
+      stack: panel.stack ?? [
+        ...panel.layers.map((l) => ({ kind: "layer" as const, id: l.id })),
+        ...(panel.subPanels ?? []).map((sp) => ({ kind: "subpanel" as const, id: sp.id })),
+      ],
+    })),
+  };
+}
+
+function normalizeV12(p: V12Project): V12Project {
+  return {
+    ...p,
+    version: 12,
+    audio: p.audio ?? newAudioProject(),
+    brushPresets: p.brushPresets ?? [],
+    drawingSettings: {
+      ...newDrawingSettings(),
+      ...(p.drawingSettings ?? {}),
+      smoothing: normalizeStrokeSmoothingSettings(p.drawingSettings?.smoothing),
+    },
+    panels: p.panels.map((panel) => ({
+      ...panel,
+      layers: panel.layers.map(normalizeLayerV7).map(tonizeLayerV10),
+      subPanels: (panel.subPanels ?? []).map(normalizeSubPanelV12),
+      stack: panel.stack ?? [
+        ...panel.layers.map((l) => ({ kind: "layer" as const, id: l.id })),
+        ...(panel.subPanels ?? []).map((sp) => ({ kind: "subpanel" as const, id: sp.id })),
+      ],
+    })),
+  };
+}
+
+function normalizeReferenceImage(raw: ReferenceImage): ReferenceImage {
+  const scale = Number.isFinite(raw.scale) && raw.scale > 0 ? raw.scale : 1;
+  const opacity = Number.isFinite(raw.opacity) ? Math.min(1, Math.max(0, raw.opacity)) : 1;
+  return {
+    id: typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID(),
+    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : "Reference",
+    data: typeof raw.data === "string" ? raw.data : "",
+    width: Number.isFinite(raw.width) ? raw.width : 1,
+    height: Number.isFinite(raw.height) ? raw.height : 1,
+    x: Number.isFinite(raw.x) ? raw.x : 0,
+    y: Number.isFinite(raw.y) ? raw.y : 0,
+    scale,
+    opacity,
+    visible: raw.visible !== false,
+  };
+}
+
+function normalizeV13(p: Project): Project {
+  const base = normalizeV12({ ...p, version: 12 });
+  return {
+    ...base,
+    version: 13,
+    referenceImages: (p.referenceImages ?? []).map(normalizeReferenceImage),
   };
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-audio-test");
+const outDir = join(tmpdir(), "wigostudio-audio-test");
 
 function compileAudio() {
   rmSync(outDir, { recursive: true, force: true });
@@ -116,7 +116,7 @@ test("v4 project migrates to current version with default audio tracks", () => {
     wiggleFps: 8,
     panels: [],
   });
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 13);
   assert.deepEqual(migrated.audio.tracks.map((t) => t.name), ["Voice", "SFX", "Music"]);
   assert.deepEqual(migrated.brushPresets, []);
 });
@@ -167,7 +167,7 @@ test("v6 project migrates to current version with default drawing-power layer fi
     audio: { sampleRate: 48000, assets: [], tracks: [] },
   });
 
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 13);
   assert.equal(migrated.panels[0].layers[0].blendMode, "normal");
   assert.equal(migrated.panels[0].subPanels[0].layers[0].blendMode, "normal");
   assert.deepEqual(migrated.brushPresets, []);

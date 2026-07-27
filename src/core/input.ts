@@ -78,6 +78,8 @@ export type PointerPressureInput = {
   pointerType: string;
   pressure: number;
   buttons: number;
+  tiltX?: number;
+  tiltY?: number;
 };
 
 export type PressureSample = {
@@ -85,23 +87,70 @@ export type PressureSample = {
   real: boolean;
 };
 
+export type PressureReadOptions = {
+  /**
+   * After mouse-wheel / keyboard interrupts, Chromium often demotes the stylus
+   * to `pointerType: "mouse"` with the spec default pressure 0.5 (no variation).
+   * When recovery is active, treat that as a synthetic pen sample instead of a
+   * full-size mouse stroke.
+   */
+  recovery?: boolean;
+  /** Filler used for synthetic samples during recovery / startup. */
+  fallbackPressure?: number;
+};
+
 export const PEN_STARTUP_FALLBACK_PRESSURE = 0.25;
 const MIN_REAL_PRESSURE = 0.01;
 
+/** Spec default for devices that don't report pressure — also what Chromium
+ *  emits when a stylus stream has been demoted to mouse. */
+export function isBrowserDefaultPressure(e: PointerPressureInput): boolean {
+  return Math.abs(e.pressure - 0.5) < 1e-6;
+}
+
+function hasPenTilt(e: PointerPressureInput): boolean {
+  return (e.tiltX ?? 0) !== 0 || (e.tiltY ?? 0) !== 0;
+}
+
+/**
+ * True when this sample looks like a wedged/demoted stylus reading rather than
+ * intentional half-pressure. Exact 0.5 with zero tilt is the common Chromium
+ * artifact after wheel/keyboard interrupts.
+ */
+export function isSuspiciousPenPressure(e: PointerPressureInput): boolean {
+  if (!isBrowserDefaultPressure(e)) return false;
+  return !hasPenTilt(e);
+}
+
 export function readPointerPressure(
   e: PointerPressureInput,
-  pressureEnabled: boolean
+  pressureEnabled: boolean,
+  options: PressureReadOptions = {}
 ): PressureSample {
-  if (!pressureEnabled || e.pointerType === "mouse") {
+  const fallback = options.fallbackPressure ?? PEN_STARTUP_FALLBACK_PRESSURE;
+  if (!pressureEnabled) {
+    return { pressure: 1, real: true };
+  }
+
+  if (e.pointerType === "mouse") {
+    // After wheel/undo the tablet often keeps delivering mouse events with the
+    // browser default half-pressure. Prefer the last real pen value until the
+    // driver resumes reporting `pointerType: "pen"`.
+    if (options.recovery) {
+      return { pressure: fallback, real: false };
+    }
     return { pressure: 1, real: true };
   }
 
   if (e.pressure > 0) {
+    if (options.recovery && isSuspiciousPenPressure(e)) {
+      return { pressure: fallback, real: false };
+    }
     return { pressure: Math.max(MIN_REAL_PRESSURE, Math.min(1, e.pressure)), real: true };
   }
 
   return {
-    pressure: e.buttons ? PEN_STARTUP_FALLBACK_PRESSURE : MIN_REAL_PRESSURE,
+    pressure: e.buttons ? fallback : MIN_REAL_PRESSURE,
     real: false,
   };
 }
@@ -115,4 +164,16 @@ export function backfillSyntheticStartupPressures(
     if (pressures[i] !== fallback) break;
     pressures[i] = firstRealPressure;
   }
+}
+
+/** Replace the first `count` samples once the tablet reports a real pressure.
+ *  Prefer this over value-matching when the synthetic filler is the last known
+ *  real pressure (common after keyboard interrupts like undo). */
+export function backfillLeadingPressures(
+  pressures: number[],
+  count: number,
+  firstRealPressure: number
+) {
+  const n = Math.max(0, Math.min(count, pressures.length));
+  for (let i = 0; i < n; i++) pressures[i] = firstRealPressure;
 }

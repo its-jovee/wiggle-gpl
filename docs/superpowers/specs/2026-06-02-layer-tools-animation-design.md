@@ -1,7 +1,7 @@
 # Layer Tools And Animation Design
 
 Date: 2026-06-02
-Project: WiggleStudio
+Project: Wigo Studio
 
 ## Scope
 

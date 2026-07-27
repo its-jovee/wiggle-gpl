@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-project-library-test");
+const outDir = join(tmpdir(), "wigo-studio-project-library-test");
 
 function compileProjectLibrary() {
   rmSync(outDir, { recursive: true, force: true });

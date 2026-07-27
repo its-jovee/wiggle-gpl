@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-layer-ops-test");
+const outDir = join(tmpdir(), "wigostudio-layer-ops-test");
 
 function compileLayerOps() {
   rmSync(outDir, { recursive: true, force: true });

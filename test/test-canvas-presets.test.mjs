@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-canvas-presets-test");
+const outDir = join(tmpdir(), "wigostudio-canvas-presets-test");
 
 function compileCanvasPresets() {
   rmSync(outDir, { recursive: true, force: true });
@@ -77,4 +77,21 @@ test("newProject accepts custom dimensions", () => {
   const project = types.newProject(1920, 1080);
   assert.equal(project.width, 1920);
   assert.equal(project.height, 1080);
+});
+
+test("blank quick-start projects are disposable until they gain content", () => {
+  const blank = types.newProject();
+  assert.equal(types.isBlankQuickStartProject(blank), true);
+
+  blank.panels[0].layers[0].strokes.push({
+    brush: "ink",
+    color: "#000000",
+    size: 4,
+    points: [{ x: 1, y: 2 }],
+  });
+  assert.equal(types.isBlankQuickStartProject(blank), false);
+
+  const multi = types.newProject();
+  multi.panels.push(types.newPanel());
+  assert.equal(types.isBlankQuickStartProject(multi), false);
 });

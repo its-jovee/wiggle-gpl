@@ -1,6 +1,6 @@
 # FFmpeg WebAssembly source and license manifest
 
-Wiggle GPL bundles `ffmpeg-core.wasm` from `@ffmpeg/core@0.12.6` for H.264
+Wigo Studio bundles `ffmpeg-core.wasm` from `@ffmpeg/core@0.12.6` for H.264
 export. The wrapper packages declare MIT, but the WebAssembly binary is built
 from FFmpeg and external codec libraries under their own licenses.
 
@@ -28,7 +28,7 @@ git checkout e0d4c62a229ba58ea0c6e6b881e289f2fefe97c4
 make prd
 ```
 
-Every Wiggle GPL binary release must include this manifest and a link to the
-same-tag Wiggle GPL source. Before a long-lived public binary distribution,
+Every Wigo Studio binary release must include this manifest and a link to the
+same-tag Wigo Studio source. Before a long-lived public binary distribution,
 archive the recursively fetched FFmpeg and codec sources alongside the release
 so availability does not depend solely on third-party repositories.

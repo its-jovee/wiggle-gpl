@@ -2,22 +2,22 @@
 
 ## Goal
 
-Create a GPLv3 Wiggle fork that can reuse Krita code and architecture where it
+Create a GPLv3 Wigo fork that can reuse Krita code and architecture where it
 makes the drawing product substantially better, while preserving a clear split
-from the MIT WiggleStudio repository.
+from the separate MIT sibling repository (historically WiggleStudio).
 
 ## Phase 1: Source Pinning
 
 - Krita is pinned as a shallow submodule under `third_party/krita` from
   `https://invent.kde.org/graphics/krita.git`.
 - The exact commit is recorded in `IMPORT_LEDGER.md`.
-- Keep the source reference separate from Wiggle application code.
+- Keep the source reference separate from Wigo application code.
 
 ## Phase 2: Drawing Experience
 
 - Study Krita's freehand tool, canvas cursor states, zoom/pan behavior, and
   stroke preview.
-- Implement Wiggle-compatible smoothing/stabilization without storing jittered
+- Implement Wigo-compatible smoothing/stabilization without storing jittered
   or post-processed points unless the raw-point model is explicitly changed.
 - Test drawing, undo/redo, export, and determinism.
 

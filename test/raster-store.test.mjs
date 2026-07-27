@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-raster-store-test");
+const outDir = join(tmpdir(), "wigostudio-raster-store-test");
 
 function compileRasterStore() {
   rmSync(outDir, { recursive: true, force: true });

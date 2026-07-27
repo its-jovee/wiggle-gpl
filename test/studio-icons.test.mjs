@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-studio-icons-test");
+const outDir = join(tmpdir(), "wigostudio-studio-icons-test");
 const outFile = join(outDir, "studio.mjs");
 
 function compileIcons() {
@@ -26,26 +26,34 @@ compileIcons();
 const icons = await import(pathToFileURL(outFile).href);
 
 const expectedIcons = [
+  "Add",
+  "Balloon",
   "BrushClassic",
   "BrushTexture",
   "BrushScatter",
   "Bucket",
+  "Clip",
   "ClipboardCheck",
   "ClipboardPaste",
-  "Clip",
   "Copy",
   "CopyCheck",
+  "CutSubPanel",
   "DragGrip",
   "Eraser",
-  "Add",
+  "Eye",
+  "EyeOff",
   "FrameInsertAfter",
   "FrameInsertBefore",
+  "Gradient",
+  "LayerAdd",
   "Layers",
   "Move",
-  "Perspective",
+  "Note",
   "Pause",
+  "Perspective",
   "Play",
   "Pointer",
+  "Raster",
   "Redo",
   "Repeat",
   "Scale",
@@ -53,9 +61,9 @@ const expectedIcons = [
   "Sparkle",
   "SubPanel",
   "Text",
-  "Tone",
-  "Timer",
   "Timelapse",
+  "Timer",
+  "Tone",
   "Trash",
   "Undo",
 ];

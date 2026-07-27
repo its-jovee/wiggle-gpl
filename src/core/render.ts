@@ -8,8 +8,12 @@
 //      stable even as strokes wiggle.
 //   3. Render TextElements on the layer (post-strokes; per-glyph wiggle).
 //
-// Then for each SubPanel (containers): apply animation transform, clip to the
-// shape polyline, render its layers + texts, lift the clip, stamp the border.
+// Root panels walk Panel.stack (layer and sub-panel ids, bottom→top). Consecutive
+// layers still use drawLayerStack so clip-to-below stays adjacent-aware.
+// Sub-panels: apply animation transform, clip to the shape polyline, render
+// their local stack (layers + nested child frames) inside that clip, lift the
+// clip, stamp the border. Nested children therefore cannot paint outside the
+// parent outline.
 //
 // Finally paint the panel bg with destination-over so it sits behind
 // everything. Whole-panel animations wrap the entire render. Raster/tone
@@ -25,7 +29,8 @@ import {
   applyLayerAnimTransform, composeLayerAnim, computeLayerAnim,
   IDENTITY_LAYER_ANIM, isIdentityLayerAnim, LayerAnimState,
 } from "./anim";
-import { shapePoints, pointsToPath, strokeBorder, hashId } from "./subpanel";
+import { subPanelOutline, pointsToPath, strokeBorder, hashId } from "./subpanel";
+import { resolvedPanelStack, type StackContainer } from "./panelStack";
 import { renderTextElement } from "./text";
 import { applyShapeMaskToImageData } from "./selection";
 import {
@@ -84,30 +89,69 @@ export type RenderCacheStats = {
   rawLayerMisses: number;
   rawLayerEvictions: number;
   rawLayerEntries: number;
+  /** Canvas backing-store bytes currently held by the raw-layer cache. */
+  rawLayerBytes: number;
+};
+
+/** A rendered layer, possibly cropped to just the region holding its ink.
+ *  `x`/`y` are where the tile sits in the overscanned buffer; a full-size
+ *  layer is simply the tile at (0,0) with the buffer's dimensions. */
+export type RawLayer = {
+  canvas: HTMLCanvasElement;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 };
 
 export type RenderCache = {
+  /** Safety cap on entry count. The real limit is `maxRawLayerBytes`. */
   maxRawLayerEntries: number;
-  rawLayers: Map<string, HTMLCanvasElement>;
+  /** Eviction budget in canvas backing-store bytes (w*h*4 per entry). */
+  maxRawLayerBytes: number;
+  rawLayers: Map<string, RawLayer>;
+  /** Running sum of backing-store bytes currently held. */
+  bytes: number;
   stats: RenderCacheStats;
 };
 
-export function createRenderCache(maxRawLayerEntries = 64): RenderCache {
+/** Default cache budget, in canvas backing-store bytes.
+ *
+ *  A raw layer entry is the *overscanned* buffer: 2160x3840x4 = 33MB at the
+ *  1080x1920 default, since the editor bleeds 50% on every side. A plain
+ *  64-*entry* cap therefore permitted ~2.1GB of off-heap canvas memory —
+ *  invisible to JS heap profilers, and the cap is reached in practice.
+ *
+ *  The budget must still hold a working set (the visible panel's layers) or the
+ *  cache thrashes to a 0% hit rate, which is worse than no cache at all. This
+ *  fits ~11 overscanned entries while making the ceiling explicit and
+ *  independent of canvas size. */
+export const DEFAULT_RAW_LAYER_CACHE_BYTES = 384 * 1024 * 1024;
+
+export function createRenderCache(
+  maxRawLayerEntries = 64,
+  maxRawLayerBytes = DEFAULT_RAW_LAYER_CACHE_BYTES
+): RenderCache {
   return {
     maxRawLayerEntries,
+    maxRawLayerBytes,
     rawLayers: new Map(),
+    bytes: 0,
     stats: {
       rawLayerHits: 0,
       rawLayerMisses: 0,
       rawLayerEvictions: 0,
       rawLayerEntries: 0,
+      rawLayerBytes: 0,
     },
   };
 }
 
 export function clearRenderCache(cache: RenderCache): void {
   cache.rawLayers.clear();
+  cache.bytes = 0;
   cache.stats.rawLayerEntries = 0;
+  cache.stats.rawLayerBytes = 0;
 }
 
 export function clearTimelapseCache(): void {
@@ -119,10 +163,11 @@ export function resetRenderCacheStats(cache: RenderCache): void {
   cache.stats.rawLayerMisses = 0;
   cache.stats.rawLayerEvictions = 0;
   cache.stats.rawLayerEntries = cache.rawLayers.size;
+  cache.stats.rawLayerBytes = cache.bytes;
 }
 
 export function renderCacheStats(cache: RenderCache): RenderCacheStats {
-  return { ...cache.stats, rawLayerEntries: cache.rawLayers.size };
+  return { ...cache.stats, rawLayerEntries: cache.rawLayers.size, rawLayerBytes: cache.bytes };
 }
 
 export type StrokeRenderOpts = {
@@ -170,12 +215,9 @@ export function renderPanel(
   }
 
   const budget = { remaining: Infinity };
-  drawLayerStack(ctx, panel.layers, tick, budget, bufW, bufH, panel.bg, opts, localMs, panel.durationMs, wiggleFps, skipAnim);
-
-  // Sub-panels on top (frame dims; translate handled inside renderSubPanel)
-  (panel.subPanels ?? []).forEach((sp) => {
-    renderSubPanel(ctx, sp, tick, width, height, panel.durationMs, opts, localMs, wiggleFps, skipAnim);
-  });
+  drawPanelContentStack(
+    ctx, panel, tick, budget, width, height, bufW, bufH, opts, localMs, panel.durationMs, wiggleFps, skipAnim
+  );
 
   if (!opts?.skipBg) {
     paintBgUnder(ctx, panel.bg, width, height, ox, oy);
@@ -368,12 +410,15 @@ function renderTimelapseInkLayer(
 function compositeTimelapseLayer(
   ctx: CanvasRenderingContext2D,
   canvas: HTMLCanvasElement,
-  opacity: number
+  opacity: number,
+  /** Offset of a cropped tile within the buffer; 0,0 for a full-size canvas. */
+  x = 0,
+  y = 0
 ): void {
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = opacity;
-  ctx.drawImage(canvas, 0, 0);
+  ctx.drawImage(canvas, x, y);
   ctx.restore();
 }
 
@@ -414,7 +459,7 @@ function renderTimelapseLayers(
         width, height, src.bg, opts,
         localMs, containerDurMs, wiggleFps, true, src.layers
       );
-      compositeTimelapseLayer(ctx, raw, layer.opacity);
+      compositeTimelapseLayer(ctx, raw.canvas, layer.opacity, raw.x, raw.y);
       return;
     }
 
@@ -458,13 +503,16 @@ function renderTimelapse(
   const budget = allocateTimelapseLayerBudgets(src.layers, progress);
   const wiggleFps = opts?.wiggleFps ?? 8;
   const srcLocalMs = src.durationMs * progress;
-  renderTimelapseLayers(
-    ctx, src, tick, budget, bufW, bufH, progress, opts, srcLocalMs, src.durationMs, wiggleFps
-  );
-  if (progress >= 1) {
-    (src.subPanels ?? []).forEach((sp) => {
-      renderSubPanel(ctx, sp, tick, width, height, src.durationMs, opts, srcLocalMs, wiggleFps, true);
-    });
+  // Partial reveal: only root layers (sub-panels appear at the end). Full
+  // progress walks Panel.stack so interleaved drawings stay above/below frames.
+  if (progress < 1) {
+    renderTimelapseLayers(
+      ctx, src, tick, budget, bufW, bufH, progress, opts, srcLocalMs, src.durationMs, wiggleFps
+    );
+  } else {
+    drawPanelContentStack(
+      ctx, src, tick, budget, width, height, bufW, bufH, opts, srcLocalMs, src.durationMs, wiggleFps, true
+    );
   }
   if (!opts?.skipBg) {
     paintBgUnder(ctx, src.bg, width, height, ox, oy);
@@ -633,6 +681,181 @@ type ClipBase = {
   transform: LayerAnimState;
 };
 
+export type InkBounds = { x0: number; y0: number; x1: number; y1: number };
+
+/** How far a brush stamp may paint from its sample point, as a multiple of the
+ *  stroke size. Scatter brushes are the worst case (registry.ts offsets up to
+ *  size*5 with size*0.7 radii; kritaRaster scatters to ~7*size), and
+ *  `brushStampSize` never exceeds the stroke size, so ~10x is the true bound.
+ *  This is deliberately larger: over-estimating merely gives back some of the
+ *  saving, while under-estimating would visibly clip artwork. */
+const STAMP_SPREAD = 16;
+
+const _inkBoundsMemo = new WeakMap<Layer, { v: number; b: InkBounds | null }>();
+
+/** Painted-content bounds of a layer in FRAME coordinates, or `null` when the
+ *  layer may paint anywhere and callers must fall back to the whole buffer.
+ *
+ *  Layer buffers are the frame plus 50% overscan bleed on every side, i.e. 4x
+ *  the frame area (2160x3840 at 1080x1920). Clearing, compositing and blitting
+ *  all of that for a layer holding one small scribble is where the per-layer
+ *  cost comes from, so confine those ops to the ink.
+ *
+ *  Memoized on `layerVersion`, the same counter that already gates `layerSig`. */
+export function layerInkBounds(layer: Layer): InkBounds | null {
+  const v = layerVersion(layer);
+  const memo = _inkBoundsMemo.get(layer);
+  if (memo && memo.v === v) return memo.b;
+  const b = computeLayerInkBounds(layer);
+  _inkBoundsMemo.set(layer, { v, b });
+  return b;
+}
+
+function computeLayerInkBounds(layer: Layer): InkBounds | null {
+  // Every case that can paint outside the stroke hull forfeits the
+  // optimization rather than risk clipping:
+  //  - raster/tone cover the buffer by nature;
+  //  - fills flood arbitrary regions bounded by other layers' geometry;
+  //  - text needs font metrics this module has no measuring context for;
+  //  - noise displace shifts finished pixels outward after compositing.
+  // Masks are safe to ignore: they only ever remove pixels (destination-in /
+  // destination-out), so real bounds can only shrink.
+  if (layer.kind === "raster" || layer.kind === "tone") return null;
+  if (layer.fills.length > 0) return null;
+  if (layer.texts && layer.texts.length > 0) return null;
+  if (layer.noiseDisplace?.enabled) return null;
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const stroke of layer.strokes) {
+    const pad = Math.abs(stroke.size) * STAMP_SPREAD + WIGGLE_AMPLITUDE + 8;
+    for (const p of stroke.points) {
+      if (p.x - pad < x0) x0 = p.x - pad;
+      if (p.y - pad < y0) y0 = p.y - pad;
+      if (p.x + pad > x1) x1 = p.x + pad;
+      if (p.y + pad > y1) y1 = p.y + pad;
+    }
+  }
+  if (x0 === Infinity) return { x0: 0, y0: 0, x1: 0, y1: 0 }; // nothing painted
+  return { x0, y0, x1, y1 };
+}
+
+/** Ink bounds clamped into buffer pixel space, or null for "use whole buffer".
+ *  Returns null (not an empty rect) when the layer paints nothing, so callers
+ *  can distinguish "skip entirely" via the zero-area check. */
+function bufferInkRect(
+  layer: Layer,
+  width: number,
+  height: number,
+  ox: number,
+  oy: number
+): { x: number; y: number; w: number; h: number } | null {
+  const b = layerInkBounds(layer);
+  if (!b) return null;
+  const x = Math.max(0, Math.floor(b.x0 + ox));
+  const y = Math.max(0, Math.floor(b.y0 + oy));
+  const right = Math.min(width, Math.ceil(b.x1 + ox));
+  const bottom = Math.min(height, Math.ceil(b.y1 + oy));
+  return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
+}
+
+function drawPanelContentStack(
+  ctx: CanvasRenderingContext2D,
+  panel: Panel,
+  tick: number,
+  budget: StrokeBudget | LayerBudgetPlan,
+  frameW: number,
+  frameH: number,
+  bufW: number,
+  bufH: number,
+  opts: RenderOpts | undefined,
+  localMs: number,
+  containerDurMs: number,
+  wiggleFps: number,
+  skipAnim: boolean
+) {
+  drawContainerStack(
+    ctx, panel, tick, budget, frameW, frameH, bufW, bufH,
+    opts, localMs, containerDurMs, wiggleFps, skipAnim, panel.bg
+  );
+}
+
+/** Walk a container's stack (Panel or SubPanel): layer runs + nested frames. */
+function drawContainerStack(
+  ctx: CanvasRenderingContext2D,
+  container: StackContainer,
+  tick: number,
+  budget: StrokeBudget | LayerBudgetPlan,
+  frameW: number,
+  frameH: number,
+  bufW: number,
+  bufH: number,
+  opts: RenderOpts | undefined,
+  localMs: number,
+  containerDurMs: number,
+  wiggleFps: number,
+  skipAnim: boolean,
+  fallbackBg: string
+) {
+  // The overwhelmingly common container is layers-only in the same order as
+  // its entity array. Avoid allocating a repaired stack, two maps, and run
+  // arrays on every wiggle tick for that fast path. Reordered or interleaved
+  // containers still use the general stack walker below.
+  const children = container.subPanels ?? [];
+  const explicitStack = container.stack;
+  const layersAlreadyOrdered = !explicitStack || (
+    explicitStack.length === container.layers.length &&
+    explicitStack.every((item, index) =>
+      item.kind === "layer" && item.id === container.layers[index]?.id
+    )
+  );
+  if (children.length === 0 && layersAlreadyOrdered) {
+    drawLayerStack(
+      ctx, container.layers, tick, budget, bufW, bufH, fallbackBg, opts,
+      localMs, containerDurMs, wiggleFps, skipAnim, undefined, container.layers
+    );
+    return;
+  }
+
+  const stack = resolvedPanelStack(container);
+  const layerById = new Map(container.layers.map((layer, index) => [layer.id, { layer, index }]));
+  const spById = new Map(children.map((sp) => [sp.id, sp]));
+
+  let i = 0;
+  while (i < stack.length) {
+    const item = stack[i];
+    if (item.kind === "subpanel") {
+      const sp = spById.get(item.id);
+      if (sp) {
+        renderSubPanel(
+          ctx, sp, tick, frameW, frameH, containerDurMs, opts, localMs, wiggleFps, skipAnim
+        );
+      }
+      i++;
+      continue;
+    }
+
+    const runLayers: Layer[] = [];
+    const runIndices: number[] = [];
+    while (i < stack.length && stack[i].kind === "layer") {
+      const found = layerById.get(stack[i].id);
+      if (found) {
+        runLayers.push(found.layer);
+        runIndices.push(found.index);
+      }
+      i++;
+    }
+    if (runLayers.length === 0) continue;
+
+    const runBudget: StrokeBudget | LayerBudgetPlan = Array.isArray(budget)
+      ? runIndices.map((idx) => budget[idx] ?? 0)
+      : budget;
+    drawLayerStack(
+      ctx, runLayers, tick, runBudget, bufW, bufH, fallbackBg, opts,
+      localMs, containerDurMs, wiggleFps, skipAnim, runIndices, container.layers
+    );
+  }
+}
+
 function drawLayerStack(
   ctx: CanvasRenderingContext2D,
   layers: Layer[],
@@ -645,12 +868,23 @@ function drawLayerStack(
   localMs: number,
   containerDurMs: number,
   wiggleFps: number,
-  skipAnim: boolean
+  skipAnim: boolean,
+  /** Absolute indices into the owning container's layers[] (RNG / fill seeds). */
+  layerIndices?: number[],
+  /** Full container layers for fill masks; defaults to `layers`. */
+  referenceLayers?: Layer[]
 ) {
   let clipBase: ClipBase | null = null;
   let clipBaseLayer: Layer | undefined;
+  // Capturing the clip base costs a fresh full-frame canvas (8.3MB at 1080x1920)
+  // plus a full-frame blit, per layer, per tick — and it is only ever *read*
+  // under `layer.clipToBelow &&`. When no layer clips (the common case) that
+  // work is pure waste, so only pay it when some layer actually needs it.
+  const anyClips = layers.some((l) => l.visible && l.clipToBelow);
+  const refs = referenceLayers ?? layers;
   layers.forEach((layer, li) => {
     if (!layer.visible) return;
+    const layerIndex = layerIndices?.[li] ?? li;
     const budgetAmount = Array.isArray(budget) ? (budget[li] ?? 0) : budget.remaining;
     const layerLength = computeLayerStrokeLength(layer);
     const layerBudget: StrokeBudget = Array.isArray(budget)
@@ -658,7 +892,7 @@ function drawLayerStack(
         ? { remaining: Infinity }
         : { remaining: budgetAmount })
       : budget;
-    const raw = drawLayerRaw(layer, li, tick, layerBudget, width, height, bg, opts, localMs, containerDurMs, wiggleFps, skipAnim, layers,
+    const raw: RawLayer = drawLayerRaw(layer, layerIndex, tick, layerBudget, width, height, bg, opts, localMs, containerDurMs, wiggleFps, skipAnim, refs,
       (layer.clipToBelow && clipBase) ? clipBaseLayer : undefined);
     const ownAnim = skipAnim ? IDENTITY_LAYER_ANIM : computeLayerAnim(layer.animation, localMs, wiggleFps);
     const fadeAlpha = skipAnim
@@ -681,6 +915,21 @@ function drawLayerStack(
       : ownAnimWithPreview;
     const effectiveOpacity = layer.opacity * fadeAlpha;
     const needsCompose = !isIdentityLayerAnim(finalAnim) || effectiveOpacity !== 1;
+    const displace = activeNoiseDisplace(layer, opts?.skipJitter ?? false);
+
+    // `raw` may be a cropped tile covering only the layer's ink. Everything
+    // below that reasons in whole-buffer coordinates (arbitrary transforms,
+    // clip masks, displacement grids) needs it expanded back to full size
+    // first; the common case — an untransformed, fully opaque, unclipped
+    // layer — skips that entirely and blits the tile straight to the target.
+    const needsFullBuffer = (layer.clipToBelow && clipBase) || needsCompose
+      || !!displace || anyClips;
+
+    if (!needsFullBuffer) {
+      drawLayerWithBlend(ctx, raw.canvas, layer.blendMode ?? "normal", raw);
+      return;
+    }
+
     let stamped: HTMLCanvasElement;
     if (layer.clipToBelow && clipBase) {
       stamped = composeLayerCanvas(raw, finalAnim, width, height, effectiveOpacity);
@@ -688,9 +937,8 @@ function drawLayerStack(
     } else if (needsCompose) {
       stamped = composeLayerCanvas(raw, finalAnim, width, height, effectiveOpacity);
     } else {
-      stamped = raw;
+      stamped = expandRawLayer(raw, width, height);
     }
-    const displace = activeNoiseDisplace(layer, opts?.skipJitter ?? false);
     if (displace) {
       stamped = applyNoiseDisplaceCanvas(
         stamped,
@@ -703,8 +951,8 @@ function drawLayerStack(
         height
       );
     }
-    drawLayerWithBlend(ctx, stamped, layer.blendMode ?? "normal");
-    if (!layer.clipToBelow) {
+    drawLayerWithBlend(ctx, stamped, layer.blendMode ?? "normal", null);
+    if (anyClips && !layer.clipToBelow) {
       // Detach: stamped may be a frame-pool slot or cache entry; clip masks must
       // outlive later pool slots in this drawLayerStack call.
       clipBase = {
@@ -723,13 +971,32 @@ function canvasBlendMode(mode: LayerBlendMode): GlobalCompositeOperation {
 function drawLayerWithBlend(
   ctx: CanvasRenderingContext2D,
   layerCanvas: HTMLCanvasElement,
-  mode: LayerBlendMode
+  mode: LayerBlendMode,
+  /** Where a cropped tile sits in the buffer. Null when `layerCanvas` is
+   *  already a full-size buffer drawn at the origin. */
+  at?: { x: number; y: number; w: number; h: number } | null
 ) {
+  // A zero-area tile means the layer painted nothing — the blit is a no-op.
+  if (at && (at.w <= 0 || at.h <= 0)) return;
   ctx.save();
   ctx.globalCompositeOperation = canvasBlendMode(mode);
   ctx.globalAlpha = 1;
-  ctx.drawImage(layerCanvas, 0, 0);
+  if (at) ctx.drawImage(layerCanvas, at.x, at.y);
+  else ctx.drawImage(layerCanvas, 0, 0);
   ctx.restore();
+}
+
+/** Paint a cropped tile back onto a full-size pooled buffer, for the paths that
+ *  must reason in whole-buffer coordinates (compose, clip, displace). */
+function expandRawLayer(raw: RawLayer, width: number, height: number): HTMLCanvasElement {
+  if (raw.w === width && raw.h === height && raw.x === 0 && raw.y === 0) return raw.canvas;
+  const { off, oc } = getLayerTransformOffscreen(width, height);
+  oc.setTransform(1, 0, 0, 1, 0, 0);
+  oc.globalCompositeOperation = "source-over";
+  oc.globalAlpha = 1;
+  oc.clearRect(0, 0, width, height);
+  if (raw.w > 0 && raw.h > 0) oc.drawImage(raw.canvas, raw.x, raw.y);
+  return cloneCanvas(off, width, height);
 }
 
 function drawLayerRaw(
@@ -758,11 +1025,14 @@ function drawLayerRaw(
   // getRasterCanvas bumps the pixel version so an old cached bitmap cannot be
   // reused during the async decode.
   if (layer.kind === "raster") getRasterCanvas(layer);
+  // Static layers collapse to a single tick bucket so they survive the wiggle
+  // clock instead of being invalidated 8x/s for byte-identical output.
+  const tickForKey = layerIsTickDependent(layer, opts?.skipJitter ?? false) ? tick : 0;
   const rawCacheKey = rawLayerRenderableFromCache(budget)
     ? rawLayerCacheKey({
       layerSig: layerSig(layer, bg, clipLayer, width, height, opts?.overscan),
       layerIndex,
-      tick,
+      tick: tickForKey,
       width,
       height,
       skipFills: opts?.skipFills ?? false,
@@ -778,8 +1048,27 @@ function drawLayerRaw(
     : null;
   if (cachedRaw) return cachedRaw;
 
+  // Crop the cache entry down to the layer's ink where we safely can.
+  //
+  // A full entry is the whole overscanned buffer — 2160x3840x4 = 33MB at the
+  // default canvas — so a cache big enough to hold a playback working set
+  // (every layer of every panel) would need gigabytes. Storing only the inked
+  // region makes entries one or two orders of magnitude smaller, which is what
+  // lets a sane byte budget still hold the whole working set.
+  //
+  // Only the cached path crops: the shared pooled offscreen is full-size, and
+  // the budgeted (timelapse) path renders partial strokes whose extent does not
+  // match the layer's final bounds. Masks are excluded because `applyLayerMask`
+  // works in whole-buffer coordinates; everything else that paints outside the
+  // stroke hull is already excluded by `bufferInkRect` returning null.
+  const canCrop = rawCacheKey !== null && !!opts?.renderCache && !layer.mask?.enabled;
+  const cropRect = canCrop ? bufferInkRect(layer, width, height, ox, oy) : null;
+  const crop = cropRect && cropRect.w * cropRect.h < width * height ? cropRect : null;
+  const targetW = crop ? Math.max(1, crop.w) : width;
+  const targetH = crop ? Math.max(1, crop.h) : height;
+
   const renderTarget = rawCacheKey && opts?.renderCache
-    ? acquireCacheOwnedCanvas(width, height)
+    ? acquireCacheOwnedCanvas(targetW, targetH)
     : null;
   const { off, oc } = renderTarget
     ? { off: renderTarget, oc: renderTarget.getContext("2d")! }
@@ -787,10 +1076,16 @@ function drawLayerRaw(
   oc.setTransform(1, 0, 0, 1, 0, 0);
   oc.globalCompositeOperation = "source-over";
   oc.globalAlpha = 1;
-  oc.clearRect(0, 0, width, height);
+  // A canvas we just created is already fully transparent, so clearing it is a
+  // wasted full-buffer write (33MB at the overscanned editor size). Only the
+  // shared pooled offscreen carries pixels from a previous layer.
+  if (!renderTarget) oc.clearRect(0, 0, width, height);
 
-  // Translate so frame-coord strokes land in the centered frame region.
-  if (ox > 0 || oy > 0) oc.translate(ox, oy);
+  // Translate so frame-coord strokes land in the centered frame region — and,
+  // when cropping, so the tile's origin sits at the ink rect's corner.
+  const shiftX = ox - (crop?.x ?? 0);
+  const shiftY = oy - (crop?.y ?? 0);
+  if (shiftX !== 0 || shiftY !== 0) oc.translate(shiftX, shiftY);
 
   const wiggleAmp = opts?.skipJitter ? 0 : WIGGLE_AMPLITUDE;
   // Tone layers are intentionally static: their raster never receives
@@ -860,7 +1155,9 @@ function drawLayerRaw(
 
   applyLayerMask(oc, layer.mask, opts?.overscan);
 
-  const raw = renderTarget ?? cloneCanvas(off, width, height);
+  const raw: RawLayer = renderTarget
+    ? { canvas: renderTarget, x: crop?.x ?? 0, y: crop?.y ?? 0, w: targetW, h: targetH }
+    : { canvas: cloneCanvas(off, width, height), x: 0, y: 0, w: width, h: height };
   if (rawCacheKey && opts?.renderCache && !usedStaleFillMask) {
     putCachedRawLayer(opts.renderCache, rawCacheKey, raw);
   }
@@ -904,7 +1201,7 @@ function traceLayerMaskPath(ctx: CanvasRenderingContext2D, mask: LayerMask) {
 }
 
 function composeLayerCanvas(
-  raw: HTMLCanvasElement,
+  raw: RawLayer,
   anim: LayerAnimState,
   width: number,
   height: number,
@@ -918,7 +1215,9 @@ function composeLayerCanvas(
   oc.save();
   oc.globalAlpha = opacity;
   applyLayerAnimTransform(oc, anim, width / 2, height / 2);
-  oc.drawImage(raw, 0, 0);
+  // Draw the tile at its buffer offset — the transform above is expressed in
+  // whole-buffer coordinates, so a cropped tile must land where its ink was.
+  if (raw.w > 0 && raw.h > 0) oc.drawImage(raw.canvas, raw.x, raw.y);
   oc.restore();
   return cloneCanvas(off, width, height);
 }
@@ -958,6 +1257,30 @@ function rawLayerRenderableFromCache(budget: StrokeBudget): boolean {
   return budget.remaining === Infinity;
 }
 
+/** Does this layer's rasterized output actually differ from tick to tick?
+ *
+ *  The raw-layer cache key carries `tick`, which is correct for jittered ink
+ *  but pins the hit rate at 0% for layers that provably cannot change: the
+ *  wiggle clock advances 8x/s, so every entry is thrown away 8x/s even when
+ *  the pixels are identical. Callers fold this into the key so static layers
+ *  cache across ticks.
+ *
+ *  Static cases:
+ *   - raster layers are literal pixels, blitted as-is;
+ *   - tone layers are rendered at amplitude 0 and are documented as identical
+ *     on every tick;
+ *   - with jitter off, `walkLayerStrokes` takes the amplitude-0 path, which
+ *     both skips point jitter AND pins `stampTick` to the stroke seed, so even
+ *     tick-varying ("alive") brushes stop varying;
+ *   - text glyphs jitter on their own per-text amplitude, so they only pin the
+ *     layer to the tick when that amplitude is non-zero. */
+function layerIsTickDependent(layer: Layer, skipJitter: boolean): boolean {
+  if (layer.kind === "raster" || layer.kind === "tone") return false;
+  if (!skipJitter && layer.strokes.length > 0) return true;
+  if (skipJitter) return false;
+  return (layer.texts ?? []).some((t) => (t.wiggleAmplitude ?? 0) > 0);
+}
+
 function acquireCacheOwnedCanvas(width: number, height: number): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = width;
@@ -971,7 +1294,7 @@ function detachOwnedCanvas(src: HTMLCanvasElement, width: number, height: number
   return c;
 }
 
-function getCachedRawLayer(cache: RenderCache, key: string): HTMLCanvasElement | null {
+function getCachedRawLayer(cache: RenderCache, key: string): RawLayer | null {
   const c = cache.rawLayers.get(key);
   if (!c) {
     cache.stats.rawLayerMisses++;
@@ -986,20 +1309,36 @@ function getCachedRawLayer(cache: RenderCache, key: string): HTMLCanvasElement |
   return c;
 }
 
+function canvasBytes(c: RawLayer): number {
+  return c.canvas.width * c.canvas.height * 4;
+}
+
 function putCachedRawLayer(
   cache: RenderCache,
   key: string,
-  src: HTMLCanvasElement,
+  src: RawLayer,
 ): void {
-  if (cache.maxRawLayerEntries <= 0) return;
+  if (cache.maxRawLayerEntries <= 0 || cache.maxRawLayerBytes <= 0) return;
+  const existing = cache.rawLayers.get(key);
+  if (existing) cache.bytes -= canvasBytes(existing);
   cache.rawLayers.set(key, src);
-  while (cache.rawLayers.size > cache.maxRawLayerEntries) {
+  cache.bytes += canvasBytes(src);
+  // Evict LRU-first until BOTH the byte budget and the entry cap are satisfied.
+  // The byte budget is the one that matters: entry count says nothing about
+  // memory when a single 1080x1920 entry is 8.3MB.
+  while (
+    cache.rawLayers.size > 1 &&
+    (cache.bytes > cache.maxRawLayerBytes || cache.rawLayers.size > cache.maxRawLayerEntries)
+  ) {
     const oldest = cache.rawLayers.keys().next().value;
     if (oldest === undefined) break;
+    const victim = cache.rawLayers.get(oldest);
     cache.rawLayers.delete(oldest);
+    if (victim) cache.bytes -= canvasBytes(victim);
     cache.stats.rawLayerEvictions++;
   }
   cache.stats.rawLayerEntries = cache.rawLayers.size;
+  cache.stats.rawLayerBytes = cache.bytes;
 }
 
 function renderText(
@@ -1057,10 +1396,10 @@ function renderSubPanel(
     }
   }
 
-  const pts = shapePoints(sp.shape, sp.bounds, sp.tail);
+  const pts = subPanelOutline(sp);
   const path = pointsToPath(pts);
 
-  // Interior clip + layers + texts
+  // Interior clip + local stack (layers and nested child frames)
   ctx.save();
   ctx.clip(path);
   if (sp.bg) {
@@ -1070,11 +1409,13 @@ function renderSubPanel(
   const innerBudget = { remaining: Infinity };
   // Strip overscan from opts: ctx is already translated, so offscreens use frame dims.
   const innerOpts = (ox > 0 || oy > 0) ? { ...opts, overscan: undefined } : opts;
-  drawLayerStack(ctx, sp.layers, tick, innerBudget, width, height,
-    sp.bg ?? "#000000", innerOpts, parentLocalMs, parentDurMs, wiggleFps, skipAnim);
+  drawContainerStack(
+    ctx, sp, tick, innerBudget, width, height, width, height,
+    innerOpts, parentLocalMs, parentDurMs, wiggleFps, skipAnim, sp.bg ?? "#000000"
+  );
   ctx.restore(); // lift clip
 
-  // Border stamped along the polyline (wiggles!)
+  // Border stamped along the polyline (wiggles!) — still under any parent clip
   strokeBorder(
     ctx,
     pts,
@@ -1235,6 +1576,16 @@ function mixLayerMaskState(h: number, layer: Layer): number {
     h = mixFloat(h, f.point.x);
     h = mixFloat(h, f.point.y);
     h = mixHash(h, f.afterStrokeIndex);
+    if (f.gradient) {
+      h = mixString(h, f.gradient.kind);
+      h = mixFloat(h, f.gradient.start.x);
+      h = mixFloat(h, f.gradient.start.y);
+      h = mixFloat(h, f.gradient.end.x);
+      h = mixFloat(h, f.gradient.end.y);
+      h = mixString(h, f.gradient.endColor);
+    } else {
+      h = mixHash(h, 0);
+    }
     if (f.clipShape) {
       h = mixHash(h, f.clipShape.kind === "rect" ? 1 : f.clipShape.kind === "ellipse" ? 2 : 3);
       if (f.clipShape.kind === "rect") {
@@ -1265,6 +1616,16 @@ function mixLayerMaskState(h: number, layer: Layer): number {
     h = mixFloat(h, layer.tone.size);
     h = mixFloat(h, layer.tone.angle);
     h = mixString(h, layer.tone.coverage);
+    if (layer.tone.gradient) {
+      h = mixString(h, layer.tone.gradient.kind);
+      h = mixFloat(h, layer.tone.gradient.start.x);
+      h = mixFloat(h, layer.tone.gradient.start.y);
+      h = mixFloat(h, layer.tone.gradient.end.x);
+      h = mixFloat(h, layer.tone.gradient.end.y);
+      h = mixHash(h, layer.tone.gradient.reverse ? 1 : 0);
+    } else {
+      h = mixHash(h, 0);
+    }
   }
   if (layer.kind === "raster" && layer.raster) {
     h = mixString(h, layer.id);
@@ -1474,8 +1835,15 @@ function computeFillMask(
     const gap = f.gapClosePx ?? 0;
     if (gap > 0) closeFillGapsImageData(img, bg, width, height, Math.ceil(gap));
     const before = new Uint8ClampedArray(img.data);
+    let replacement = f.color;
+    if (f.gradient) {
+      const px = Math.max(0, Math.min(width - 1, Math.floor(f.point.x + ox)));
+      const py = Math.max(0, Math.min(height - 1, Math.floor(f.point.y + oy)));
+      const pi = (py * width + px) * 4;
+      replacement = `#${(255 - before[pi]).toString(16).padStart(2, "0")}${(255 - before[pi + 1]).toString(16).padStart(2, "0")}${(255 - before[pi + 2]).toString(16).padStart(2, "0")}`;
+    }
     const filled = floodFillImageData(
-      img, f.point.x + ox, f.point.y + oy, f.color, width, height, f.tolerance ?? 0
+      img, f.point.x + ox, f.point.y + oy, replacement, width, height, f.tolerance ?? 0
     );
     if (filled && f.clipShape) {
       applyShapeMaskToImageData(img, f.clipShape, width, height, f.clipInverted ?? false);
@@ -1483,15 +1851,34 @@ function computeFillMask(
     if (!filled) continue;
 
     const ad = img.data;
+    const startRgb = hexToRgb(f.color);
+    const endRgb = f.gradient ? hexToRgb(f.gradient.endColor) : startRgb;
+    const gradientDx = f.gradient ? f.gradient.end.x - f.gradient.start.x : 0;
+    const gradientDy = f.gradient ? f.gradient.end.y - f.gradient.start.y : 0;
+    const gradientLengthSq = Math.max(1, gradientDx * gradientDx + gradientDy * gradientDy);
+    const gradientRadius = Math.max(1, Math.sqrt(gradientLengthSq));
     for (let i = 0; i < before.length; i += 4) {
       if (
+        ad[i + 3] !== 0 &&
+        (
         before[i] !== ad[i] ||
         before[i + 1] !== ad[i + 1] ||
         before[i + 2] !== ad[i + 2]
+        )
       ) {
-        md[i] = ad[i];
-        md[i + 1] = ad[i + 1];
-        md[i + 2] = ad[i + 2];
+        let t = 0;
+        if (f.gradient) {
+          const pixel = i / 4;
+          const x = pixel % width - ox;
+          const y = Math.floor(pixel / width) - oy;
+          t = f.gradient.kind === "radial"
+            ? Math.hypot(x - f.gradient.start.x, y - f.gradient.start.y) / gradientRadius
+            : ((x - f.gradient.start.x) * gradientDx + (y - f.gradient.start.y) * gradientDy) / gradientLengthSq;
+          t = Math.max(0, Math.min(1, t));
+        }
+        md[i] = Math.round(startRgb[0] + (endRgb[0] - startRgb[0]) * t);
+        md[i + 1] = Math.round(startRgb[1] + (endRgb[1] - startRgb[1]) * t);
+        md[i + 2] = Math.round(startRgb[2] + (endRgb[2] - startRgb[2]) * t);
         md[i + 3] = 255;
         touched = true;
       }
@@ -1754,6 +2141,32 @@ function walkLayerStrokes(
 
     const pressures = stroke.pressures;
     const pAt = (i: number) => pressures?.[i] ?? 1;
+
+    if (brush.radial && pts.length >= 2) {
+      const center = jittered[0];
+      const edge = jittered[jittered.length - 1];
+      const radius = Math.hypot(edge.x - center.x, edge.y - center.y);
+      if (radius >= 0.5 && budget.remaining > 0) {
+        brush.stamp({
+          ctx,
+          pos: center,
+          delta: { x: edge.x - center.x, y: edge.y - center.y },
+          color: stroke.color,
+          size: effectiveSettings.stampSize(stroke.size, pAt(0)),
+          tick: stampTick,
+          seed: strokeSeed,
+          bg,
+          pressure: pAt(0),
+          flow: effectiveSettings.stampFlow(pAt(0)),
+          dist: 0,
+          radialRadius: radius,
+        });
+        budget.remaining -= 1;
+        drawn[si] = true;
+      }
+      if (isErase) ctx.restore();
+      continue;
+    }
 
     if (jittered.length === 1) {
       const pointLen = 1;

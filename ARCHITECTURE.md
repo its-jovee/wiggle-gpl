@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 
-How WiggleStudio works, in enough depth to extend it safely. For the *why*, see
+How Wigo Studio works, in enough depth to extend it safely. For the *why*, see
 PRODUCT.md; for working rules, AGENTS.md.
 
 ## Data model (`src/core/types.ts`)

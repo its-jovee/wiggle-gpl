@@ -1,6 +1,6 @@
 # PRODUCT_FABLE_CRIT — Product & Creative-Tool Design Critique
 
-WiggleStudio has a *sharp* product thesis, and I want to lead with that because it's
+Wigo Studio has a *sharp* product thesis, and I want to lead with that because it's
 the strongest thing here: **"keep the vector stroke structure that WigglyPaint throws
 away, so you can re-wiggle, rescale to 9:16, swap palettes per frame, and export a
 frame-accurate MP4."** That is a real, defensible insight (PRODUCT.md nails it), and the

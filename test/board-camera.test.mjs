@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-board-camera-test");
+const outDir = join(tmpdir(), "wigostudio-board-camera-test");
 
 function compileBoardCamera() {
   rmSync(outDir, { recursive: true, force: true });
@@ -102,6 +102,15 @@ test("chromeOpacity fades linearly between the hidden and full thresholds", () =
   assert.equal(cam.chromeOpacity(0.2), 0);
   // midpoint of default range [0.3, 0.55] is 0.425 -> 0.5
   assert.ok(Math.abs(cam.chromeOpacity(0.425) - 0.5) < 1e-9);
+});
+
+test("chrome stays interactive through mid-fade (opacity > 0)", () => {
+  // Comfortable pull-back: still solid under the default range.
+  assert.equal(cam.chromeOpacity(0.7), 1);
+  // Mid-fade ghosting must remain > 0 so callers keep pointer-events on.
+  assert.ok(cam.chromeOpacity(0.4) > 0);
+  // Only true overview (at/below hidden) reaches 0 for chrome-faded.
+  assert.equal(cam.chromeOpacity(cam.DEFAULT_CHROME_FADE.hidden), 0);
 });
 
 test("organizeGrid lays frames out in rows without overlap", () => {

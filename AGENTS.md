@@ -5,8 +5,8 @@ this repo. Read it fully before editing. `HANDOFF.md` has the task list;
 `PRODUCT.md` has the why; `ARCHITECTURE.md` has the how.
 
 ## GPL fork boundary
-This is the GPLv3-only Wiggle GPL experiment, separate from the MIT
-WiggleStudio repository. Direct Krita-derived code and GPL-compatible ports are
+This is the GPLv3-only Wigo Studio experiment, separate from the MIT sibling
+repository (historically WiggleStudio). Direct Krita-derived code and GPL-compatible ports are
 allowed here, but they must never be copied back into the MIT project. Track any
 direct Krita-derived import in `docs/research/krita/IMPORT_LEDGER.md` with the
 source repository, commit, files, license, local destination, and adaptation

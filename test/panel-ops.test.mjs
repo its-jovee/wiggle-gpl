@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-panel-ops-test");
+const outDir = join(tmpdir(), "wigostudio-panel-ops-test");
 
 function compilePanelOps() {
   rmSync(outDir, { recursive: true, force: true });
@@ -21,6 +21,7 @@ function compilePanelOps() {
     "--noEmit", "false",
     "src/core/types.ts",
     "src/core/audioTypes.ts",
+    "src/core/panelStack.ts",
     "src/core/panelOps.ts",
   ], { stdio: "inherit" });
 }
@@ -186,4 +187,53 @@ test("subpanel duplicate regenerates nested text ids", () => {
   assert.equal(copy.layers[0].id, "new-2");
   assert.equal(copy.layers[0].texts[0].id, "new-3");
   assert.notEqual(copy.layers[0].texts[0].id, "text-nested");
+});
+
+test("regenerateSubPanelIds regenerates nested child frames and stacks", () => {
+  const nested = {
+    id: "outer",
+    bounds: { x: 0, y: 0, w: 100, h: 100 },
+    shape: "rect",
+    border: { brush: "pen", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+    bg: null,
+    activeLayerIndex: 0,
+    layers: [{
+      id: "outer-layer",
+      name: "Outer",
+      visible: true,
+      opacity: 1,
+      kind: "draw",
+      strokes: [],
+      fills: [],
+    }],
+    subPanels: [{
+      id: "inner",
+      bounds: { x: 10, y: 10, w: 40, h: 40 },
+      shape: "rect",
+      border: { brush: "pen", color: "#000", thickness: 1, wiggleAmplitude: 0 },
+      bg: "#ff0000",
+      layers: [{
+        id: "inner-layer",
+        name: "Inner",
+        visible: true,
+        opacity: 1,
+        kind: "draw",
+        strokes: [],
+        fills: [],
+      }],
+      subPanels: [],
+      stack: [{ kind: "layer", id: "inner-layer" }],
+    }],
+    stack: [
+      { kind: "layer", id: "outer-layer" },
+      { kind: "subpanel", id: "inner" },
+    ],
+  };
+  const copy = ops.regenerateSubPanelIds(nested, ids());
+  assert.notEqual(copy.id, "outer");
+  assert.notEqual(copy.subPanels[0].id, "inner");
+  assert.notEqual(copy.subPanels[0].layers[0].id, "inner-layer");
+  assert.equal(copy.stack[0].id, copy.layers[0].id);
+  assert.equal(copy.stack[1].id, copy.subPanels[0].id);
+  assert.equal(copy.subPanels[0].stack[0].id, copy.subPanels[0].layers[0].id);
 });

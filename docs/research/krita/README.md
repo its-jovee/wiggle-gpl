@@ -1,6 +1,6 @@
 # Krita Research and Import Strategy
 
-This directory tracks how Wiggle GPL uses Krita. The goal is to make the GPL
+This directory tracks how Wigo Studio uses Krita. The goal is to make the GPL
 experiment fast without losing provenance.
 
 ## Source
@@ -21,7 +21,7 @@ pinning commits, creating submodules, or recording provenance.
 
 ## Not allowed
 
-- Copying GPL-derived code back into the separate MIT WiggleStudio project.
+- Copying GPL-derived code back into the separate MIT sibling project (historically WiggleStudio).
 - Upstreaming AI-assisted changes to Krita while Krita's AI-development
   moratorium remains active.
 - Importing large Krita subsystems without first writing a focused plan that

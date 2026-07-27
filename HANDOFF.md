@@ -1,13 +1,13 @@
-# Wiggle GPL — Continuation Brief
+# Wigo Studio — Continuation Brief
 
-You're picking up the GPLv3-only Wiggle GPL experiment. It was seeded from a
+You're picking up the GPLv3-only Wigo Studio experiment. It was seeded from a
 working Vite + TypeScript WiggleStudio tree: a local, color-native alternative
 to WigglyPaint with timeline sequencing, layers, audio, and native 9:16
 (1080×1920) TikTok export.
 
 This fork exists so GPL-compatible Krita-derived code and architecture can be
-used directly when it materially improves the product. The separate MIT
-WiggleStudio repository must remain free of GPL-derived code from this fork.
+used directly when it materially improves the product. The separate MIT sibling
+repository (historically WiggleStudio) must remain free of GPL-derived code from this fork.
 
 It should type-check, build, and test clean.
 Start by running `npm install && npm run dev`, then read these files in order
@@ -68,7 +68,7 @@ fetch steps in `docs/research/krita/`. Every direct import or close port must
 update `docs/research/krita/IMPORT_LEDGER.md`.
 
 ### 2. Drawing feel pass
-Study Krita's freehand/input/canvas behavior and implement a Wiggle-compatible
+Study Krita's freehand/input/canvas behavior and implement a Wigo-compatible
 pass for cursor feedback, input smoothing/stabilization, zoom/pan ergonomics,
 and stroke preview. Preserve raw stored points unless a design explicitly
 changes the model.

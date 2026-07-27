@@ -1,6 +1,6 @@
 # DESIGN_FABLE_CRIT — Animation / Creative-Tool Design Critique
 
-This is the "game design" lens the request asked for, adapted to what WiggleStudio
+This is the "game design" lens the request asked for, adapted to what Wigo Studio
 actually is: not a game, but a **creative tool with a craft loop**. The relevant
 design questions are the same ones you'd ask of a game — *is the core loop tight, does
 mastery have depth, is feedback legible, does the tool reward the behavior it wants?*

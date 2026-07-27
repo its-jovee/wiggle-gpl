@@ -1,0 +1,38 @@
+{
+  "swiftshader": {
+    "perf-heavy": {
+      "idleMainAvgMs": 7.07,
+      "idleMainMaxMs": 10.72,
+      "playbackAvgMs": 1.21,
+      "rawLayerHits": 0,
+      "rawLayerMisses": 48,
+      "cacheMB": 27
+    },
+    "perf-layers8": {
+      "idleMainAvgMs": 10.53,
+      "idleMainMaxMs": 17.15,
+      "playbackAvgMs": 2.24,
+      "rawLayerHits": 0,
+      "rawLayerMisses": 120,
+      "cacheMB": 26
+    }
+  },
+  "gpu": {
+    "perf-heavy": {
+      "idleMainAvgMs": 2.4,
+      "idleMainMaxMs": 2.92,
+      "playbackAvgMs": 0.66,
+      "rawLayerHits": 0,
+      "rawLayerMisses": 45,
+      "cacheMB": 27
+    },
+    "perf-layers8": {
+      "idleMainAvgMs": 4.97,
+      "idleMainMaxMs": 6.42,
+      "playbackAvgMs": 1.08,
+      "rawLayerHits": 0,
+      "rawLayerMisses": 120,
+      "cacheMB": 26
+    }
+  }
+}

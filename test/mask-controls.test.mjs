@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-mask-controls-test");
+const outDir = join(tmpdir(), "wigostudio-mask-controls-test");
 
 function compileMaskControls() {
   rmSync(outDir, { recursive: true, force: true });

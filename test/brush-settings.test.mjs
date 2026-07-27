@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const outDir = join(tmpdir(), "wigglestudio-brush-settings-test");
+const outDir = join(tmpdir(), "wigostudio-brush-settings-test");
 
 function compileBrushSettings() {
   rmSync(outDir, { recursive: true, force: true });

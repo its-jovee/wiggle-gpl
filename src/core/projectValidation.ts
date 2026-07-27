@@ -5,9 +5,10 @@
 // are capped in place so slightly out-of-range editor values still load.
 // ============================================================================
 
-import type { BrushPreset, Fill, Layer, Project, Stroke, SubPanel } from "./types";
+import type { BrushPreset, Fill, Layer, Project, ReferenceImage, Stroke, SubPanel } from "./types";
 import { normalizeBrushSettings } from "./brushSettings";
 import { normalizeStrokeSmoothingSettings } from "./strokeSmoothing";
+import { countSubPanels, maxSubPanelDepth } from "./panelStack";
 
 export const MAX_PROJECT_DIMENSION = 4096;
 export const MIN_PROJECT_DIMENSION = 1;
@@ -15,6 +16,9 @@ export const MAX_PANELS = 200;
 export const MAX_PANEL_ANNOTATION_CHARS = 4000;
 export const MAX_LAYERS_PER_PANEL = 256;
 export const MAX_SUBPANELS_PER_PANEL = 64;
+/** Root frames are depth 1; children increment. */
+export const MAX_SUBPANEL_DEPTH = 8;
+export const MAX_SUBPANEL_POINTS = 20_000;
 export const MAX_TEXTS_PER_LAYER = 10_000;
 export const MAX_STROKES_PER_LAYER = 50_000;
 export const MAX_POINTS_PER_STROKE = 20_000;
@@ -22,6 +26,10 @@ export const MAX_FILL_TOLERANCE = 64;
 export const MAX_FILL_GAP_CLOSE = 64;
 /** ~12MB decoded — generous but bounded; guards against corrupt/hostile files. */
 export const MAX_RASTER_DATA_CHARS = 16_000_000;
+export const MAX_REFERENCE_IMAGES = 32;
+export const MAX_REFERENCE_NAME_CHARS = 200;
+/** Reference bitmaps may be larger than the export frame (photos, sheets). */
+export const MAX_REFERENCE_DIMENSION = 8192;
 
 export type ProjectValidationResult =
   | { ok: true }
@@ -46,8 +54,11 @@ function capLayerFills(layer: Layer): Layer {
 
 function capSubPanelFills(subPanel: SubPanel): SubPanel {
   const layers = subPanel.layers.map(capLayerFills);
-  if (layers.every((l, i) => l === subPanel.layers[i])) return subPanel;
-  return { ...subPanel, layers };
+  const children = (subPanel.subPanels ?? []).map(capSubPanelFills);
+  const layersSame = layers.every((l, i) => l === subPanel.layers[i]);
+  const childrenSame = children.every((c, i) => c === (subPanel.subPanels ?? [])[i]);
+  if (layersSame && childrenSame) return subPanel;
+  return { ...subPanel, layers, subPanels: children };
 }
 
 function normalizeStrokeBrushSettings(stroke: Stroke): Stroke {
@@ -66,8 +77,11 @@ function capLayerBrushSettings(layer: Layer): Layer {
 
 function capSubPanelBrushSettings(subPanel: SubPanel): SubPanel {
   const layers = subPanel.layers.map(capLayerBrushSettings);
-  if (layers.every((l, i) => l === subPanel.layers[i])) return subPanel;
-  return { ...subPanel, layers };
+  const children = (subPanel.subPanels ?? []).map(capSubPanelBrushSettings);
+  const layersSame = layers.every((l, i) => l === subPanel.layers[i]);
+  const childrenSame = children.every((c, i) => c === (subPanel.subPanels ?? [])[i]);
+  if (layersSame && childrenSame) return subPanel;
+  return { ...subPanel, layers, subPanels: children };
 }
 
 function capBrushPresetSettings(preset: BrushPreset): BrushPreset {
@@ -111,6 +125,11 @@ export function capProjectDrawingSettings(project: Project): void {
 }
 
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+const HEX_COLOR = /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i;
+
+function finitePoint(point: { x: number; y: number } | undefined): boolean {
+  return !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
+}
 
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
   for (const [name, fade] of [["fadeIn", layer.fadeIn], ["fadeOut", layer.fadeOut]] as const) {
@@ -129,6 +148,34 @@ function validateLayer(layer: Layer, path: string, errors: string[]): void {
   }
   if ((layer.texts?.length ?? 0) > MAX_TEXTS_PER_LAYER) {
     errors.push(`${path}: ${layer.texts?.length ?? 0} texts exceeds max ${MAX_TEXTS_PER_LAYER}`);
+  }
+  for (let i = 0; i < layer.fills.length; i++) {
+    const fill = layer.fills[i];
+    const fillPath = `${path} fill ${i + 1}`;
+    if (!finitePoint(fill.point)) errors.push(`${fillPath}: point must be finite`);
+    if (typeof fill.color !== "string" || !HEX_COLOR.test(fill.color)) {
+      errors.push(`${fillPath}: color must be a hex color`);
+    }
+    if (fill.gradient) {
+      if (fill.gradient.kind !== "linear" && fill.gradient.kind !== "radial") {
+        errors.push(`${fillPath}: gradient kind must be linear or radial`);
+      }
+      if (!finitePoint(fill.gradient.start) || !finitePoint(fill.gradient.end)) {
+        errors.push(`${fillPath}: gradient points must be finite`);
+      }
+      if (typeof fill.gradient.endColor !== "string" || !HEX_COLOR.test(fill.gradient.endColor)) {
+        errors.push(`${fillPath}: gradient end color must be a hex color`);
+      }
+    }
+  }
+  if (layer.tone?.gradient) {
+    const gradient = layer.tone.gradient;
+    if (gradient.kind !== "linear" && gradient.kind !== "radial") {
+      errors.push(`${path}: tone gradient kind must be linear or radial`);
+    }
+    if (!finitePoint(gradient.start) || !finitePoint(gradient.end)) {
+      errors.push(`${path}: tone gradient points must be finite`);
+    }
   }
   if (layer.kind === "raster" && !layer.raster) {
     errors.push(`${path}: raster layer is missing pixel data`);
@@ -150,6 +197,74 @@ function validateLayer(layer: Layer, path: string, errors: string[]): void {
   }
 }
 
+function validateSubPanelTree(subs: SubPanel[], pathPrefix: string, errors: string[]): void {
+  for (let si = 0; si < subs.length; si++) {
+    const sub = subs[si];
+    const path = `${pathPrefix} sub-panel ${si + 1}`;
+    if (!Number.isFinite(sub.bounds.x) || !Number.isFinite(sub.bounds.y) ||
+        !Number.isFinite(sub.bounds.w) || !Number.isFinite(sub.bounds.h)) {
+      errors.push(`${path}: bounds must be finite numbers`);
+    }
+    if (sub.shape === "custom") {
+      if (!sub.points || sub.points.length < 3) {
+        errors.push(`${path}: custom shape needs at least 3 points`);
+      } else if (sub.points.length > MAX_SUBPANEL_POINTS) {
+        errors.push(`${path}: ${sub.points.length} custom points exceeds max ${MAX_SUBPANEL_POINTS}`);
+      } else {
+        for (let pi2 = 0; pi2 < sub.points.length; pi2++) {
+          const p = sub.points[pi2];
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+            errors.push(`${path}: custom point ${pi2 + 1} must be finite`);
+            break;
+          }
+        }
+      }
+    }
+    if (sub.layers.length > MAX_LAYERS_PER_PANEL) {
+      errors.push(`${path}: ${sub.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);
+    }
+    for (let li = 0; li < sub.layers.length; li++) {
+      if (!Number.isFinite(sub.layers[li].opacity) || sub.layers[li].opacity < 0 || sub.layers[li].opacity > 1) {
+        errors.push(`${path} layer ${li + 1}: opacity must be between 0 and 1`);
+      }
+      validateLayer(sub.layers[li], `${path} layer ${li + 1}`, errors);
+    }
+    validateSubPanelTree(sub.subPanels ?? [], path, errors);
+  }
+}
+
+function validateReferenceImage(ref: ReferenceImage, path: string, errors: string[]): void {
+  if (typeof ref.id !== "string" || !ref.id) {
+    errors.push(`${path}: id is required`);
+  }
+  if (typeof ref.name !== "string" || !ref.name || ref.name.length > MAX_REFERENCE_NAME_CHARS) {
+    errors.push(`${path}: name must be a non-empty string of at most ${MAX_REFERENCE_NAME_CHARS} characters`);
+  }
+  if (typeof ref.data !== "string" || !ref.data.startsWith(PNG_DATA_URL_PREFIX)) {
+    errors.push(`${path}: data must be a PNG data URL`);
+  }
+  if (typeof ref.data === "string" && ref.data.length > MAX_RASTER_DATA_CHARS) {
+    errors.push(`${path}: data ${ref.data.length} chars exceeds max ${MAX_RASTER_DATA_CHARS}`);
+  }
+  if (!Number.isFinite(ref.width) || !Number.isFinite(ref.height) ||
+      ref.width < MIN_PROJECT_DIMENSION || ref.width > MAX_REFERENCE_DIMENSION ||
+      ref.height < MIN_PROJECT_DIMENSION || ref.height > MAX_REFERENCE_DIMENSION) {
+    errors.push(`${path}: dimensions ${ref.width}x${ref.height} out of bounds`);
+  }
+  if (!Number.isFinite(ref.x) || !Number.isFinite(ref.y)) {
+    errors.push(`${path}: position must be finite`);
+  }
+  if (!Number.isFinite(ref.scale) || ref.scale <= 0) {
+    errors.push(`${path}: scale must be a positive finite number`);
+  }
+  if (!Number.isFinite(ref.opacity) || ref.opacity < 0 || ref.opacity > 1) {
+    errors.push(`${path}: opacity must be between 0 and 1`);
+  }
+  if (typeof ref.visible !== "boolean") {
+    errors.push(`${path}: visible must be a boolean`);
+  }
+}
+
 export function validateProject(project: Project): ProjectValidationResult {
   const errors: string[] = [];
 
@@ -166,6 +281,14 @@ export function validateProject(project: Project): ProjectValidationResult {
 
   if (project.panels.length > MAX_PANELS) {
     errors.push(`${project.panels.length} panels exceeds max ${MAX_PANELS}`);
+  }
+
+  const refs = project.referenceImages ?? [];
+  if (refs.length > MAX_REFERENCE_IMAGES) {
+    errors.push(`${refs.length} reference images exceeds max ${MAX_REFERENCE_IMAGES}`);
+  }
+  for (let ri = 0; ri < refs.length; ri++) {
+    validateReferenceImage(refs[ri], `reference image ${ri + 1}`, errors);
   }
 
   for (let pi = 0; pi < project.panels.length; pi++) {
@@ -185,8 +308,13 @@ export function validateProject(project: Project): ProjectValidationResult {
     if (panel.layers.length > MAX_LAYERS_PER_PANEL) {
       errors.push(`panel ${pi + 1}: ${panel.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);
     }
-    if ((panel.subPanels?.length ?? 0) > MAX_SUBPANELS_PER_PANEL) {
-      errors.push(`panel ${pi + 1}: ${panel.subPanels?.length ?? 0} sub-panels exceeds max ${MAX_SUBPANELS_PER_PANEL}`);
+    const totalSubs = countSubPanels(panel);
+    if (totalSubs > MAX_SUBPANELS_PER_PANEL) {
+      errors.push(`panel ${pi + 1}: ${totalSubs} sub-panels exceeds max ${MAX_SUBPANELS_PER_PANEL}`);
+    }
+    const depth = maxSubPanelDepth(panel);
+    if (depth > MAX_SUBPANEL_DEPTH) {
+      errors.push(`panel ${pi + 1}: sub-panel nesting depth ${depth} exceeds max ${MAX_SUBPANEL_DEPTH}`);
     }
     for (let li = 0; li < panel.layers.length; li++) {
       if (!Number.isFinite(panel.layers[li].opacity) || panel.layers[li].opacity < 0 || panel.layers[li].opacity > 1) {
@@ -194,22 +322,7 @@ export function validateProject(project: Project): ProjectValidationResult {
       }
       validateLayer(panel.layers[li], `panel ${pi + 1} layer ${li + 1}`, errors);
     }
-    for (let si = 0; si < (panel.subPanels ?? []).length; si++) {
-      const sub = panel.subPanels![si];
-      if (!Number.isFinite(sub.bounds.x) || !Number.isFinite(sub.bounds.y) ||
-          !Number.isFinite(sub.bounds.w) || !Number.isFinite(sub.bounds.h)) {
-        errors.push(`panel ${pi + 1} sub-panel ${si + 1}: bounds must be finite numbers`);
-      }
-      if (sub.layers.length > MAX_LAYERS_PER_PANEL) {
-        errors.push(`panel ${pi + 1} sub-panel ${si + 1}: ${sub.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);
-      }
-      for (let li = 0; li < sub.layers.length; li++) {
-        if (!Number.isFinite(sub.layers[li].opacity) || sub.layers[li].opacity < 0 || sub.layers[li].opacity > 1) {
-          errors.push(`panel ${pi + 1} sub-panel ${si + 1} layer ${li + 1}: opacity must be between 0 and 1`);
-        }
-        validateLayer(sub.layers[li], `panel ${pi + 1} sub-panel ${si + 1} layer ${li + 1}`, errors);
-      }
-    }
+    validateSubPanelTree(panel.subPanels ?? [], `panel ${pi + 1}`, errors);
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
