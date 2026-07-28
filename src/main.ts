@@ -214,6 +214,7 @@ import {
   dispatchToolPointerDown,
   type ToolPointerInput,
 } from "./tools/pointerController";
+import { PointerGestureSession } from "./tools/pointerGesture";
 
 if (location.protocol === "file:") document.body.classList.add("file-mode");
 
@@ -262,7 +263,6 @@ type ScaleToolDragState = {
   startBounds: Rect;
   startAngle: number;
 };
-let scaleToolDrag: ScaleToolDragState | null = null;
 
 let activeTool: ActiveTool = brushTool(BRUSHES[0].key);
 /** Last selected paint brush remains available while a non-paint tool is
@@ -933,7 +933,6 @@ resetCurrentFile(project);
 // canvas and every preview card. It is persisted as projectBoardMeta.camera.
 let viewport: Camera = { scale: 1, tx: 0, ty: 0 };
 let spacePanDown = false;
-let panDrag: { pointerId: number; x: number; y: number; tx: number; ty: number } | null = null;
 
 /** The board surface's screen rect (the window into world space). */
 function surfaceRect(): DOMRect {
@@ -1395,31 +1394,18 @@ function releaseCanvasPointerCapture(pointerId: number | null) {
 function cancelLiveInteractionsForUndo(): boolean {
   markStylusPressureInterrupt();
   const cancelledLiveStroke = drawing || !!liveStroke || !!liveRasterStroke;
-  if (cancelledLiveStroke) {
+  const cancelledGesturePaint = cancelActiveEditorGesture(true);
+  if (cancelledLiveStroke && !cancelledGesturePaint) {
     if (liveRasterStroke) rollbackLiveRasterStroke();
-    if (drawingPointerId != null) suppressStrokeUntilPointerUp = drawingPointerId;
-    releaseCanvasPointerCapture(drawingPointerId);
-    drawing = false;
-    drawingPointerId = null;
-    liveStrokeHasRealPressure = false;
-    liveStrokeSyntheticPressureCount = 0;
-    clearLiveStrokeState();
+    resetLiveDrawingState();
   }
   if (selectionState?.mode === "object" && transformSnapshots) {
     for (const snapshot of transformSnapshots) restoreFromSnapshot(snapshot);
     bumpMarqueeItemLayers(selectionState.items);
     transformSnapshots = null;
   }
-  layerMoveDrag = null;
-  perspectiveDrag = null;
-  selectDrag = null;
-  subPanelDrag = null;
-  cutSubPanelDrag = null;
-  mangaRadialDrag = null;
-  gradientDrag = null;
   transformSnapshots = null;
   keyframeArm = null;
-  scaleToolDrag = null; // snapshots reference replaced Layer objects
   return cancelledLiveStroke;
 }
 
@@ -2291,7 +2277,6 @@ let liveStrokeLayer: Layer | null = null;
 let liveStrokeLayerIndex = 0;
 let liveStrokeStrokeIndex = 0;
 let liveStrokeSubPanelId: string | null = null;
-let drawingPointerId: number | null = null;
 let liveStrokeHasRealPressure = false;
 /** Count of leading samples that used a synthetic filler this stroke. */
 let liveStrokeSyntheticPressureCount = 0;
@@ -2325,8 +2310,7 @@ let liveRasterStroke: {
   recordAsCheckpoint: boolean;
   contextSaved: boolean;
 } | null = null;
-let layerMoveDrag: {
-  pointerId: number;
+type LayerMoveDragState = {
   layer: Layer;
   dependents: Layer[];
   lastPos: Vec2;
@@ -2334,39 +2318,54 @@ let layerMoveDrag: {
   totalDy: number;
   moved: boolean;
   keyframe: "from" | "to" | null;
-} | null = null;
-let subPanelDrag: { start: { x: number; y: number }; end: { x: number; y: number } } | null = null;
-let cutSubPanelDrag: { start: { x: number; y: number }; end: { x: number; y: number } } | null = null;
+  animationBefore: LayerAnimation | undefined;
+};
 const MANGA_RADIAL_MIN_RADIUS = 2;
-let mangaRadialDrag: {
-  center: Vec2;
-  edge: Vec2;
-  pointerId: number;
-} | null = null;
-let gradientDrag: {
-  start: Vec2;
-  end: Vec2;
-  pointerId: number;
-} | null = null;
 type SelectDrag =
-  | { kind: "move"; subPanelId: string; offset: { x: number; y: number } }
-  | { kind: "tail"; subPanelId: string; offset: { x: number; y: number } }
+  | { kind: "move"; subPanelId: string; offset: Vec2; originalPosition: Vec2 }
+  | { kind: "tail"; subPanelId: string; offset: Vec2; originalTail: Vec2 }
   | {
       kind: "text";
       ref: TextRef;
-      offset: { x: number; y: number };
+      offset: Vec2;
       /** Canvas coords at pointerdown — used to tell a click from a drag. */
       origin: { x: number; y: number };
       /** True when this text was already selected before this press. */
       alreadySelected: boolean;
     };
-let selectDrag: SelectDrag | null = null;
 /** Inline text editor currently mounted on document.body, if any. */
 let activeTextInput: HTMLTextAreaElement | null = null;
 
 // ---- Perspective ruler state ------------------------------------------------
 type PerspectiveDragTarget = "horizon" | "radius" | "pole0" | "pole1" | "pole2" | "pole3" | number;
-let perspectiveDrag: { target: PerspectiveDragTarget; pointerId: number } | null = null;
+type EditorGesture =
+  | { kind: "paint"; pointerId: number }
+  | { kind: "pan"; pointerId: number; x: number; y: number; tx: number; ty: number }
+  | { kind: "perspective"; pointerId: number; target: PerspectiveDragTarget; guide: PerspectiveGuide; before: PerspectiveGuide }
+  | { kind: "select"; pointerId: number; drag: SelectDrag }
+  | { kind: "selection"; pointerId: number; before: SelectionState | null }
+  | { kind: "scale"; pointerId: number; drag: ScaleToolDragState }
+  | { kind: "layer-move"; pointerId: number; drag: LayerMoveDragState }
+  | { kind: "frame"; pointerId: number; shape: SubPanelShape; start: Vec2; end: Vec2 }
+  | { kind: "cut-subpanel"; pointerId: number; start: Vec2; end: Vec2 }
+  | { kind: "manga-radial"; pointerId: number; center: Vec2; edge: Vec2 }
+  | { kind: "gradient"; pointerId: number; start: Vec2; end: Vec2 };
+
+const editorGestureSession = new PointerGestureSession<EditorGesture>();
+
+function activeGesture<Kind extends EditorGesture["kind"]>(
+  kind: Kind,
+): Extract<EditorGesture, { kind: Kind }> | null {
+  const gesture = editorGestureSession.current;
+  return gesture?.kind === kind
+    ? gesture as Extract<EditorGesture, { kind: Kind }>
+    : null;
+}
+
+function unreachableGesture(gesture: never): never {
+  throw new Error(`Unhandled editor gesture: ${JSON.stringify(gesture)}`);
+}
+
 let perspectiveSnapLock: {
   origin: Vec2;
   guide: PerspectiveGuide;
@@ -2630,7 +2629,7 @@ function updateCanvasCursor(pos?: Vec2) {
   // The eraser ring overlay is driven by pointermove; drop it whenever the
   // eraser isn't the effective tool so it can't linger over other tools.
   if (!isEraseToolActive()) hideEraserCursorOverlay();
-  if (playing || panDrag || spacePanDown) return;
+  if (playing || activeGesture("pan") || spacePanDown) return;
   if (isEraseToolActive()) {
     canvas.style.cursor = "none";
     return;
@@ -2659,7 +2658,8 @@ function updateCanvasCursor(pos?: Vec2) {
     }
   } else if (toolIs("scale")) {
     const at = pos ?? lastCanvasPointerPos;
-    const target = scaleToolDrag ? { bounds: scaleToolDrag.bounds } : scaleToolItems();
+    const scaleGesture = activeGesture("scale");
+    const target = scaleGesture ? { bounds: scaleGesture.drag.bounds } : scaleToolItems();
     if (at && target) {
       const handle = hitTestTransformHandle(at, target.bounds, viewport.scale);
       if (handle) {
@@ -2994,6 +2994,8 @@ function clippedDependentsFor(layer: Layer): Layer[] {
 }
 
 function layerMovePreviewOffset() {
+  const gesture = activeGesture("layer-move");
+  const layerMoveDrag = gesture?.drag;
   if (!layerMoveDrag || layerMoveDrag.keyframe || !layerMoveDrag.moved) return undefined;
   return {
     layerId: layerMoveDrag.layer.id,
@@ -3898,14 +3900,45 @@ function beginViewportPan(e: PointerEvent) {
     pointerDevices.observeMouse(e);
     markStylusPressureInterrupt();
   }
-  panDrag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: viewport.tx, ty: viewport.ty };
+  beginEditorGesture({
+    kind: "pan",
+    pointerId: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    tx: viewport.tx,
+    ty: viewport.ty,
+  }, e);
   stageArea.classList.add("panning");
-  try { canvas.setPointerCapture(e.pointerId); } catch {}
   e.preventDefault();
 }
 
 function capturePointer(e: PointerEvent) {
   try { canvas.setPointerCapture(e.pointerId); } catch {}
+}
+
+function selectionGestureSnapshot(): SelectionState | null {
+  if (!selectionState) return null;
+  if (selectionState.mode === "region") {
+    return {
+      ...selectionState,
+      shape: structuredClone(selectionState.shape),
+      lastPos: selectionState.lastPos ? { ...selectionState.lastPos } : undefined,
+      lassoPath: selectionState.lassoPath?.map((point) => ({ ...point })),
+    };
+  }
+  return {
+    ...selectionState,
+    shape: structuredClone(selectionState.shape),
+    bounds: { ...selectionState.bounds },
+    lastPos: selectionState.lastPos ? { ...selectionState.lastPos } : undefined,
+  };
+}
+
+function beginEditorGesture(gesture: EditorGesture, event: PointerEvent) {
+  const replaced = editorGestureSession.clear();
+  if (replaced) cancelEditorGesture(replaced);
+  editorGestureSession.begin(gesture);
+  capturePointer(event);
 }
 
 function appendLiveStrokeSample(e: PointerEvent) {
@@ -3944,8 +3977,16 @@ function handleSelectToolPointerDown({ event: e, point: pos }: ToolPointerInput)
     if (sp && (sp.shape === "balloon" || sp.shape === "thought") && sp.tail) {
       const d = Math.hypot(pos.x - sp.tail.x, pos.y - sp.tail.y);
       if (d < 40) {
-        selectDrag = { kind: "tail", subPanelId: sp.id, offset: { x: 0, y: 0 } };
-        capturePointer(e);
+        beginEditorGesture({
+          kind: "select",
+          pointerId: e.pointerId,
+          drag: {
+            kind: "tail",
+            subPanelId: sp.id,
+            offset: { x: 0, y: 0 },
+            originalTail: { ...sp.tail },
+          },
+        }, e);
         return;
       }
     }
@@ -3961,13 +4002,16 @@ function handleSelectToolPointerDown({ event: e, point: pos }: ToolPointerInput)
     }
     const alreadySelected = selectedText?.text === textHit.text;
     selectedText = textHit;
-    selectDrag = {
-      kind: "text", ref: textHit,
-      offset: { x: pos.x - textHit.text.x, y: pos.y - textHit.text.y },
-      origin: { x: pos.x, y: pos.y },
-      alreadySelected,
-    };
-    capturePointer(e);
+    beginEditorGesture({
+      kind: "select",
+      pointerId: e.pointerId,
+      drag: {
+        kind: "text", ref: textHit,
+        offset: { x: pos.x - textHit.text.x, y: pos.y - textHit.text.y },
+        origin: { x: pos.x, y: pos.y },
+        alreadySelected,
+      },
+    }, e);
     buildInspector();
     return;
   }
@@ -3975,11 +4019,15 @@ function handleSelectToolPointerDown({ event: e, point: pos }: ToolPointerInput)
     if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
       selectedSubPanelId = sps[i].id;
       selectedText = null;
-      selectDrag = {
-        kind: "move", subPanelId: sps[i].id,
-        offset: { x: pos.x - sps[i].bounds.x, y: pos.y - sps[i].bounds.y },
-      };
-      capturePointer(e);
+      beginEditorGesture({
+        kind: "select",
+        pointerId: e.pointerId,
+        drag: {
+          kind: "move", subPanelId: sps[i].id,
+          offset: { x: pos.x - sps[i].bounds.x, y: pos.y - sps[i].bounds.y },
+          originalPosition: { x: sps[i].bounds.x, y: sps[i].bounds.y },
+        },
+      }, e);
       buildInspector();
       return;
     }
@@ -3993,6 +4041,7 @@ function handleSelectToolPointerDown({ event: e, point: pos }: ToolPointerInput)
 
 function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
   if (!activeLayerIsEditable(true)) return;
+  const before = selectionGestureSnapshot();
   if (selectionState?.mode === "object" && selectionState.phase === "idle") {
     const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
     if (handle) {
@@ -4000,14 +4049,14 @@ function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput
       // The rotate knob sits outside the bounds rect, so a missed consume
       // previously cleared the selection and started a fresh drag.
       beginObjectSelectionTransform(handle, pos);
-      capturePointer(e);
+      beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
       return;
     }
     const b = selectionState.bounds;
     if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
       transformSnapshots = snapshotItems(selectionState.items);
       selectionState = { ...selectionState, phase: "moving", lastPos: pos };
-      capturePointer(e);
+      beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
       return;
     }
     // Click outside bounds and handles — cancel selection before starting a new one.
@@ -4025,7 +4074,7 @@ function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput
         // Consume the handle hit even when promotion fails so clicking the
         // rotate circle above the box cannot start a brand-new marquee.
         beginObjectSelectionTransform(handle, pos);
-        capturePointer(e);
+        beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
         return;
       } else if (activeRegionContains(selectionState, pos)) {
         // promoteRegionSelection extracts the pixels and swaps selectionState
@@ -4043,7 +4092,7 @@ function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput
             items,
             lastPos: pos,
           };
-          capturePointer(e);
+          beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
           buildEditContext();
           return;
         }
@@ -4053,7 +4102,7 @@ function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput
     }
     if (activeRegionContains(selectionState, pos)) {
       selectionState = { ...selectionState, phase: "moving", lastPos: pos };
-      capturePointer(e);
+      beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
       buildEditContext();
       return;
     }
@@ -4068,7 +4117,7 @@ function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput
     tool: marqueeToolKind,
     lassoPath: [pos],
   };
-  capturePointer(e);
+  beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
 }
 
 function handleScaleToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
@@ -4090,27 +4139,32 @@ function handleScaleToolPointerDown({ event: e, point: pos }: ToolPointerInput) 
       items: [rasterRef],
     };
     target = { items: [rasterRef], bounds };
+    const before = selectionGestureSnapshot();
     beginObjectSelectionTransform(handle, pos);
-    capturePointer(e);
+    beginEditorGesture({ kind: "selection", pointerId: e.pointerId, before }, e);
     return;
   }
   const pivot = rectCenter(target.bounds);
-  scaleToolDrag = {
-    items: target.items,
-    bounds: target.bounds,
-    snapshots: snapshotItems(target.items),
-    handle,
-    pivot,
-    startBounds: { ...target.bounds },
-    startAngle: Math.atan2(pos.y - pivot.y, pos.x - pivot.x),
-  };
-  capturePointer(e);
+  beginEditorGesture({
+    kind: "scale",
+    pointerId: e.pointerId,
+    drag: {
+      items: target.items,
+      bounds: target.bounds,
+      snapshots: snapshotItems(target.items),
+      handle,
+      pivot,
+      startBounds: { ...target.bounds },
+      startAngle: Math.atan2(pos.y - pivot.y, pos.x - pivot.x),
+    },
+  }, e);
 }
 
 function handleMoveLayerToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
   const layer = activeLayer();
   if (!layer || !layer.visible) return;
   if (!activeLayerIsEditable(true)) return;
+  const animationBefore = layer.animation ? structuredClone(layer.animation) : undefined;
   // Direct-drag A/B handles from the canvas.
   if (!keyframeArm && layer.animation?.enabled) {
     const cent = layerCentroid(layer);
@@ -4124,17 +4178,20 @@ function handleMoveLayerToolPointerDown({ event: e, point: pos }: ToolPointerInp
     const anim = ensureLayerAnimation(layer);
     anim.enabled = true;
   }
-  layerMoveDrag = {
+  beginEditorGesture({
+    kind: "layer-move",
     pointerId: e.pointerId,
-    layer,
-    dependents: clippedDependentsFor(layer),
-    lastPos: pos,
-    totalDx: 0,
-    totalDy: 0,
-    moved: false,
-    keyframe: keyframeArm,
-  };
-  capturePointer(e);
+    drag: {
+      layer,
+      dependents: clippedDependentsFor(layer),
+      lastPos: pos,
+      totalDx: 0,
+      totalDy: 0,
+      moved: false,
+      keyframe: keyframeArm,
+      animationBefore,
+    },
+  }, e);
 }
 
 function handlePerspectiveToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
@@ -4171,19 +4228,23 @@ function handlePerspectiveToolPointerDown({ event: e, point: pos }: ToolPointerI
     target = "horizon";
   }
   if (target !== null) {
-    perspectiveDrag = { target, pointerId: e.pointerId };
-    capturePointer(e);
+    beginEditorGesture({
+      kind: "perspective",
+      pointerId: e.pointerId,
+      target,
+      guide,
+      before: structuredClone(guide),
+    }, e);
   }
 }
 
 function handleFrameToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
-  subPanelDrag = { start: pos, end: pos };
-  capturePointer(e);
+  const shape = toolIs("balloon") ? pendingBalloonShape : pendingSubPanelShape;
+  beginEditorGesture({ kind: "frame", pointerId: e.pointerId, shape, start: pos, end: pos }, e);
 }
 
 function handleCutSubPanelToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
-  cutSubPanelDrag = { start: pos, end: pos };
-  capturePointer(e);
+  beginEditorGesture({ kind: "cut-subpanel", pointerId: e.pointerId, start: pos, end: pos }, e);
 }
 
 function handleTextToolPointerDown({ point: pos }: ToolPointerInput) {
@@ -4240,14 +4301,12 @@ function handlePaintPointerDown({ event: e, point: pos }: ToolPointerInput) {
   }
 
   if (toolIs("gradient")) {
-    gradientDrag = { start: pos, end: pos, pointerId: e.pointerId };
-    capturePointer(e);
+    beginEditorGesture({ kind: "gradient", pointerId: e.pointerId, start: pos, end: pos }, e);
     return;
   }
 
   if (isRadialBrushActive()) {
-    mangaRadialDrag = { center: pos, edge: pos, pointerId: e.pointerId };
-    capturePointer(e);
+    beginEditorGesture({ kind: "manga-radial", pointerId: e.pointerId, center: pos, edge: pos }, e);
     return;
   }
 
@@ -4310,9 +4369,8 @@ function handlePaintPointerDown({ event: e, point: pos }: ToolPointerInput) {
   // contact, even when tablet drivers reuse the same pointer id.
   if (suppressStrokeUntilPointerUp !== null) suppressStrokeUntilPointerUp = null;
 
+  beginEditorGesture({ kind: "paint", pointerId: e.pointerId }, e);
   drawing = true;
-  drawingPointerId = e.pointerId;
-  capturePointer(e);
   const c = activeContainer();
   liveStrokeLayer = layer;
   liveStrokeLayerIndex = c.getActiveLayerIndex();
@@ -4343,9 +4401,8 @@ function handlePaintPointerDown({ event: e, point: pos }: ToolPointerInput) {
     liveStroke.points[0],
     firstPressure
   )) {
-    drawing = false;
-    drawingPointerId = null;
-    clearLiveStrokeState();
+    const failedGesture = editorGestureSession.cancel(e.pointerId);
+    if (failedGesture) cancelEditorGesture(failedGesture);
   }
 }
 
@@ -4378,6 +4435,9 @@ document.addEventListener("pointerdown", (e) => {
 
 canvas.addEventListener("pointerdown", (e) => {
   if (playing) return;
+  const currentGesture = editorGestureSession.current;
+  if (currentGesture && currentGesture.pointerId !== e.pointerId) return;
+  if (currentGesture) cancelActiveEditorGesture();
   notePenPointerActivity(e);
   e.preventDefault();
   if (selectedReferenceImageId) selectReferenceImage(null);
@@ -4399,72 +4459,55 @@ canvas.addEventListener("pointerdown", (e) => {
   handlePaintPointerDown(input);
 });
 
-canvas.addEventListener("pointermove", (e) => {
-  notePenPointerActivity(e);
-  const hoverPos = canvasPos(e);
-  lastCanvasPointerPos = hoverPos;
-  if (activePanel().kind === "timelapse") lastTimelapseCursorPos = hoverPos;
-  updateEraserCursorOverlay(e.clientX, e.clientY);
-  if (e.buttons === 0) updateCanvasCursor(hoverPos);
-
-  if (panDrag) {
-    if (e.pointerId !== panDrag.pointerId) return;
-    viewport = {
-      ...viewport,
-      tx: panDrag.tx + e.clientX - panDrag.x,
-      ty: panDrag.ty + e.clientY - panDrag.y,
-    };
-    applyViewport();
-    e.preventDefault();
-    return;
-  }
-  if (perspectiveDrag) {
-    if (e.pointerId !== perspectiveDrag.pointerId) return;
-    const guide = activePerspectiveGuide();
-    if (guide) {
-      const pos = hoverPos;
-      if (perspectiveDrag.target === "radius") {
+function updateEditorGesture(gesture: EditorGesture, e: PointerEvent, pos: Vec2) {
+  switch (gesture.kind) {
+    case "pan":
+      viewport = {
+        ...viewport,
+        tx: gesture.tx + e.clientX - gesture.x,
+        ty: gesture.ty + e.clientY - gesture.y,
+      };
+      applyViewport();
+      e.preventDefault();
+      return;
+    case "perspective": {
+      const guide = gesture.guide;
+      if (gesture.target === "radius") {
         const c = guide.vps[0];
         if (c) guide.radius = Math.max(FISHEYE_MIN_RADIUS, Math.hypot(pos.x - c.x, pos.y - c.y));
-      } else if (perspectiveDrag.target === "horizon") {
+      } else if (gesture.target === "horizon") {
         const dy = pos.y - guide.horizonY;
         guide.horizonY = pos.y;
-        // Horizon-bound VPs ride along (the third VP in 3p stays put).
         const riders = guide.kind === "3p" ? guide.vps.slice(0, 2) : guide.vps;
         for (const vp of riders) vp.y += dy;
-      } else if (typeof perspectiveDrag.target === "string") {
-        // pole0..pole3 — spin and resize the fisheye lens together.
+      } else if (typeof gesture.target === "string") {
         const c = guide.vps[0];
         if (c) {
-          const k = +perspectiveDrag.target.slice(4);
+          const k = +gesture.target.slice(4);
           const d = Math.hypot(pos.x - c.x, pos.y - c.y);
           guide.radius = Math.max(FISHEYE_MIN_RADIUS, d);
-          if (d > 1e-3) {
-            guide.rotation = Math.atan2(pos.y - c.y, pos.x - c.x) - (k * Math.PI) / 2;
-          }
+          if (d > 1e-3) guide.rotation = Math.atan2(pos.y - c.y, pos.x - c.x) - (k * Math.PI) / 2;
         }
       } else {
-        const vp = guide.vps[perspectiveDrag.target];
+        const vp = guide.vps[gesture.target];
         if (vp) {
           vp.x = pos.x;
           vp.y = pos.y;
           if (guide.kind === "1p") guide.horizonY = pos.y;
         }
       }
+      e.preventDefault();
+      return;
     }
-    e.preventDefault();
-    return;
-  }
-  if (selectDrag) {
-    const pos = canvasPos(e);
-    if (selectDrag.kind === "text") {
-      selectDrag.ref.text.x = pos.x - selectDrag.offset.x;
-      selectDrag.ref.text.y = pos.y - selectDrag.offset.y;
-      bumpLayerVersion(selectDrag.ref.layer);
-    } else if (selectDrag.kind === "move" || selectDrag.kind === "tail") {
-      const drag = selectDrag;
-      const sp = findSubPanelById(activePanel(), drag.subPanelId);
-      if (sp) {
+    case "select": {
+      const drag = gesture.drag;
+      if (drag.kind === "text") {
+        drag.ref.text.x = pos.x - drag.offset.x;
+        drag.ref.text.y = pos.y - drag.offset.y;
+        bumpLayerVersion(drag.ref.layer);
+      } else {
+        const sp = findSubPanelById(activePanel(), drag.subPanelId);
+        if (!sp) return;
         if (drag.kind === "move") {
           const nx = pos.x - drag.offset.x;
           const ny = pos.y - drag.offset.y;
@@ -4473,117 +4516,119 @@ canvas.addEventListener("pointermove", (e) => {
           sp.tail = { x: pos.x, y: pos.y };
         }
       }
+      return;
     }
-    return;
-  }
-  if (selectionState) {
-    const pos = hoverPos;
-    if (selectionState.mode === "region" && selectionState.phase === "creating") {
-      const path = [...(selectionState.lassoPath ?? [])];
-      if (selectionState.tool === "lasso") {
-        path.push(pos);
-        selectionState = { ...selectionState, lassoPath: path, shape: { kind: "polygon", points: path } };
+    case "selection":
+      if (!selectionState) return;
+      if (selectionState.mode === "region" && selectionState.phase === "creating") {
+        const path = [...(selectionState.lassoPath ?? [])];
+        if (selectionState.tool === "lasso") {
+          path.push(pos);
+          selectionState = { ...selectionState, lassoPath: path, shape: { kind: "polygon", points: path } };
+        } else {
+          const start = path[0] ?? pos;
+          const shape = selectionState.tool === "ellipse"
+            ? ellipseFromDrag(start, pos, e.shiftKey, e.altKey)
+            : rectFromDrag(start, pos, e.shiftKey, e.altKey);
+          selectionState = { ...selectionState, lassoPath: [start, pos], shape };
+        }
+        return;
+      }
+      if (selectionState.phase === "moving" && selectionState.lastPos) {
+        const dx = pos.x - selectionState.lastPos.x;
+        const dy = pos.y - selectionState.lastPos.y;
+        if (selectionState.mode === "region") {
+          if (dx === 0 && dy === 0) return;
+          selectionState = {
+            ...selectionState,
+            shape: translateShape(selectionState.shape, dx, dy),
+            lastPos: pos,
+          };
+        } else {
+          moveMarqueeItems(selectionState.items, dx, dy);
+          bumpMarqueeItemLayers(selectionState.items);
+          selectionState = {
+            ...selectionState,
+            bounds: { ...selectionState.bounds, x: selectionState.bounds.x + dx, y: selectionState.bounds.y + dy },
+            shape: translateShape(selectionState.shape, dx, dy),
+            lastPos: pos,
+          };
+        }
+        return;
+      }
+      applyActiveSelectionTransform(pos, e.shiftKey, e.altKey);
+      return;
+    case "scale": {
+      if (e.buttons === 0) return;
+      const drag = gesture.drag;
+      const { handle, pivot, startBounds, snapshots, items } = drag;
+      if (handle === "rotate") {
+        const angleRad = Math.atan2(pos.y - pivot.y, pos.x - pivot.x) - drag.startAngle;
+        for (const snap of snapshots) {
+          restoreFromSnapshot(snap);
+          applyTransformToSnapshot(snap, pivot, 1, 1, angleRad, true);
+        }
       } else {
-        const start = path[0] ?? pos;
-        const shape = selectionState.tool === "ellipse"
-          ? ellipseFromDrag(start, pos, e.shiftKey, e.altKey)
-          : rectFromDrag(start, pos, e.shiftKey, e.altKey);
-        selectionState = { ...selectionState, lassoPath: [start, pos], shape };
+        const t = computeTransformFromHandle(handle, startBounds, pivot, pos, e.shiftKey, e.altKey);
+        for (const snap of snapshots) {
+          restoreFromSnapshot(snap);
+          applyTransformToSnapshot(snap, pivot, t.scaleX, t.scaleY, 0, false);
+        }
+      }
+      bumpMarqueeItemLayers(items);
+      drag.bounds = boundsFromItems(items, measureText);
+      if (selectionState?.mode === "object") {
+        selectionState = { ...selectionState, bounds: boundsFromItems(selectionState.items, measureText) };
       }
       return;
     }
-    if (selectionState.phase === "moving" && selectionState.lastPos) {
-      const dx = pos.x - selectionState.lastPos.x;
-      const dy = pos.y - selectionState.lastPos.y;
-      if (selectionState.mode === "region") {
-        if (dx === 0 && dy === 0) return;
-        selectionState = {
-          ...selectionState,
-          shape: translateShape(selectionState.shape, dx, dy),
-          lastPos: pos,
-        };
-      } else {
-        moveMarqueeItems(selectionState.items, dx, dy);
-        bumpMarqueeItemLayers(selectionState.items);
-        selectionState = {
-          ...selectionState,
-          bounds: { ...selectionState.bounds, x: selectionState.bounds.x + dx, y: selectionState.bounds.y + dy },
-          shape: translateShape(selectionState.shape, dx, dy),
-          lastPos: pos,
-        };
-      }
-      return;
-    }
-    if (applyActiveSelectionTransform(pos, e.shiftKey, e.altKey)) {
-      return;
-    }
-  }
-  if (toolIs("scale") && scaleToolDrag && e.buttons !== 0) {
-    const pos = canvasPos(e);
-    const { handle, pivot, startBounds, snapshots, items } = scaleToolDrag;
-    if (handle === "rotate") {
-      const angleRad = Math.atan2(pos.y - pivot.y, pos.x - pivot.x) - scaleToolDrag.startAngle;
-      for (const snap of snapshots) {
-        restoreFromSnapshot(snap);
-        applyTransformToSnapshot(snap, pivot, 1, 1, angleRad, true);
-      }
-    } else {
-      const t = computeTransformFromHandle(handle, startBounds, pivot, pos, e.shiftKey, e.altKey);
-      for (const snap of snapshots) {
-        restoreFromSnapshot(snap);
-        applyTransformToSnapshot(snap, pivot, t.scaleX, t.scaleY, 0, false);
-      }
-    }
-    bumpMarqueeItemLayers(items);
-    scaleToolDrag = { ...scaleToolDrag, bounds: boundsFromItems(items, measureText) };
-    if (selectionState?.mode === "object") {
-      selectionState = { ...selectionState, bounds: boundsFromItems(selectionState.items, measureText) };
-    }
-    return;
-  }
-  if (layerMoveDrag) {
-    const pos = canvasPos(e);
-    const dx = pos.x - layerMoveDrag.lastPos.x;
-    const dy = pos.y - layerMoveDrag.lastPos.y;
-    const layer = layerMoveDrag.layer;
-    if (layer && (dx !== 0 || dy !== 0)) {
-      if (layerMoveDrag.keyframe) {
-        const anim = ensureLayerAnimation(layer);
+    case "layer-move": {
+      const drag = gesture.drag;
+      const dx = pos.x - drag.lastPos.x;
+      const dy = pos.y - drag.lastPos.y;
+      if (dx === 0 && dy === 0) return;
+      if (drag.keyframe) {
+        const anim = ensureLayerAnimation(drag.layer);
         anim.enabled = true;
-        anim[layerMoveDrag.keyframe].x += dx;
-        anim[layerMoveDrag.keyframe].y += dy;
+        anim[drag.keyframe].x += dx;
+        anim[drag.keyframe].y += dy;
       } else {
-        layerMoveDrag.totalDx += dx;
-        layerMoveDrag.totalDy += dy;
+        drag.totalDx += dx;
+        drag.totalDy += dy;
       }
-      layerMoveDrag.lastPos = pos;
-      layerMoveDrag.moved = true;
+      drag.lastPos = pos;
+      drag.moved = true;
+      return;
     }
-    return;
+    case "frame":
+    case "cut-subpanel":
+    case "gradient":
+      gesture.end = pos;
+      return;
+    case "manga-radial":
+      gesture.edge = pos;
+      return;
+    case "paint": {
+      if (!drawing || !liveStroke) return;
+      const samples = e.getCoalescedEvents?.() ?? [];
+      for (const sample of samples.length ? samples : [e]) appendLiveStrokeSample(sample);
+      e.preventDefault();
+      return;
+    }
+    default:
+      return unreachableGesture(gesture);
   }
-  if (subPanelDrag) {
-    subPanelDrag.end = canvasPos(e);
-    return;
-  }
-  if (cutSubPanelDrag) {
-    cutSubPanelDrag.end = canvasPos(e);
-    return;
-  }
-  if (mangaRadialDrag) {
-    if (e.pointerId !== mangaRadialDrag.pointerId) return;
-    mangaRadialDrag.edge = canvasPos(e);
-    return;
-  }
-  if (gradientDrag) {
-    if (e.pointerId !== gradientDrag.pointerId) return;
-    gradientDrag.end = canvasPos(e);
-    return;
-  }
-  if (!drawing || !liveStroke) return;
-  if (drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
-  const samples = e.getCoalescedEvents?.() ?? [];
-  for (const sample of samples.length ? samples : [e]) appendLiveStrokeSample(sample);
-  e.preventDefault();
+}
+
+canvas.addEventListener("pointermove", (e) => {
+  notePenPointerActivity(e);
+  const hoverPos = canvasPos(e);
+  lastCanvasPointerPos = hoverPos;
+  if (activePanel().kind === "timelapse") lastTimelapseCursorPos = hoverPos;
+  updateEraserCursorOverlay(e.clientX, e.clientY);
+  if (e.buttons === 0) updateCanvasCursor(hoverPos);
+  const gesture = editorGestureSession.ownedBy(e.pointerId);
+  if (gesture) updateEditorGesture(gesture, e, hoverPos);
 });
 
 
@@ -4596,79 +4641,92 @@ canvas.addEventListener("pointerleave", () => {
   canvas.style.cursor = "";
 });
 
-window.addEventListener("pointerup", (e) => {
-  if (suppressStrokeUntilPointerUp === e.pointerId) suppressStrokeUntilPointerUp = null;
-  // Commit any in-progress brush stroke first. Pointer-specific drags (selection
-  // moving, scale, pan) must not steal the lift and orphan an uncommitted stroke.
-  if (drawing && (drawingPointerId === null || e.pointerId === drawingPointerId)) {
-    finishLiveStrokeSmoothing();
-    if (liveStroke) commitLiveStroke();
-    drawing = false;
-    drawingPointerId = null;
-    liveStrokeHasRealPressure = false;
-    liveStrokeSyntheticPressureCount = 0;
-    clearLiveStrokeState();
-  }
-  if (panDrag) {
-    if (e.pointerId === panDrag.pointerId) {
-      panDrag = null;
+function finishEditorGesture(gesture: EditorGesture, e: PointerEvent) {
+  releaseCanvasPointerCapture(gesture.pointerId);
+  switch (gesture.kind) {
+    case "paint":
+      finishLiveStrokeSmoothing();
+      if (liveStroke) commitLiveStroke();
+      resetLiveDrawingState();
+      return;
+    case "pan":
       stageArea.classList.remove("panning");
-    }
-    return;
-  }
-  if (perspectiveDrag) {
-    perspectiveDrag = null;
-    // Guides aren't layer content — no layer bumps needed.
-    commitHistory([]);
-    return;
-  }
-  if (selectDrag) {
-    const drag = selectDrag;
-    selectDrag = null;
-    // Second click on already-selected text (no meaningful drag) opens the
-    // inline editor — same expectation as the text tool.
-    if (drag.kind === "text") {
-      const pos = canvasPos(e);
-      const moved = Math.hypot(pos.x - drag.origin.x, pos.y - drag.origin.y);
-      const clickSlop = 4 / Math.max(0.001, viewport.scale);
-      if (moved < clickSlop) {
-        // Snap back in case a sub-pixel nudge slipped through.
-        drag.ref.text.x = drag.origin.x - drag.offset.x;
-        drag.ref.text.y = drag.origin.y - drag.offset.y;
-        if (drag.alreadySelected) {
-          openTextInputAt({ x: drag.ref.text.x, y: drag.ref.text.y }, drag.ref);
+      return;
+    case "perspective":
+      commitHistory([]);
+      return;
+    case "select": {
+      const drag = gesture.drag;
+      // Second click on already-selected text (no meaningful drag) opens the
+      // inline editor — same expectation as the text tool.
+      if (drag.kind === "text") {
+        const pos = canvasPos(e);
+        const moved = Math.hypot(pos.x - drag.origin.x, pos.y - drag.origin.y);
+        const clickSlop = 4 / Math.max(0.001, viewport.scale);
+        if (moved < clickSlop) {
+          drag.ref.text.x = drag.origin.x - drag.offset.x;
+          drag.ref.text.y = drag.origin.y - drag.offset.y;
+          if (drag.alreadySelected) {
+            openTextInputAt({ x: drag.ref.text.x, y: drag.ref.text.y }, drag.ref);
+          }
+          buildInspector();
+          return;
         }
+        commitHistory([drag.ref.layer]);
         buildInspector();
         return;
       }
-      commitHistory([drag.ref.layer]);
+      commitHistory([]);
       buildInspector();
       return;
     }
-    commitHistory([]);
-    buildInspector();
-    return;
-  }
-  if (selectionState) {
-    if (selectionState.mode === "region" && selectionState.phase === "creating") {
-      let shape = selectionState.shape;
-      if (selectionState.tool === "lasso" && selectionState.lassoPath) {
-        shape = { kind: "polygon", points: simplifyLassoPath(selectionState.lassoPath) };
-      }
-      if (!shapeMeetsMinSize(shape)) {
-        clearSelection();
+    case "selection":
+      if (!selectionState) return;
+      if (selectionState.mode === "region" && selectionState.phase === "creating") {
+        let shape = selectionState.shape;
+        if (selectionState.tool === "lasso" && selectionState.lassoPath) {
+          shape = { kind: "polygon", points: simplifyLassoPath(selectionState.lassoPath) };
+        }
+        if (!shapeMeetsMinSize(shape)) {
+          clearSelection();
+          buildEditContext();
+          return;
+        }
+        selectionState = { mode: "region", phase: "idle", shape, tool: selectionState.tool };
         buildEditContext();
+        setStatus(activeLayer()?.kind === "raster"
+          ? "Selection active · drag to move pixels · handles scale/rotate · ⌥-drag moves boundary · Esc to clear"
+          : "Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
         return;
       }
-      selectionState = { mode: "region", phase: "idle", shape, tool: selectionState.tool };
-      buildEditContext();
-      setStatus(activeLayer()?.kind === "raster"
-        ? "Selection active · drag to move pixels · handles scale/rotate · ⌥-drag moves boundary · Esc to clear"
-        : "Selection active · drag inside to move boundary · paint is clipped · Esc to clear");
-      return;
-    }
-    if (selectionState.phase === "moving") {
-      if (selectionState.mode === "object") {
+      if (selectionState.phase === "moving") {
+        if (selectionState.mode === "object") {
+          const touchedLayers = [...new Set(
+            selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+          )];
+          syncRasterMarqueeItems(selectionState.items);
+          transformSnapshots = null;
+          selectionState = {
+            mode: "object",
+            phase: "idle",
+            shape: selectionState.shape,
+            bounds: selectionState.bounds,
+            items: selectionState.items,
+          };
+          commitHistory(touchedLayers);
+        } else {
+          selectionState = {
+            mode: "region",
+            phase: "idle",
+            shape: selectionState.shape,
+            tool: selectionState.tool,
+          };
+        }
+        buildEditContext();
+        updateCanvasCursor(lastCanvasPointerPos ?? undefined);
+        return;
+      }
+      if (selectionState.mode === "object" && selectionState.phase === "transforming") {
         const touchedLayers = [...new Set(
           selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
         )];
@@ -4678,193 +4736,197 @@ window.addEventListener("pointerup", (e) => {
           mode: "object",
           phase: "idle",
           shape: selectionState.shape,
-          bounds: selectionState.bounds,
+          bounds: boundsFromItems(selectionState.items, measureText),
           items: selectionState.items,
         };
         commitHistory(touchedLayers);
-      } else {
-        selectionState = {
-          mode: "region",
-          phase: "idle",
-          shape: selectionState.shape,
-          tool: selectionState.tool,
-        };
-      }
-      buildEditContext();
-      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
-      return;
-    }
-    if (selectionState.mode === "object" && selectionState.phase === "transforming") {
-      const touchedLayers = [...new Set(
-        selectionState.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
-      )];
-      syncRasterMarqueeItems(selectionState.items);
-      transformSnapshots = null;
-      selectionState = {
-        mode: "object",
-        phase: "idle",
-        shape: selectionState.shape,
-        bounds: boundsFromItems(selectionState.items, measureText),
-        items: selectionState.items,
-      };
-      commitHistory(touchedLayers);
-      buildEditContext();
-      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
-      return;
-    }
-  }
-  if (toolIs("scale") && scaleToolDrag) {
-    const touchedLayers = [...new Set(
-      scaleToolDrag.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
-    )];
-    syncRasterMarqueeItems(scaleToolDrag.items);
-    scaleToolDrag = null;
-    commitHistory(touchedLayers);
-    updateCanvasCursor(lastCanvasPointerPos ?? undefined);
-    return;
-  }
-  if (layerMoveDrag) {
-    const drag = layerMoveDrag;
-    const moved = drag.moved;
-    const wasKeyframe = !!drag.keyframe;
-    if (moved && !wasKeyframe) {
-      const layersToMove = [drag.layer, ...drag.dependents];
-      if (layersToMove.some((layer) => layer.kind === "raster" && !getRasterCanvas(layer))) {
-        showToast("Layer still loading", "info");
-        layerMoveDrag = null;
+        buildEditContext();
+        updateCanvasCursor(lastCanvasPointerPos ?? undefined);
         return;
       }
-      for (const layer of layersToMove) moveLayerContents(layer, drag.totalDx, drag.totalDy);
+      return;
+    case "scale": {
+      const scaleToolDrag = gesture.drag;
+      const touchedLayers = [...new Set(
+        scaleToolDrag.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
+      )];
+      syncRasterMarqueeItems(scaleToolDrag.items);
+      commitHistory(touchedLayers);
+      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
+      return;
     }
-    layerMoveDrag = null;
-    if (moved) {
-      commitHistory(wasKeyframe ? [] : [drag.layer, ...drag.dependents]);
-      if (wasKeyframe) keyframeArm = null;
-      buildTimeline();
-      buildLayers();
-      buildInspector();
-      buildBrushBar();
+    case "layer-move": {
+      const drag = gesture.drag;
+      const moved = drag.moved;
+      const wasKeyframe = !!drag.keyframe;
+      if (moved && !wasKeyframe) {
+        const layersToMove = [drag.layer, ...drag.dependents];
+        if (layersToMove.some((layer) => layer.kind === "raster" && !getRasterCanvas(layer))) {
+          showToast("Layer still loading", "info");
+          return;
+        }
+        for (const layer of layersToMove) moveLayerContents(layer, drag.totalDx, drag.totalDy);
+      }
+      if (moved) {
+        commitHistory(wasKeyframe ? [] : [drag.layer, ...drag.dependents]);
+        if (wasKeyframe) keyframeArm = null;
+        buildTimeline();
+        buildLayers();
+        buildInspector();
+        buildBrushBar();
+      }
+      return;
     }
-    return;
-  }
-  if (subPanelDrag) {
-    const { start, end } = subPanelDrag;
-    subPanelDrag = null;
-    const bx = Math.min(start.x, end.x);
-    const by = Math.min(start.y, end.y);
-    const bw = Math.abs(end.x - start.x);
-    const bh = Math.abs(end.y - start.y);
-    if (bw > 20 && bh > 20) {
-      const shape = toolIs("balloon") ? pendingBalloonShape : pendingSubPanelShape;
-      createSubPanel({ x: bx, y: by, w: bw, h: bh }, shape);
+    case "frame": {
+      const { start, end } = gesture;
+      const bx = Math.min(start.x, end.x);
+      const by = Math.min(start.y, end.y);
+      const bw = Math.abs(end.x - start.x);
+      const bh = Math.abs(end.y - start.y);
+      if (bw > 20 && bh > 20) {
+        createSubPanel({ x: bx, y: by, w: bw, h: bh }, gesture.shape);
+      }
+      return;
     }
-    return;
-  }
-  if (mangaRadialDrag) {
-    if (e.pointerId !== mangaRadialDrag.pointerId) return;
-    const { center, edge } = mangaRadialDrag;
-    mangaRadialDrag = null;
-    commitMangaRadialStroke(center, edge);
-    return;
-  }
-  if (gradientDrag) {
-    if (e.pointerId !== gradientDrag.pointerId) return;
-    const { start, end } = gradientDrag;
-    gradientDrag = null;
-    commitGradient(start, end);
-    return;
-  }
-  if (cutSubPanelDrag) {
-    const { start, end } = cutSubPanelDrag;
-    cutSubPanelDrag = null;
-    if (Math.hypot(end.x - start.x, end.y - start.y) > 8) {
-      applyCutSubPanel(start, end);
+    case "manga-radial": {
+      const { center, edge } = gesture;
+      commitMangaRadialStroke(center, edge);
+      return;
     }
-    return;
+    case "gradient": {
+      const { start, end } = gesture;
+      commitGradient(start, end);
+      return;
+    }
+    case "cut-subpanel": {
+      const { start, end } = gesture;
+      if (Math.hypot(end.x - start.x, end.y - start.y) > 8) {
+        applyCutSubPanel(start, end);
+      }
+      return;
+    }
+    default:
+      return unreachableGesture(gesture);
   }
-  if (drawing && drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
-  if (drawing && liveStroke) {
-    finishLiveStrokeSmoothing();
-    commitLiveStroke();
-  }
+}
+
+function resetLiveDrawingState() {
   drawing = false;
-  drawingPointerId = null;
   liveStrokeHasRealPressure = false;
   liveStrokeSyntheticPressureCount = 0;
   clearLiveStrokeState();
+}
+
+window.addEventListener("pointerup", (e) => {
+  if (suppressStrokeUntilPointerUp === e.pointerId) suppressStrokeUntilPointerUp = null;
+  const gesture = editorGestureSession.finish(e.pointerId);
+  if (gesture) finishEditorGesture(gesture, e);
 });
+
+function cancelEditorGesture(gesture: EditorGesture) {
+  releaseCanvasPointerCapture(gesture.pointerId);
+  switch (gesture.kind) {
+    case "paint":
+      if (liveRasterStroke) rollbackLiveRasterStroke();
+      resetLiveDrawingState();
+      break;
+    case "pan":
+      stageArea.classList.remove("panning");
+      break;
+    case "perspective":
+      Object.assign(gesture.guide, structuredClone(gesture.before));
+      break;
+    case "select": {
+      const drag = gesture.drag;
+      if (drag.kind === "text") {
+        drag.ref.text.x = drag.origin.x - drag.offset.x;
+        drag.ref.text.y = drag.origin.y - drag.offset.y;
+        bumpLayerVersion(drag.ref.layer);
+      } else {
+        const sp = findSubPanelById(activePanel(), drag.subPanelId);
+        if (sp && drag.kind === "move") {
+          translateSubPanel(sp, drag.originalPosition.x - sp.bounds.x, drag.originalPosition.y - sp.bounds.y);
+        } else if (sp && drag.kind === "tail") {
+          sp.tail = { ...drag.originalTail };
+        }
+      }
+      buildInspector();
+      break;
+    }
+    case "selection":
+      if (selectionState?.mode === "object" && transformSnapshots) {
+        const activeObject = selectionState;
+        for (const snapshot of transformSnapshots) restoreFromSnapshot(snapshot);
+        bumpMarqueeItemLayers(activeObject.items);
+        selectionState = gesture.before?.mode === "region"
+          ? {
+              mode: "object",
+              phase: "idle",
+              shape: gesture.before.shape,
+              bounds: boundsFromItems(activeObject.items, measureText),
+              items: activeObject.items,
+            }
+          : gesture.before;
+      } else {
+        selectionState = gesture.before;
+      }
+      transformSnapshots = null;
+      buildEditContext();
+      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
+      break;
+    case "scale":
+      for (const snapshot of gesture.drag.snapshots) restoreFromSnapshot(snapshot);
+      bumpMarqueeItemLayers(gesture.drag.items);
+      updateCanvasCursor(lastCanvasPointerPos ?? undefined);
+      break;
+    case "layer-move":
+      if (gesture.drag.keyframe) {
+        gesture.drag.layer.animation = gesture.drag.animationBefore
+          ? structuredClone(gesture.drag.animationBefore)
+          : undefined;
+      }
+      keyframeArm = null;
+      break;
+    case "frame":
+    case "cut-subpanel":
+    case "manga-radial":
+    case "gradient":
+      break;
+    default:
+      return unreachableGesture(gesture);
+  }
+  requestLoopFrame();
+}
+
+function cancelActiveEditorGesture(suppressPaintUntilLift = false): boolean {
+  const gesture = editorGestureSession.clear();
+  if (!gesture) return false;
+  if (suppressPaintUntilLift && gesture.kind === "paint") {
+    suppressStrokeUntilPointerUp = gesture.pointerId;
+  }
+  cancelEditorGesture(gesture);
+  return gesture.kind === "paint";
+}
 
 window.addEventListener("pointercancel", (e) => {
   if (suppressStrokeUntilPointerUp === e.pointerId) suppressStrokeUntilPointerUp = null;
-  if (perspectiveDrag && e.pointerId === perspectiveDrag.pointerId) {
-    perspectiveDrag = null;
-    commitHistory([]);
-    return;
-  }
-  if (selectionState?.mode === "object" &&
-      selectionState.phase !== "idle" &&
-      transformSnapshots) {
-    for (const snapshot of transformSnapshots) restoreFromSnapshot(snapshot);
-    bumpMarqueeItemLayers(selectionState.items);
-    transformSnapshots = null;
-    selectionState = {
-      mode: "object",
-      phase: "idle",
-      shape: selectionState.shape,
-      bounds: boundsFromItems(selectionState.items, measureText),
-      items: selectionState.items,
-    };
-    buildEditContext();
-    return;
-  }
-  if (scaleToolDrag) {
-    for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
-    bumpMarqueeItemLayers(scaleToolDrag.items);
-    scaleToolDrag = null;
-    return;
-  }
-  if (cutSubPanelDrag) {
-    cutSubPanelDrag = null;
-    return;
-  }
-  if (subPanelDrag) {
-    subPanelDrag = null;
-    return;
-  }
-  if (mangaRadialDrag) {
-    mangaRadialDrag = null;
-    return;
-  }
-  if (gradientDrag) {
-    gradientDrag = null;
-    return;
-  }
-  if (!drawing) return;
-  if (drawingPointerId !== null && e.pointerId !== drawingPointerId) return;
-  if (liveRasterStroke) {
-    rollbackLiveRasterStroke();
-  } else {
-    finishLiveStrokeSmoothing();
-    if (liveStroke) commitLiveStroke();
-  }
-  drawing = false;
-  drawingPointerId = null;
-  liveStrokeHasRealPressure = false;
-  liveStrokeSyntheticPressureCount = 0;
-  clearLiveStrokeState();
+  const gesture = editorGestureSession.cancel(e.pointerId);
+  if (gesture) cancelEditorGesture(gesture);
+});
+
+canvas.addEventListener("lostpointercapture", (e) => {
+  const gesture = editorGestureSession.cancel(e.pointerId);
+  if (gesture) cancelEditorGesture(gesture);
+});
+
+window.addEventListener("blur", () => {
+  cancelActiveEditorGesture();
 });
 
 function hasLiveEditorInteraction(): boolean {
   return drawing ||
     !!liveStroke ||
-    !!selectDrag ||
-    !!layerMoveDrag ||
-    !!subPanelDrag ||
-    !!cutSubPanelDrag ||
-    !!mangaRadialDrag ||
-    !!gradientDrag ||
-    !!perspectiveDrag ||
-    !!scaleToolDrag ||
+    editorGestureSession.current !== null ||
     selectionState?.phase === "creating" ||
     selectionState?.phase === "moving" ||
     selectionState?.phase === "transforming";
@@ -5523,7 +5585,7 @@ function drawLiveStrokeOverlay() {
 
 function drawStabilizerLeashOverlay(targetCtx: CanvasRenderingContext2D) {
   if (!drawing || !liveSmoothingSession || liveSmoothingSession.settings.mode !== "stabilizer") return;
-  if (playing || panDrag || spacePanDown) return;
+  if (playing || activeGesture("pan") || spacePanDown) return;
   const raw = liveSmoothingSession.lastRaw.point;
   const output = applyPerspectiveSnap(liveSmoothingSession.lastOutput.point);
   if (Math.hypot(raw.x - output.x, raw.y - output.y) < 1) return;
@@ -5567,7 +5629,7 @@ function updateEraserCursorOverlay(clientX: number, clientY: number) {
   const erasing = drawing && liveStroke &&
     isEraseBrushKey(liveStroke.brush, liveStroke.erase === true);
   const hovering = !drawing && isEraseToolActive();
-  if ((!erasing && !hovering) || playing || panDrag || spacePanDown) {
+  if ((!erasing && !hovering) || playing || activeGesture("pan") || spacePanDown) {
     hideEraserCursorOverlay();
     return;
   }
@@ -5797,8 +5859,9 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
 
 function drawScaleToolOverlay(ctx: CanvasRenderingContext2D) {
   if (!toolIs("scale")) return;
-  const target = scaleToolDrag
-    ? { bounds: scaleToolDrag.bounds }
+  const scaleGesture = activeGesture("scale");
+  const target = scaleGesture
+    ? { bounds: scaleGesture.drag.bounds }
     : scaleToolItems();
   if (!target) return;
   const b = target.bounds;
@@ -6024,8 +6087,9 @@ function loop(now: number) {
     }
 
     // Sub-panel drag preview
-    if (subPanelDrag) {
-      const { start, end } = subPanelDrag;
+    const frameGesture = activeGesture("frame");
+    if (frameGesture) {
+      const { start, end } = frameGesture;
       ctx.save();
       ctx.strokeStyle = "rgba(255,125,87,0.9)";
       ctx.setLineDash([10, 6]);
@@ -6038,8 +6102,9 @@ function loop(now: number) {
       );
       ctx.restore();
     }
-    if (cutSubPanelDrag) {
-      const { start, end } = cutSubPanelDrag;
+    const cutGesture = activeGesture("cut-subpanel");
+    if (cutGesture) {
+      const { start, end } = cutGesture;
       ctx.save();
       ctx.strokeStyle = "rgba(255,125,87,0.95)";
       ctx.setLineDash([6, 4]);
@@ -6056,8 +6121,9 @@ function loop(now: number) {
       ctx.fill();
       ctx.restore();
     }
-    if (mangaRadialDrag) {
-      const { center, edge } = mangaRadialDrag;
+    const radialGesture = activeGesture("manga-radial");
+    if (radialGesture) {
+      const { center, edge } = radialGesture;
       const radius = Math.hypot(edge.x - center.x, edge.y - center.y);
       ctx.save();
       ctx.strokeStyle = "rgba(255,125,87,0.9)";
@@ -6092,8 +6158,9 @@ function loop(now: number) {
       ctx.fill();
       ctx.restore();
     }
-    if (gradientDrag) {
-      const { start, end } = gradientDrag;
+    const gradientGesture = activeGesture("gradient");
+    if (gradientGesture) {
+      const { start, end } = gradientGesture;
       const radius = Math.hypot(end.x - start.x, end.y - start.y);
       ctx.save();
       ctx.strokeStyle = "rgba(255,125,87,0.95)";
@@ -6284,6 +6351,7 @@ function buildBrushBar() {
     toneToolPrevLayerIndex = null;
   };
   const switchTo = (nextTool: ActiveTool) => {
+    cancelActiveEditorGesture();
     const hadTone = toneToolActive;
     // Gradient is a valid tone-layer operation. Keep the Tone shortcut's
     // active layer selected instead of restoring the prior draw layer.
@@ -6294,12 +6362,6 @@ function buildBrushBar() {
       activeTool = nextTool;
     }
     rememberRecentTool(activeTool);
-    selectDrag = null;
-    if (scaleToolDrag) {
-      for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
-      bumpMarqueeItemLayers(scaleToolDrag.items);
-      scaleToolDrag = null;
-    }
     if (hadTone) { buildLayers(); buildInspector(); }
     buildBrushBar();
     buildEditContext();
@@ -11529,6 +11591,7 @@ async function startAudioPreview(fromMs: number) {
 }
 
 async function startPlayback(fromMs = playheadMs) {
+  cancelActiveEditorGesture();
   playing = true;
   lastPlaybackRenderPanelIndex = -1;
   lastPlaybackRenderSeqTick = -1;
@@ -13001,6 +13064,7 @@ function setBoardCardsVisible(visible: boolean, animate = false) {
 }
 
 function setBoardMoveTool(active: boolean) {
+  cancelActiveEditorGesture();
   boardMoveToolActive = active;
   document.body.classList.toggle("board-move-tool", active);
   const button = $("board-move-canvas");
@@ -13194,6 +13258,7 @@ function resetProjectSession(
   serialized?: string,
   opts?: { preserveCamera?: boolean }
 ) {
+  cancelActiveEditorGesture();
   applySanitizedGroups(next);
   project = next;
   autosaveSerialization.reset(project, serialized);
@@ -14012,7 +14077,11 @@ stageArea.addEventListener("drop", (event) => {
 window.addEventListener("keyup", (e) => {
   if (e.key !== " " && e.key !== "Spacebar" && e.code !== "Space") return;
   spacePanDown = false;
-  panDrag = null;
+  const pan = activeGesture("pan");
+  if (pan) {
+    editorGestureSession.cancel(pan.pointerId);
+    cancelEditorGesture(pan);
+  }
   stageArea.classList.remove("space-pan", "panning");
 });
 

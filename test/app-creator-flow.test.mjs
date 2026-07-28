@@ -7,7 +7,7 @@ import { createServer as createViteServer } from "vite";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("actual app routes drawing, selection, and frame tools through creator flow", async () => {
+test("actual app routes and cancels creator gestures without stale state", async () => {
   const vite = await createViteServer({
     root,
     logLevel: "silent",
@@ -87,6 +87,91 @@ test("actual app routes drawing, selection, and frame tools through creator flow
     await redo.click();
     await page.waitForFunction(() => !(document.querySelector("#undo-btn"))?.disabled);
     assert.equal(await redo.isDisabled(), true);
+
+    // Cancelling a paint contact must discard it instead of creating a second
+    // history entry. One undo should therefore still remove the original line.
+    await page.dispatchEvent("#stage", "pointerdown", {
+      ...pen,
+      pointerId: 44,
+      buttons: 1,
+      clientX: start.x + 10,
+      clientY: start.y + 10,
+    });
+    await page.dispatchEvent("#stage", "pointermove", {
+      ...pen,
+      pointerId: 44,
+      button: -1,
+      buttons: 1,
+      clientX: end.x + 10,
+      clientY: end.y + 10,
+    });
+    await page.dispatchEvent("body", "pointercancel", {
+      ...pen,
+      pointerId: 44,
+      buttons: 0,
+      clientX: end.x + 10,
+      clientY: end.y + 10,
+    });
+    await undo.click();
+    await page.waitForFunction(() => (document.querySelector("#undo-btn"))?.disabled);
+    await redo.click();
+    await page.waitForFunction(() => !(document.querySelector("#undo-btn"))?.disabled);
+
+    // Switching tools mid-contact uses the same cancellation path and must not
+    // leave a partial stroke behind or let the later pointerup commit it.
+    await page.dispatchEvent("#stage", "pointerdown", {
+      ...pen,
+      pointerId: 46,
+      buttons: 1,
+      clientX: start.x - 10,
+      clientY: start.y + 8,
+    });
+    await page.dispatchEvent("#stage", "pointermove", {
+      ...pen,
+      pointerId: 46,
+      button: -1,
+      buttons: 1,
+      clientX: end.x - 10,
+      clientY: end.y + 8,
+    });
+    await marquee.click();
+    await page.dispatchEvent("body", "pointerup", {
+      ...pen,
+      pointerId: 46,
+      buttons: 0,
+      clientX: end.x - 10,
+      clientY: end.y + 8,
+    });
+    await classic.click();
+    await undo.click();
+    await page.waitForFunction(() => (document.querySelector("#undo-btn"))?.disabled);
+    await redo.click();
+    await page.waitForFunction(() => !(document.querySelector("#undo-btn"))?.disabled);
+
+    // A cancelled viewport pan must always drop its visual/interaction state.
+    const mouse = { pointerId: 45, pointerType: "mouse", isPrimary: true, pressure: 0 };
+    await page.dispatchEvent("#stage", "pointerdown", {
+      ...mouse,
+      button: 1,
+      buttons: 4,
+      clientX: start.x,
+      clientY: start.y,
+    });
+    await page.dispatchEvent("#stage", "pointermove", {
+      ...mouse,
+      button: -1,
+      buttons: 4,
+      clientX: start.x + 12,
+      clientY: start.y + 8,
+    });
+    await page.dispatchEvent("body", "pointercancel", {
+      ...mouse,
+      button: 1,
+      buttons: 0,
+      clientX: start.x + 12,
+      clientY: start.y + 8,
+    });
+    assert.equal(await page.locator("#stage-area").evaluate((element) => element.classList.contains("panning")), false);
 
     await marquee.click();
     await page.dispatchEvent("#stage", "pointerdown", {
