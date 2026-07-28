@@ -130,6 +130,18 @@ export class PointerDeviceTracker {
     if (deviceId !== null) this.mouseDeviceIds.add(deviceId);
   }
 
+  /** Pointer ids may be reused by a different physical device after contact
+   * ends. Keep durable device ids, but release the per-contact fallback. */
+  releasePointer(pointerId: number): void {
+    this.penPointerIds.delete(pointerId);
+    this.mousePointerIds.delete(pointerId);
+  }
+
+  releaseAllPointers(): void {
+    this.penPointerIds.clear();
+    this.mousePointerIds.clear();
+  }
+
   hasSeenPen(): boolean {
     return this.sawPen;
   }

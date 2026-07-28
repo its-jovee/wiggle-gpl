@@ -2061,8 +2061,13 @@ function commitLiveStroke() {
         syncRasterToLayer(liveStrokeLayer);
       } else {
         const baseline = liveRasterStroke.before.toDataURL("image/png");
-        installRasterTimelapseImage(baseline, liveRasterStroke.before);
-        appendRasterTimelapseStroke(liveStrokeLayer, liveStroke, liveRasterStroke.strokeIndex, baseline);
+        const baselineChanged = appendRasterTimelapseStroke(
+          liveStrokeLayer,
+          liveStroke,
+          liveRasterStroke.strokeIndex,
+          baseline,
+        );
+        if (baselineChanged) installRasterTimelapseImage(baseline, liveRasterStroke.before);
         syncRasterToLayer(liveStrokeLayer, "none");
       }
       commitHistory([liveStrokeLayer]);
@@ -2150,8 +2155,8 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
       syncRasterToLayer(layer);
     } else {
       const baseline = before.toDataURL("image/png");
-      installRasterTimelapseImage(baseline, before);
-      appendRasterTimelapseStroke(layer, stroke, strokeIndex, baseline);
+      const baselineChanged = appendRasterTimelapseStroke(layer, stroke, strokeIndex, baseline);
+      if (baselineChanged) installRasterTimelapseImage(baseline, before);
       syncRasterToLayer(layer, "none");
     }
   } else {
@@ -4821,6 +4826,7 @@ window.addEventListener("pointerup", (e) => {
   if (suppressStrokeUntilPointerUp === e.pointerId) suppressStrokeUntilPointerUp = null;
   const gesture = editorGestureSession.finish(e.pointerId);
   if (gesture) finishEditorGesture(gesture, e);
+  pointerDevices.releasePointer(e.pointerId);
 });
 
 function cancelEditorGesture(gesture: EditorGesture) {
@@ -4912,6 +4918,7 @@ window.addEventListener("pointercancel", (e) => {
   if (suppressStrokeUntilPointerUp === e.pointerId) suppressStrokeUntilPointerUp = null;
   const gesture = editorGestureSession.cancel(e.pointerId);
   if (gesture) cancelEditorGesture(gesture);
+  pointerDevices.releasePointer(e.pointerId);
 });
 
 canvas.addEventListener("lostpointercapture", (e) => {
@@ -4921,6 +4928,7 @@ canvas.addEventListener("lostpointercapture", (e) => {
 
 window.addEventListener("blur", () => {
   cancelActiveEditorGesture();
+  pointerDevices.releaseAllPointers();
 });
 
 function hasLiveEditorInteraction(): boolean {

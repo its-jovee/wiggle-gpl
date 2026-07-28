@@ -160,6 +160,27 @@ test("validateProject rejects oversized raster data", () => {
   assert.match(result.errors.join(" "), /exceeds max/);
 });
 
+test("validateProject reports malformed timelapse entries without throwing", () => {
+  const project = baseProject();
+  const raster = types.newLayer("Raster", "raster");
+  raster.raster.timelapse = {
+    baseline: raster.raster.data,
+    events: [null, { kind: "stroke", strokeIndex: 0, stroke: {} }],
+  };
+  project.panels[0].layers = [raster];
+  project.panels.push({
+    ...types.newPanel(),
+    kind: "timelapse",
+    timelapse: { sourceId: project.panels[0].id, camera: [null] },
+  });
+
+  const result = validation.validateProject(project);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /raster timelapse event 1 is invalid/);
+  assert.match(result.errors.join("; "), /raster timelapse stroke 2 exceeds point limit/);
+  assert.match(result.errors.join("; "), /timelapse camera keyframe 1 is invalid/);
+});
+
 test("raster data URL survives a JSON round-trip byte-for-byte", () => {
   const raster = types.newLayer("Raster", "raster");
   const project = types.migrateProject({

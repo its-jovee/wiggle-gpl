@@ -26,6 +26,7 @@ execFileSync("npx", [
 const camera = await import(`${outDir}/timelapseCamera.js`);
 const raster = await import(`${outDir}/rasterTimelapse.js`);
 const types = await import(`${outDir}/types.js`);
+const validation = await import(`${outDir}/projectValidation.js`);
 
 const stroke = (length, color = "#000000") => ({
   brush: "pencil",
@@ -68,6 +69,28 @@ test("camera upsert replaces a keyframe at the same edit time", () => {
   assert.equal(replaced[0].zoom, 3);
 });
 
+test("camera upsert stays within the persisted keyframe limit", () => {
+  const frames = Array.from(
+    { length: validation.MAX_TIMELAPSE_CAMERA_KEYFRAMES },
+    (_, index) => ({
+      progress: index / (validation.MAX_TIMELAPSE_CAMERA_KEYFRAMES - 1),
+      centerX: 100,
+      centerY: 50,
+      zoom: 1,
+      easing: "linear",
+    }),
+  );
+  const capped = camera.upsertTimelapseCameraKeyframe(frames, {
+    progress: 0.12345,
+    centerX: 100,
+    centerY: 50,
+    zoom: 2,
+    easing: "easeInOut",
+  }, 200, 100, 0);
+  assert.equal(capped.length, validation.MAX_TIMELAPSE_CAMERA_KEYFRAMES);
+  assert.equal(capped.some((frame) => frame.progress === 0.12345), false);
+});
+
 test("legacy raster pixels become a baseline and later edits append in order", () => {
   const layer = {
     id: "r1", name: "Raster", visible: true, opacity: 1, kind: "raster",
@@ -89,6 +112,35 @@ test("legacy raster pixels become a baseline and later edits append in order", (
     "stroke", "checkpoint", "stroke",
   ]);
   assert.equal(raster.rasterTimelapseTotalWeight(layer, (item) => item.points[1].x), 16);
+});
+
+test("raster journals roll their baseline before exceeding the persisted event limit", () => {
+  const layer = {
+    id: "r-limit", name: "Raster", visible: true, opacity: 1, kind: "raster",
+    strokes: [], fills: [],
+    raster: {
+      data: "data:image/png;base64,CURRENT",
+      width: 100,
+      height: 100,
+      timelapse: {
+        baseline: "data:image/png;base64,OLD",
+        events: Array.from(
+          { length: validation.MAX_RASTER_TIMELAPSE_EVENTS },
+          () => ({ kind: "checkpoint", data: "data:image/png;base64,STEP" }),
+        ),
+      },
+    },
+  };
+  const baselineChanged = raster.appendRasterTimelapseStroke(
+    layer,
+    stroke(4),
+    22,
+    "data:image/png;base64,CURRENT",
+  );
+  assert.equal(baselineChanged, true);
+  assert.equal(layer.raster.timelapse.baseline, "data:image/png;base64,CURRENT");
+  assert.equal(layer.raster.timelapse.events.length, 1);
+  assert.equal(layer.raster.timelapse.events[0].kind, "stroke");
 });
 
 test("camera tracks and raster journals survive project migration", () => {

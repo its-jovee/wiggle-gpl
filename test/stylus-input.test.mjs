@@ -162,6 +162,17 @@ test("pointer tracker does not let a mouse observation steal a known pen id", ()
   assert.equal(tracker.isKnownMouse({ pointerType: "mouse", pointerId: 3 }), false);
 });
 
+test("pointer tracker releases fallback ids so browsers may reuse them", () => {
+  const tracker = new input.PointerDeviceTracker();
+  tracker.observePen({ pointerType: "pen", pointerId: 3 });
+  tracker.releasePointer(3);
+
+  const mouse = { pointerType: "mouse", pointerId: 3 };
+  tracker.observeMouse(mouse);
+  assert.equal(tracker.isPenLike(mouse), false);
+  assert.equal(tracker.isKnownMouse(mouse), true);
+});
+
 test("stroke simplification preserves pressure-only shape changes", () => {
   const stroke = {
     points: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 10, y: 0 }],

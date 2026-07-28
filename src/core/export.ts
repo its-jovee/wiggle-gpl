@@ -15,6 +15,7 @@ import { Project } from "./types";
 import { renderPanel, clearTimelapseCache } from "./render";
 import { renderSequenceFrame } from "./sequenceRender";
 import { timelapseProgressQuantized } from "./renderSchedule";
+import { preloadRasterCanvases } from "./rasterStore";
 import { expandedDurationMs } from "./sequence";
 import { buildAudioExportPlan, totalAudioDuration } from "./audioTimeline";
 import { audioBridge } from "./electronAudio";
@@ -90,6 +91,15 @@ function canvasToBlob(
       quality
     );
   });
+}
+
+async function prepareRasterExport(
+  project: Project,
+  shouldCancel?: () => boolean,
+): Promise<void> {
+  if (shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
+  await preloadRasterCanvases(project);
+  if (shouldCancel?.()) throw new DOMException("Export cancelled", "AbortError");
 }
 
 /**
@@ -226,6 +236,7 @@ export async function exportStillImage(
     const panelIndex = opts?.panelIndex ?? 0;
     const panel = project.panels[panelIndex];
     if (!panel) throw new Error("Cannot export a missing panel");
+    await prepareRasterExport(project, opts?.shouldCancel);
 
     const transparent = format === "png" && !!opts?.transparent;
     const { canvas, ctx } = makeStage(project);
@@ -271,6 +282,7 @@ export async function exportWebM(
   clearTimelapseCache();
   const progress = createExportProgressReporter("WebM", onProgress, renderOpts?.onProgressEvent);
   try {
+    await prepareRasterExport(project, renderOpts?.shouldCancel);
     const { canvas, ctx } = makeStage(project);
     const stream = canvas.captureStream(60);
     const rec = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
@@ -333,6 +345,7 @@ export async function exportMP4(
     const { canvas, ctx } = makeStage(project);
     const panel = opts?.panelIndex === undefined ? undefined : project.panels[opts.panelIndex];
     if (opts?.panelIndex !== undefined && !panel) throw new Error("Cannot export a missing panel");
+    await prepareRasterExport(project, opts?.shouldCancel);
     const visualMs = panel?.durationMs ?? expandedDurationMs(project);
     const audioMs = totalAudioDuration(project.audio);
     const totalMs = panel ? visualMs : (opts?.includeAudioTail ? Math.max(visualMs, audioMs) : visualMs);
@@ -416,6 +429,7 @@ export async function exportGIF(
     const { canvas, ctx } = makeStage(project);
     const panel = opts?.panelIndex === undefined ? undefined : project.panels[opts.panelIndex];
     if (opts?.panelIndex !== undefined && !panel) throw new Error("Cannot export a missing panel");
+    await prepareRasterExport(project, opts?.shouldCancel);
     const totalMs = panel?.durationMs ?? expandedDurationMs(project);
     const totalFrames = Math.max(1, Math.round((totalMs / 1000) * exportFps));
     const contentVersion = opts?.contentVersion ?? 0;

@@ -231,6 +231,17 @@ export function commitRasterPreparation(preparation: RasterPreparation): void {
   }
 }
 
+/** Decode and install every raster image needed by synchronous render loops.
+ * Exports use this before producing their first frame; editor undo keeps the
+ * two-phase prepare/commit API above so a failed decode cannot replace the
+ * currently visible project. */
+export async function preloadRasterCanvases(
+  project: Project,
+  panelIds?: Iterable<string>,
+): Promise<void> {
+  commitRasterPreparation(await prepareRasterCanvases(project, panelIds));
+}
+
 /** Call after mutating a raster layer's runtime canvas directly. */
 export function markRasterEdited(layer: Layer): void {
   const entry = store.get(layer.id);
@@ -254,9 +265,12 @@ export function syncRasterToLayer(
   entry.sourceData = data;
   entry.sourceWidth = entry.canvas.width;
   entry.sourceHeight = entry.canvas.height;
-  timelineImageStore.set(data, { canvas: cloneCanvas(entry.canvas), decoding: false });
-  if (timelineMode === "checkpoint") {
-    appendRasterTimelapseCheckpoint(layer, beforeData, data);
+  if (timelineMode === "checkpoint" &&
+      appendRasterTimelapseCheckpoint(layer, beforeData, data)) {
+    // Only checkpoint PNGs are replay inputs. Ordinary raster strokes record
+    // compact vector data, so retaining their flattened after-image would leak
+    // one full-resolution canvas per stroke.
+    timelineImageStore.set(data, { canvas: cloneCanvas(entry.canvas), decoding: false });
   }
 }
 

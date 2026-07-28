@@ -28,13 +28,14 @@ function compileRasterStore() {
 compileRasterStore();
 const store = await import(`${outDir}/rasterStore.js`);
 
+let fakeDataUrlId = 0;
+
 function fakeCanvas() {
-  let toDataURLCalls = 0;
   return {
     width: 0,
     height: 0,
     getContext: () => ({ clearRect() {}, drawImage() {} }),
-    toDataURL: () => `data:image/png;base64,STUB${++toDataURLCalls}`,
+    toDataURL: () => `data:image/png;base64,STUB${++fakeDataUrlId}`,
   };
 }
 
@@ -155,4 +156,39 @@ test("raster preparation decodes a target without replacing the live canvas", as
   store.commitRasterPreparation(preparation);
   assert.equal(store.getRasterCanvas(targetLayer), preparation.entries[0].canvas);
   assert.deepEqual(decodeCalls, ["data:image/png;base64,CURRENT", "data:image/png;base64,TARGET"]);
+});
+
+test("preloadRasterCanvases makes timeline images synchronously renderable", async () => {
+  const decodeCalls = [];
+  store.setRasterTestBackends({ decodeImage: stubDecoder(decodeCalls), makeCanvas: fakeCanvas });
+  const layer = rasterLayer("layer-preload-timeline", "data:image/png;base64,PRELOAD_CURRENT");
+  layer.raster.timelapse = {
+    baseline: "data:image/png;base64,PRELOAD_BASELINE",
+    events: [{ kind: "checkpoint", data: "data:image/png;base64,PRELOAD_CHECKPOINT" }],
+  };
+  const project = { panels: [{ id: "panel-preload", layers: [layer], subPanels: [] }] };
+
+  await store.preloadRasterCanvases(project);
+
+  assert.ok(store.getRasterCanvas(layer));
+  assert.ok(store.getRasterTimelapseImage(layer.raster.timelapse.baseline, 10, 10));
+  assert.ok(store.getRasterTimelapseImage(layer.raster.timelapse.events[0].data, 10, 10));
+  assert.deepEqual(decodeCalls, [
+    "data:image/png;base64,PRELOAD_CURRENT",
+    "data:image/png;base64,PRELOAD_BASELINE",
+    "data:image/png;base64,PRELOAD_CHECKPOINT",
+  ]);
+});
+
+test("non-checkpoint sync does not retain an unreferenced timeline canvas", async () => {
+  const decodeCalls = [];
+  store.setRasterTestBackends({ decodeImage: stubDecoder(decodeCalls), makeCanvas: fakeCanvas });
+  const layer = rasterLayer("layer-compact-stroke-cache", "data:image/png;base64,COMPACT_START");
+  store.getRasterCanvas(layer);
+  await Promise.resolve().then(() => Promise.resolve());
+
+  store.syncRasterToLayer(layer, "none");
+  const flattened = layer.raster.data;
+  assert.equal(store.getRasterTimelapseImage(flattened, 10, 10), null);
+  assert.equal(decodeCalls.at(-1), flattened, "unreferenced after-image should require a fresh decode");
 });

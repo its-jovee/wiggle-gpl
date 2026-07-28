@@ -7,6 +7,7 @@
 // ============================================================================
 
 import { easeProgress } from "./anim";
+import { MAX_TIMELAPSE_CAMERA_KEYFRAMES } from "./projectValidation";
 import type { EasingKind, TimelapseCameraKeyframe } from "./types";
 
 export type TimelapseCameraState = {
@@ -100,7 +101,7 @@ export function upsertTimelapseCameraKeyframe(
   const normalized = normalizeTimelapseCameraKeyframe(keyframe, width, height);
   const index = next.findIndex((existing) => Math.abs(existing.progress - normalized.progress) <= epsilon);
   if (index >= 0) next[index] = normalized;
-  else next.push(normalized);
+  else if (next.length < MAX_TIMELAPSE_CAMERA_KEYFRAMES) next.push(normalized);
   return next.sort((a, b) => a.progress - b.progress);
 }
 

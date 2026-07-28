@@ -133,6 +133,10 @@ function finitePoint(point: { x: number; y: number } | undefined): boolean {
   return !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
 function validateLayer(layer: Layer, path: string, errors: string[]): void {
   if (layer.locked !== undefined && typeof layer.locked !== "boolean") {
     errors.push(`${path}: locked must be a boolean`);
@@ -210,17 +214,25 @@ function validateLayer(layer: Layer, path: string, errors: string[]): void {
         errors.push(`${path}: raster timelapse events exceed max ${MAX_RASTER_TIMELAPSE_EVENTS}`);
       } else {
         for (let i = 0; i < timeline.events.length; i++) {
-          const event = timeline.events[i];
+          const event = timeline.events[i] as unknown;
+          if (!isRecord(event)) {
+            errors.push(`${path}: raster timelapse event ${i + 1} is invalid`);
+            continue;
+          }
           if (event.kind === "checkpoint") {
-            if (typeof event.data !== "string" || !event.data.startsWith(PNG_DATA_URL_PREFIX) ||
-                event.data.length > MAX_RASTER_DATA_CHARS) {
+            const data = event.data;
+            if (typeof data !== "string" || !data.startsWith(PNG_DATA_URL_PREFIX) ||
+                data.length > MAX_RASTER_DATA_CHARS) {
               errors.push(`${path}: raster timelapse checkpoint ${i + 1} is invalid`);
             }
           } else if (event.kind === "stroke") {
-            if (!Number.isInteger(event.strokeIndex) || event.strokeIndex < 0) {
+            const strokeIndex = event.strokeIndex;
+            if (typeof strokeIndex !== "number" || !Number.isInteger(strokeIndex) || strokeIndex < 0) {
               errors.push(`${path}: raster timelapse stroke ${i + 1} index must be a non-negative integer`);
             }
-            if (!event.stroke || event.stroke.points.length > MAX_POINTS_PER_STROKE) {
+            const stroke = event.stroke;
+            if (!isRecord(stroke) || !Array.isArray(stroke.points) ||
+                stroke.points.length > MAX_POINTS_PER_STROKE) {
               errors.push(`${path}: raster timelapse stroke ${i + 1} exceeds point limit`);
             }
           } else {
@@ -349,10 +361,18 @@ export function validateProject(project: Project): ProjectValidationResult {
         errors.push(`panel ${pi + 1}: timelapse camera exceeds max ${MAX_TIMELAPSE_CAMERA_KEYFRAMES} keyframes`);
       } else {
         for (let ki = 0; ki < camera.length; ki++) {
-          const keyframe = camera[ki];
-          if (!Number.isFinite(keyframe.progress) || keyframe.progress < 0 || keyframe.progress > 1 ||
-              !Number.isFinite(keyframe.centerX) || !Number.isFinite(keyframe.centerY) ||
-              !Number.isFinite(keyframe.zoom) || keyframe.zoom < 1 || keyframe.zoom > 8) {
+          const keyframe = camera[ki] as unknown;
+          if (!isRecord(keyframe)) {
+            errors.push(`panel ${pi + 1}: timelapse camera keyframe ${ki + 1} is invalid`);
+            continue;
+          }
+          const { progress, centerX, centerY, zoom, easing } = keyframe;
+          if (typeof progress !== "number" || !Number.isFinite(progress) || progress < 0 || progress > 1 ||
+              typeof centerX !== "number" || !Number.isFinite(centerX) ||
+              typeof centerY !== "number" || !Number.isFinite(centerY) ||
+              typeof zoom !== "number" || !Number.isFinite(zoom) || zoom < 1 || zoom > 8 ||
+              (easing !== "linear" && easing !== "easeIn" &&
+               easing !== "easeOut" && easing !== "easeInOut")) {
             errors.push(`panel ${pi + 1}: timelapse camera keyframe ${ki + 1} is out of bounds`);
           }
         }

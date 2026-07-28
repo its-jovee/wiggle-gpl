@@ -8,6 +8,7 @@
 // ============================================================================
 
 import type { Layer, RasterTimelapseEvent, Stroke } from "./types";
+import { MAX_RASTER_TIMELAPSE_EVENTS } from "./projectValidation";
 
 export const RASTER_CHECKPOINT_WEIGHT = 1;
 
@@ -28,21 +29,35 @@ export function appendRasterTimelapseStroke(
   stroke: Stroke,
   strokeIndex: number,
   baseline: string,
-): void {
+): boolean {
+  const startsNewTimeline = !layer.raster?.timelapse ||
+    layer.raster.timelapse.events.length >= MAX_RASTER_TIMELAPSE_EVENTS;
+  if (startsNewTimeline && layer.raster) {
+    // Keep editor-created projects within the same bound enforced on load.
+    // When the journal fills, the pixels immediately before this stroke become
+    // the new baseline; the flattened raster remains authoritative throughout.
+    layer.raster.timelapse = { baseline, events: [] };
+  }
   const timeline = ensureRasterTimelapse(layer, baseline);
   timeline.events.push({ kind: "stroke", stroke: cloneStroke(stroke), strokeIndex });
+  return startsNewTimeline;
 }
 
 export function appendRasterTimelapseCheckpoint(
   layer: Layer,
   beforeData: string,
   afterData: string,
-): void {
-  if (beforeData === afterData) return;
+): boolean {
+  if (beforeData === afterData) return false;
+  if (layer.raster?.timelapse &&
+      layer.raster.timelapse.events.length >= MAX_RASTER_TIMELAPSE_EVENTS) {
+    layer.raster.timelapse = { baseline: beforeData, events: [] };
+  }
   const timeline = ensureRasterTimelapse(layer, beforeData);
   const previous = timeline.events[timeline.events.length - 1];
-  if (previous?.kind === "checkpoint" && previous.data === afterData) return;
+  if (previous?.kind === "checkpoint" && previous.data === afterData) return false;
   timeline.events.push({ kind: "checkpoint", data: afterData });
+  return true;
 }
 
 export function rasterTimelapseEventWeight(
