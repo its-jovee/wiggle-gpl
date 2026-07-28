@@ -209,6 +209,11 @@ import {
   type ActiveTool,
   type EditorToolKind,
 } from "./tools/activeTool";
+import {
+  createToolPointerControllers,
+  dispatchToolPointerDown,
+  type ToolPointerInput,
+} from "./tools/pointerController";
 
 if (location.protocol === "file:") document.body.classList.add("file-mode");
 
@@ -3932,327 +3937,278 @@ function finishLiveStrokeSmoothing() {
   appendSmoothedStrokeSamples(finishStrokeSmoothingSession(liveSmoothingSession));
 }
 
-// Clicking editor chrome with the mouse is the most common device switch. Arm
-// pressure recovery before the next canvas contact, while remembering this
-// particular stream as the real mouse so it remains full-pressure if the user
-// intentionally paints with it.
-document.addEventListener("pointerdown", (e) => {
-  if (e.pointerType === "pen") {
-    notePenPointerActivity(e);
-  } else if (e.pointerType === "mouse" && e.target !== canvas) {
-    pointerDevices.observeMouse(e);
-    markStylusPressureInterrupt();
-  }
-}, true);
-
-canvas.addEventListener("pointerdown", (e) => {
-  if (playing) return;
-  notePenPointerActivity(e);
-  e.preventDefault();
-  if (selectedReferenceImageId) selectReferenceImage(null);
-  requestLoopFrame();
-  if (boardMoveToolActive) {
-    const record = activeLibraryProjectId
-      ? projectBoardRecords.find((item) => item.id === activeLibraryProjectId)
-      : null;
-    if (record) beginCanvasPlacement(e, activeProjectFrame, record, true);
-    return;
-  }
-  if (shouldStartViewportPan(e)) {
-    beginViewportPan(e);
-    return;
-  }
-  const pos = canvasPos(e);
-
-  // Select tool — universal mouse / picker. Priority: tail handle (when a
-  // balloon/thought is selected) → text → sub-panel → deselect.
-  if (toolIs("select")) {
-    const sps = frameSubPanels(activeStackContainer());
-    if (selectedSubPanelId) {
-      const sp = findSubPanelById(activePanel(), selectedSubPanelId) ?? sps.find(s => s.id === selectedSubPanelId);
-      if (sp && (sp.shape === "balloon" || sp.shape === "thought") && sp.tail) {
-        const d = Math.hypot(pos.x - sp.tail.x, pos.y - sp.tail.y);
-        if (d < 40) {
-          selectDrag = { kind: "tail", subPanelId: sp.id, offset: { x: 0, y: 0 } };
-          try { canvas.setPointerCapture(e.pointerId); } catch {}
-          return;
-        }
-      }
-    }
-    const textHit = hitTestText(pos);
-    if (textHit) {
-      selectedSubPanelId = null;
-      if (textHit.layer.locked || activeContainerIsLocked()) {
-        selectedText = textHit;
-        setStatus("Text layer is locked");
-        buildInspector();
+function handleSelectToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  const sps = frameSubPanels(activeStackContainer());
+  if (selectedSubPanelId) {
+    const sp = findSubPanelById(activePanel(), selectedSubPanelId) ?? sps.find(s => s.id === selectedSubPanelId);
+    if (sp && (sp.shape === "balloon" || sp.shape === "thought") && sp.tail) {
+      const d = Math.hypot(pos.x - sp.tail.x, pos.y - sp.tail.y);
+      if (d < 40) {
+        selectDrag = { kind: "tail", subPanelId: sp.id, offset: { x: 0, y: 0 } };
+        capturePointer(e);
         return;
       }
-      const alreadySelected = selectedText?.text === textHit.text;
+    }
+  }
+  const textHit = hitTestText(pos);
+  if (textHit) {
+    selectedSubPanelId = null;
+    if (textHit.layer.locked || activeContainerIsLocked()) {
       selectedText = textHit;
-      selectDrag = {
-        kind: "text", ref: textHit,
-        offset: { x: pos.x - textHit.text.x, y: pos.y - textHit.text.y },
-        origin: { x: pos.x, y: pos.y },
-        alreadySelected,
-      };
-      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      setStatus("Text layer is locked");
       buildInspector();
       return;
     }
-    for (let i = sps.length - 1; i >= 0; i--) {
-      if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
-        selectedSubPanelId = sps[i].id;
-        selectedText = null;
-        selectDrag = {
-          kind: "move", subPanelId: sps[i].id,
-          offset: { x: pos.x - sps[i].bounds.x, y: pos.y - sps[i].bounds.y },
-        };
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        buildInspector();
-        return;
-      }
-    }
-    if (selectedSubPanelId || selectedText) {
-      selectedSubPanelId = null;
+    const alreadySelected = selectedText?.text === textHit.text;
+    selectedText = textHit;
+    selectDrag = {
+      kind: "text", ref: textHit,
+      offset: { x: pos.x - textHit.text.x, y: pos.y - textHit.text.y },
+      origin: { x: pos.x, y: pos.y },
+      alreadySelected,
+    };
+    capturePointer(e);
+    buildInspector();
+    return;
+  }
+  for (let i = sps.length - 1; i >= 0; i--) {
+    if (isInsideSubPanel(pos.x, pos.y, sps[i])) {
+      selectedSubPanelId = sps[i].id;
       selectedText = null;
-      buildInspector();
-    }
-    return;
-  }
-
-  // Marquee tool — region mask (clip draw/fill) or extracted object group.
-  if (toolIs("marquee")) {
-    if (!activeLayerIsEditable(true)) return;
-    if (selectionState?.mode === "object" && selectionState.phase === "idle") {
-      const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
-      if (handle) {
-        // Always consume handle hits — never fall through to a new marquee.
-        // The rotate knob sits outside the bounds rect, so a missed consume
-        // previously cleared the selection and started a fresh drag.
-        beginObjectSelectionTransform(handle, pos);
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        return;
-      }
-      const b = selectionState.bounds;
-      if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
-        transformSnapshots = snapshotItems(selectionState.items);
-        selectionState = { ...selectionState, phase: "moving", lastPos: pos };
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        return;
-      }
-      // Click outside bounds and handles — cancel selection before starting a new one.
-      clearSelection();
-      buildEditContext();
-    }
-    if (selectionState?.mode === "region" && selectionState.phase === "idle") {
-      // On raster layers the marquee manipulates pixels directly: a handle grab
-      // scales/rotates, a plain drag inside lifts and moves the selection. Both
-      // promote the region to an object selection first. Alt-drag (and every
-      // non-raster layer) keeps the classic behavior of moving just the mask.
-      if (isManipulableRasterRegion(selectionState) && !e.altKey) {
-        const handle = hitTestTransformHandle(pos, shapeBounds(selectionState.shape), viewport.scale);
-        if (handle) {
-          // Consume the handle hit even when promotion fails so clicking the
-          // rotate circle above the box cannot start a brand-new marquee.
-          beginObjectSelectionTransform(handle, pos);
-          try { canvas.setPointerCapture(e.pointerId); } catch {}
-          return;
-        } else if (activeRegionContains(selectionState, pos)) {
-          // promoteRegionSelection extracts the pixels and swaps selectionState
-          // to an object selection; open the move gesture directly from the
-          // returned items so this reads as one grab-and-drag.
-          const items = promoteRegionSelection();
-          if (items) {
-            transformSnapshots = snapshotItems(items);
-            const bounds = boundsFromItems(items, measureText);
-            selectionState = {
-              mode: "object",
-              phase: "moving",
-              shape: { kind: "rect", x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-              bounds,
-              items,
-              lastPos: pos,
-            };
-            try { canvas.setPointerCapture(e.pointerId); } catch {}
-            buildEditContext();
-            return;
-          }
-          // Promotion failed (empty / still decoding) — fall through to a
-          // boundary move so the gesture still does something sensible.
-        }
-      }
-      if (activeRegionContains(selectionState, pos)) {
-        selectionState = { ...selectionState, phase: "moving", lastPos: pos };
-        try { canvas.setPointerCapture(e.pointerId); } catch {}
-        buildEditContext();
-        return;
-      }
-    }
-    const startShape = marqueeToolKind === "ellipse"
-      ? ellipseFromDrag(pos, pos, e.shiftKey, e.altKey)
-      : rectFromDrag(pos, pos, e.shiftKey, e.altKey);
-    selectionState = {
-      mode: "region",
-      phase: "creating",
-      shape: startShape,
-      tool: marqueeToolKind,
-      lassoPath: [pos],
-    };
-    try { canvas.setPointerCapture(e.pointerId); } catch {}
-    return;
-  }
-
-  // Scale tool — resize/rotate the active layer's content (or the current selection).
-  if (toolIs("scale")) {
-    if (!activeLayerIsEditable(true)) return;
-    let target = scaleToolItems();
-    if (!target) return;
-    const handle = hitTestTransformHandle(pos, target.bounds, viewport.scale);
-    if (!handle) return;
-    const rasterLayer = activeLayer()?.kind === "raster" ? activeLayer()! : null;
-    if (rasterLayer && target.items.length === 0) {
-      const rasterRef = rasterContentSelection(rasterLayer);
-      if (!rasterRef) return;
-      const bounds = boundsFromItems([rasterRef], measureText);
-      selectionState = {
-        mode: "object",
-        phase: "idle",
-        shape: { kind: "rect", ...bounds },
-        bounds,
-        items: [rasterRef],
+      selectDrag = {
+        kind: "move", subPanelId: sps[i].id,
+        offset: { x: pos.x - sps[i].bounds.x, y: pos.y - sps[i].bounds.y },
       };
-      target = { items: [rasterRef], bounds };
-      beginObjectSelectionTransform(handle, pos);
-      try { canvas.setPointerCapture(e.pointerId); } catch {}
-      return;
-    }
-    const pivot = rectCenter(target.bounds);
-    scaleToolDrag = {
-      items: target.items,
-      bounds: target.bounds,
-      snapshots: snapshotItems(target.items),
-      handle,
-      pivot,
-      startBounds: { ...target.bounds },
-      startAngle: Math.atan2(pos.y - pivot.y, pos.x - pivot.x),
-    };
-    try { canvas.setPointerCapture(e.pointerId); } catch {}
-    return;
-  }
-
-  // Move Layer tool — shifts every drawable item in the active layer. This is
-  // intentionally separate from marquee selection and keeps strokes raw.
-  if (toolIs("move-layer")) {
-    const layer = activeLayer();
-    if (!layer || !layer.visible) return;
-    if (!activeLayerIsEditable(true)) return;
-    // Direct-drag A/B handles from the canvas
-    if (!keyframeArm && layer.animation?.enabled) {
-      const cent = layerCentroid(layer);
-      const a = layer.animation;
-      const ax = cent.x + a.from.x, ay = cent.y + a.from.y;
-      const bx = cent.x + a.to.x, by = cent.y + a.to.y;
-      if (Math.hypot(pos.x - ax, pos.y - ay) < 30) keyframeArm = "from";
-      else if (Math.hypot(pos.x - bx, pos.y - by) < 30) keyframeArm = "to";
-    }
-    if (keyframeArm) {
-      const anim = ensureLayerAnimation(layer);
-      anim.enabled = true;
-    }
-    layerMoveDrag = {
-      pointerId: e.pointerId,
-      layer,
-      dependents: clippedDependentsFor(layer),
-      lastPos: pos,
-      totalDx: 0,
-      totalDy: 0,
-      moved: false,
-      keyframe: keyframeArm,
-    };
-    try { canvas.setPointerCapture(e.pointerId); } catch {}
-    return;
-  }
-
-  // Perspective ruler tool: place / drag vanishing points and the horizon.
-  if (toolIs("perspective")) {
-    const panel = activePanel();
-    prunePerspectiveGuides(panel);
-    let guide = activePerspectiveGuide();
-    if (!guide) {
-      const layer = activeLayer();
-      guide = newPerspectiveGuide("1p", project.width, project.height, layer?.id ?? null);
-      (panel.guides ??= []).push(guide);
-      commitHistory([]);
-      buildPerspectiveInspector();
-      setStatus(layer
-        ? `Perspective ruler placed on “${layer.name}” · only strokes on that layer snap to it`
-        : "Perspective ruler placed · drag the handles · strokes snap to its lines");
-    }
-    const pick = 24 / viewport.scale;
-    let target: PerspectiveDragTarget | null = null;
-    for (let i = 0; i < guide.vps.length; i++) {
-      if (Math.hypot(pos.x - guide.vps[i].x, pos.y - guide.vps[i].y) < pick) { target = i; break; }
-    }
-    if (target === null && guide.kind === "fisheye" && guide.vps[0]) {
-      // Rim poles spin + resize the lens; the rest of the rim just resizes.
-      for (let k = 0; k < 4 && target === null; k++) {
-        const p = fisheyePolePos(guide, k);
-        if (Math.hypot(pos.x - p.x, pos.y - p.y) < pick) target = `pole${k}` as PerspectiveDragTarget;
-      }
-      if (target === null) {
-        const d = Math.hypot(pos.x - guide.vps[0].x, pos.y - guide.vps[0].y);
-        if (Math.abs(d - fisheyeRadius(guide)) < pick) target = "radius";
-      }
-    }
-    if (target === null && guide.kind !== "fisheye" && Math.abs(pos.y - guide.horizonY) < pick) {
-      target = "horizon";
-    }
-    if (target !== null) {
-      perspectiveDrag = { target, pointerId: e.pointerId };
       capturePointer(e);
-    }
-    return;
-  }
-
-  // Sub-panel / balloon tool: drag-create
-  if (toolIs("subpanel") || toolIs("balloon")) {
-    subPanelDrag = { start: pos, end: pos };
-    capturePointer(e);
-    return;
-  }
-
-  // Cut Subpanel: drag a straight cut line across a frame
-  if (toolIs("cut-subpanel")) {
-    cutSubPanelDrag = { start: pos, end: pos };
-    capturePointer(e);
-    return;
-  }
-
-  // Text tool: click existing text to re-edit; otherwise place a new one.
-  // Route into the sub-panel at the click point if the user is at panel root.
-  if (toolIs("text")) {
-    maybeEnterSubPanelAt(pos);
-    const textHit = hitTestText(pos);
-    if (textHit) {
-      selectedSubPanelId = null;
-      selectedText = textHit;
-      if (textHit.layer.locked || activeContainerIsLocked()) {
-        setStatus("Text layer is locked");
-        buildInspector();
-        return;
-      }
-      openTextInputAt(pos, textHit);
       buildInspector();
       return;
     }
-    if (!activeLayerIsEditable(true)) return;
-    openTextInputAt(pos);
+  }
+  if (selectedSubPanelId || selectedText) {
+    selectedSubPanelId = null;
+    selectedText = null;
+    buildInspector();
+  }
+}
+
+function handleMarqueeToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  if (!activeLayerIsEditable(true)) return;
+  if (selectionState?.mode === "object" && selectionState.phase === "idle") {
+    const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
+    if (handle) {
+      // Always consume handle hits — never fall through to a new marquee.
+      // The rotate knob sits outside the bounds rect, so a missed consume
+      // previously cleared the selection and started a fresh drag.
+      beginObjectSelectionTransform(handle, pos);
+      capturePointer(e);
+      return;
+    }
+    const b = selectionState.bounds;
+    if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
+      transformSnapshots = snapshotItems(selectionState.items);
+      selectionState = { ...selectionState, phase: "moving", lastPos: pos };
+      capturePointer(e);
+      return;
+    }
+    // Click outside bounds and handles — cancel selection before starting a new one.
+    clearSelection();
+    buildEditContext();
+  }
+  if (selectionState?.mode === "region" && selectionState.phase === "idle") {
+    // On raster layers the marquee manipulates pixels directly: a handle grab
+    // scales/rotates, a plain drag inside lifts and moves the selection. Both
+    // promote the region to an object selection first. Alt-drag (and every
+    // non-raster layer) keeps the classic behavior of moving just the mask.
+    if (isManipulableRasterRegion(selectionState) && !e.altKey) {
+      const handle = hitTestTransformHandle(pos, shapeBounds(selectionState.shape), viewport.scale);
+      if (handle) {
+        // Consume the handle hit even when promotion fails so clicking the
+        // rotate circle above the box cannot start a brand-new marquee.
+        beginObjectSelectionTransform(handle, pos);
+        capturePointer(e);
+        return;
+      } else if (activeRegionContains(selectionState, pos)) {
+        // promoteRegionSelection extracts the pixels and swaps selectionState
+        // to an object selection; open the move gesture directly from the
+        // returned items so this reads as one grab-and-drag.
+        const items = promoteRegionSelection();
+        if (items) {
+          transformSnapshots = snapshotItems(items);
+          const bounds = boundsFromItems(items, measureText);
+          selectionState = {
+            mode: "object",
+            phase: "moving",
+            shape: { kind: "rect", x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+            bounds,
+            items,
+            lastPos: pos,
+          };
+          capturePointer(e);
+          buildEditContext();
+          return;
+        }
+        // Promotion failed (empty / still decoding) — fall through to a
+        // boundary move so the gesture still does something sensible.
+      }
+    }
+    if (activeRegionContains(selectionState, pos)) {
+      selectionState = { ...selectionState, phase: "moving", lastPos: pos };
+      capturePointer(e);
+      buildEditContext();
+      return;
+    }
+  }
+  const startShape = marqueeToolKind === "ellipse"
+    ? ellipseFromDrag(pos, pos, e.shiftKey, e.altKey)
+    : rectFromDrag(pos, pos, e.shiftKey, e.altKey);
+  selectionState = {
+    mode: "region",
+    phase: "creating",
+    shape: startShape,
+    tool: marqueeToolKind,
+    lassoPath: [pos],
+  };
+  capturePointer(e);
+}
+
+function handleScaleToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  if (!activeLayerIsEditable(true)) return;
+  let target = scaleToolItems();
+  if (!target) return;
+  const handle = hitTestTransformHandle(pos, target.bounds, viewport.scale);
+  if (!handle) return;
+  const rasterLayer = activeLayer()?.kind === "raster" ? activeLayer()! : null;
+  if (rasterLayer && target.items.length === 0) {
+    const rasterRef = rasterContentSelection(rasterLayer);
+    if (!rasterRef) return;
+    const bounds = boundsFromItems([rasterRef], measureText);
+    selectionState = {
+      mode: "object",
+      phase: "idle",
+      shape: { kind: "rect", ...bounds },
+      bounds,
+      items: [rasterRef],
+    };
+    target = { items: [rasterRef], bounds };
+    beginObjectSelectionTransform(handle, pos);
+    capturePointer(e);
     return;
   }
+  const pivot = rectCenter(target.bounds);
+  scaleToolDrag = {
+    items: target.items,
+    bounds: target.bounds,
+    snapshots: snapshotItems(target.items),
+    handle,
+    pivot,
+    startBounds: { ...target.bounds },
+    startAngle: Math.atan2(pos.y - pivot.y, pos.x - pivot.x),
+  };
+  capturePointer(e);
+}
 
-  // Draw / bucket — auto-enter the sub-panel under the cursor if any, so the
-  // stroke goes where the user expects (not on the parent panel underneath).
+function handleMoveLayerToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  const layer = activeLayer();
+  if (!layer || !layer.visible) return;
+  if (!activeLayerIsEditable(true)) return;
+  // Direct-drag A/B handles from the canvas.
+  if (!keyframeArm && layer.animation?.enabled) {
+    const cent = layerCentroid(layer);
+    const a = layer.animation;
+    const ax = cent.x + a.from.x, ay = cent.y + a.from.y;
+    const bx = cent.x + a.to.x, by = cent.y + a.to.y;
+    if (Math.hypot(pos.x - ax, pos.y - ay) < 30) keyframeArm = "from";
+    else if (Math.hypot(pos.x - bx, pos.y - by) < 30) keyframeArm = "to";
+  }
+  if (keyframeArm) {
+    const anim = ensureLayerAnimation(layer);
+    anim.enabled = true;
+  }
+  layerMoveDrag = {
+    pointerId: e.pointerId,
+    layer,
+    dependents: clippedDependentsFor(layer),
+    lastPos: pos,
+    totalDx: 0,
+    totalDy: 0,
+    moved: false,
+    keyframe: keyframeArm,
+  };
+  capturePointer(e);
+}
+
+function handlePerspectiveToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  const panel = activePanel();
+  prunePerspectiveGuides(panel);
+  let guide = activePerspectiveGuide();
+  if (!guide) {
+    const layer = activeLayer();
+    guide = newPerspectiveGuide("1p", project.width, project.height, layer?.id ?? null);
+    (panel.guides ??= []).push(guide);
+    commitHistory([]);
+    buildPerspectiveInspector();
+    setStatus(layer
+      ? `Perspective ruler placed on “${layer.name}” · only strokes on that layer snap to it`
+      : "Perspective ruler placed · drag the handles · strokes snap to its lines");
+  }
+  const pick = 24 / viewport.scale;
+  let target: PerspectiveDragTarget | null = null;
+  for (let i = 0; i < guide.vps.length; i++) {
+    if (Math.hypot(pos.x - guide.vps[i].x, pos.y - guide.vps[i].y) < pick) { target = i; break; }
+  }
+  if (target === null && guide.kind === "fisheye" && guide.vps[0]) {
+    // Rim poles spin + resize the lens; the rest of the rim just resizes.
+    for (let k = 0; k < 4 && target === null; k++) {
+      const p = fisheyePolePos(guide, k);
+      if (Math.hypot(pos.x - p.x, pos.y - p.y) < pick) target = `pole${k}` as PerspectiveDragTarget;
+    }
+    if (target === null) {
+      const d = Math.hypot(pos.x - guide.vps[0].x, pos.y - guide.vps[0].y);
+      if (Math.abs(d - fisheyeRadius(guide)) < pick) target = "radius";
+    }
+  }
+  if (target === null && guide.kind !== "fisheye" && Math.abs(pos.y - guide.horizonY) < pick) {
+    target = "horizon";
+  }
+  if (target !== null) {
+    perspectiveDrag = { target, pointerId: e.pointerId };
+    capturePointer(e);
+  }
+}
+
+function handleFrameToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  subPanelDrag = { start: pos, end: pos };
+  capturePointer(e);
+}
+
+function handleCutSubPanelToolPointerDown({ event: e, point: pos }: ToolPointerInput) {
+  cutSubPanelDrag = { start: pos, end: pos };
+  capturePointer(e);
+}
+
+function handleTextToolPointerDown({ point: pos }: ToolPointerInput) {
+  maybeEnterSubPanelAt(pos);
+  const textHit = hitTestText(pos);
+  if (textHit) {
+    selectedSubPanelId = null;
+    selectedText = textHit;
+    if (textHit.layer.locked || activeContainerIsLocked()) {
+      setStatus("Text layer is locked");
+      buildInspector();
+      return;
+    }
+    openTextInputAt(pos, textHit);
+    buildInspector();
+    return;
+  }
+  if (!activeLayerIsEditable(true)) return;
+  openTextInputAt(pos);
+}
+
+/** Shared entry for vector/raster brushes plus the two paint-adjacent tools.
+ * All three resolve the target container, editable layer, and active selection
+ * through the same path so they cannot drift apart as layer kinds evolve. */
+function handlePaintPointerDown({ event: e, point: pos }: ToolPointerInput) {
   maybeEnterSubPanelAt(pos);
 
   const panel = activePanel();
@@ -4325,10 +4281,7 @@ canvas.addEventListener("pointerdown", (e) => {
       return;
     }
     if (layer2.kind === "tone") {
-      showToast(
-        "Fills aren't supported on tone layers yet",
-        "info"
-      );
+      showToast("Fills aren't supported on tone layers yet", "info");
       return;
     }
     const clipShape = regionClip;
@@ -4350,6 +4303,8 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
 
+  const brushKey = activeBrushKey(activeTool);
+  if (!brushKey) return;
   // Undo/redo may have cancelled the previous contact without Chromium ever
   // delivering its pointerup. A new pointerdown is itself proof of a fresh
   // contact, even when tablet drivers reuse the same pointer id.
@@ -4376,8 +4331,6 @@ canvas.addEventListener("pointerdown", (e) => {
     { point: pos, pressure: firstPressure },
     project.drawingSettings.smoothing
   );
-  const brushKey = activeBrushKey(activeTool);
-  if (!brushKey) return;
   liveStroke = {
     brush: brushKey, color: currentColor, size: currentSize,
     erase: transparentPaintSelected || brushByKey(brushKey).erase === true,
@@ -4393,8 +4346,57 @@ canvas.addEventListener("pointerdown", (e) => {
     drawing = false;
     drawingPointerId = null;
     clearLiveStrokeState();
+  }
+}
+
+const toolPointerControllers = createToolPointerControllers({
+  select: handleSelectToolPointerDown,
+  marquee: handleMarqueeToolPointerDown,
+  scale: handleScaleToolPointerDown,
+  "move-layer": handleMoveLayerToolPointerDown,
+  perspective: handlePerspectiveToolPointerDown,
+  subpanel: handleFrameToolPointerDown,
+  balloon: handleFrameToolPointerDown,
+  "cut-subpanel": handleCutSubPanelToolPointerDown,
+  text: handleTextToolPointerDown,
+  bucket: handlePaintPointerDown,
+  gradient: handlePaintPointerDown,
+});
+
+// Clicking editor chrome with the mouse is the most common device switch. Arm
+// pressure recovery before the next canvas contact, while remembering this
+// particular stream as the real mouse so it remains full-pressure if the user
+// intentionally paints with it.
+document.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "pen") {
+    notePenPointerActivity(e);
+  } else if (e.pointerType === "mouse" && e.target !== canvas) {
+    pointerDevices.observeMouse(e);
+    markStylusPressureInterrupt();
+  }
+}, true);
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (playing) return;
+  notePenPointerActivity(e);
+  e.preventDefault();
+  if (selectedReferenceImageId) selectReferenceImage(null);
+  requestLoopFrame();
+  if (boardMoveToolActive) {
+    const record = activeLibraryProjectId
+      ? projectBoardRecords.find((item) => item.id === activeLibraryProjectId)
+      : null;
+    if (record) beginCanvasPlacement(e, activeProjectFrame, record, true);
     return;
   }
+  if (shouldStartViewportPan(e)) {
+    beginViewportPan(e);
+    return;
+  }
+  const pos = canvasPos(e);
+  const input = { event: e, point: pos };
+  if (dispatchToolPointerDown(activeTool, input, toolPointerControllers)) return;
+  handlePaintPointerDown(input);
 });
 
 canvas.addEventListener("pointermove", (e) => {

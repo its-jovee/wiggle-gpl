@@ -7,7 +7,7 @@ import { createServer as createViteServer } from "vite";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("actual app supports tool switching, drawing, undo, and redo", async () => {
+test("actual app routes drawing, selection, and frame tools through creator flow", async () => {
   const vite = await createViteServer({
     root,
     logLevel: "silent",
@@ -87,6 +87,65 @@ test("actual app supports tool switching, drawing, undo, and redo", async () => 
     await redo.click();
     await page.waitForFunction(() => !(document.querySelector("#undo-btn"))?.disabled);
     assert.equal(await redo.isDisabled(), true);
+
+    await marquee.click();
+    await page.dispatchEvent("#stage", "pointerdown", {
+      ...pen,
+      pointerId: 42,
+      buttons: 1,
+      clientX: start.x - 24,
+      clientY: start.y - 24,
+    });
+    await page.dispatchEvent("#stage", "pointermove", {
+      ...pen,
+      pointerId: 42,
+      button: -1,
+      buttons: 1,
+      clientX: end.x + 24,
+      clientY: end.y + 24,
+    });
+    await page.dispatchEvent("body", "pointerup", {
+      ...pen,
+      pointerId: 42,
+      buttons: 0,
+      clientX: end.x + 24,
+      clientY: end.y + 24,
+    });
+    await page.waitForFunction(() => document.querySelector("#status")?.textContent?.includes("Selection active"));
+    await page.keyboard.press("Escape");
+
+    const breadcrumbBefore = await page.locator("#breadcrumb").textContent();
+    const subPanel = page.locator('#tools-insert button[aria-label="Sub-Panel"]');
+    await subPanel.click();
+    await subPanel.evaluate((button) => {
+      if (!button.classList.contains("active")) throw new Error("Sub-Panel did not become active");
+    });
+    await page.dispatchEvent("#stage", "pointerdown", {
+      ...pen,
+      pointerId: 43,
+      buttons: 1,
+      clientX: box.x + box.width * 0.3,
+      clientY: box.y + box.height * 0.3,
+    });
+    await page.dispatchEvent("#stage", "pointermove", {
+      ...pen,
+      pointerId: 43,
+      button: -1,
+      buttons: 1,
+      clientX: box.x + box.width * 0.45,
+      clientY: box.y + box.height * 0.42,
+    });
+    await page.dispatchEvent("body", "pointerup", {
+      ...pen,
+      pointerId: 43,
+      buttons: 0,
+      clientX: box.x + box.width * 0.45,
+      clientY: box.y + box.height * 0.42,
+    });
+    await page.waitForFunction(
+      (before) => document.querySelector("#breadcrumb")?.textContent !== before,
+      breadcrumbBefore,
+    );
     assert.deepEqual(pageErrors, []);
   } finally {
     await page.close();
