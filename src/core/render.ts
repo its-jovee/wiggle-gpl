@@ -49,7 +49,9 @@ import {
   cellDisplaceOffset,
   noiseDisplaceSeed,
 } from "./noiseDisplace";
-import { getRasterCanvas, rasterPixelVersion } from "./rasterStore";
+import { getRasterCanvas, getRasterTimelapseImage, rasterPixelVersion } from "./rasterStore";
+import { rasterTimelapseEventWeight, rasterTimelapseTotalWeight } from "./rasterTimelapse";
+import { timelapseCameraAtProgress } from "./timelapseCamera";
 
 const WIGGLE_AMPLITUDE = 2.5;
 /** Float tolerance when comparing stroke-length budgets (accumulated segment lengths). */
@@ -68,6 +70,9 @@ export type RenderOpts = {
   layerPreviewOffset?: { layerId: string; dx: number; dy: number };
   allPanels?: Panel[];
   timelapseProgress?: number;
+  /** Optional continuous camera time. Drawing reveal stays wiggle-quantized,
+   *  while camera moves can render smoothly at display/export frame rate. */
+  timelapseCameraProgress?: number;
   localMs?: number;
   wiggleFps?: number;
   overscan?: { x: number; y: number }; // editor-only bleed margin
@@ -447,7 +452,7 @@ function renderTimelapseLayers(
 
   src.layers.forEach((layer, li) => {
     if (!layer.visible) return;
-    const layerLength = computeLayerStrokeLength(layer);
+    const layerLength = computeLayerTimelapseLength(layer);
     const budgetAmount = budgets[li] ?? 0;
     if (budgetAmount <= 0) return;
 
@@ -496,13 +501,26 @@ function renderTimelapse(
     ctx.fillText("source missing", ox + 24, oy + 48);
     return;
   }
-  if (!opts?.skipBg) {
-    ctx.clearRect(0, 0, bufW, bufH);
-  }
+  if (!opts?.skipBg) ctx.clearRect(0, 0, bufW, bufH);
   const progress = Math.max(0, Math.min(1, opts?.timelapseProgress ?? 1));
   const budget = allocateTimelapseLayerBudgets(src.layers, progress);
   const wiggleFps = opts?.wiggleFps ?? 8;
   const srcLocalMs = src.durationMs * progress;
+  const cameraProgress = Math.max(0, Math.min(1,
+    opts?.timelapseCameraProgress
+      ?? (opts?.localMs !== undefined ? opts.localMs / Math.max(1, panel.durationMs) : progress)
+  ));
+  const camera = timelapseCameraAtProgress(panel.timelapse?.camera, cameraProgress, width, height);
+  const hasCameraMove = camera.zoom !== 1 || camera.centerX !== width / 2 || camera.centerY !== height / 2;
+  if (hasCameraMove) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, width, height);
+    ctx.clip();
+    ctx.translate(ox + width / 2, oy + height / 2);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.translate(-(ox + camera.centerX), -(oy + camera.centerY));
+  }
   // Partial reveal: only root layers (sub-panels appear at the end). Full
   // progress walks Panel.stack so interleaved drawings stay above/below frames.
   if (progress < 1) {
@@ -520,6 +538,7 @@ function renderTimelapse(
       paintOverscanOverlay(ctx, width, height, ox, oy, bufW);
     }
   }
+  if (hasCameraMove) ctx.restore();
 }
 
 function paintBgUnder(
@@ -886,7 +905,7 @@ function drawLayerStack(
     if (!layer.visible) return;
     const layerIndex = layerIndices?.[li] ?? li;
     const budgetAmount = Array.isArray(budget) ? (budget[li] ?? 0) : budget.remaining;
-    const layerLength = computeLayerStrokeLength(layer);
+    const layerLength = computeLayerTimelapseLength(layer);
     const layerBudget: StrokeBudget = Array.isArray(budget)
       ? (layerLength > 0 && budgetAmount >= layerLength - BUDGET_EPS
         ? { remaining: Infinity }
@@ -1098,8 +1117,12 @@ function drawLayerRaw(
   let drawn: boolean[];
   if (layer.kind === "raster") {
     drawn = [];
-    const rc = layer.raster ? getRasterCanvas(layer) : null;
-    if (rc) oc.drawImage(rc, 0, 0);
+    if (budget.remaining !== Infinity && layer.raster?.timelapse) {
+      renderRasterTimelapseLayer(oc, layer, layerIndex, budget.remaining, bg);
+    } else {
+      const rc = layer.raster ? getRasterCanvas(layer) : null;
+      if (rc) oc.drawImage(rc, 0, 0);
+    }
   } else if (layer.kind === "tone" && layer.tone) {
     if (layer.tone.coverage === "painted") {
       // Strokes act as a reveal mask (amplitude 0 — static ink); the pattern
@@ -1163,6 +1186,63 @@ function drawLayerRaw(
     putCachedRawLayer(opts.renderCache, rawCacheKey, raw);
   }
   return raw;
+}
+
+function renderRasterTimelapseLayer(
+  ctx: CanvasRenderingContext2D,
+  layer: Layer,
+  layerIndex: number,
+  budgetAmount: number,
+  bg: string,
+): void {
+  const raster = layer.raster;
+  const timeline = raster?.timelapse;
+  if (!raster || !timeline) return;
+
+  let imageData = timeline.baseline;
+  let remaining = Math.max(0, budgetAmount);
+  let checkpointEventIndex = -1;
+  for (let i = 0; i < timeline.events.length; i++) {
+    const event = timeline.events[i];
+    const weight = rasterTimelapseEventWeight(event, computeStrokeLength);
+    if (remaining + BUDGET_EPS < weight) break;
+    remaining -= weight;
+    if (event.kind === "checkpoint") {
+      imageData = event.data;
+      checkpointEventIndex = i;
+    }
+  }
+
+  const base = getRasterTimelapseImage(imageData, raster.width, raster.height);
+  if (base) ctx.drawImage(base, 0, 0);
+
+  remaining = Math.max(0, budgetAmount);
+  for (let i = 0; i < timeline.events.length; i++) {
+    const event = timeline.events[i];
+    const weight = rasterTimelapseEventWeight(event, computeStrokeLength);
+    if (i <= checkpointEventIndex) {
+      remaining = Math.max(0, remaining - weight);
+      continue;
+    }
+    if (event.kind === "checkpoint") {
+      if (remaining + BUDGET_EPS < weight) break;
+      remaining -= weight;
+      continue;
+    }
+    if (remaining <= 0) break;
+    walkLayerStrokes(
+      ctx,
+      [event.stroke],
+      layerIndex,
+      0,
+      { remaining: Math.min(weight, remaining) },
+      bg,
+      0,
+      event.strokeIndex,
+    );
+    remaining -= weight;
+    if (remaining < 0) break;
+  }
 }
 
 function applyLayerMask(
@@ -2343,9 +2423,16 @@ export function computeLayerStrokeLength(layer: Layer): number {
   return total;
 }
 
+export function computeLayerTimelapseLength(layer: Layer): number {
+  if (layer.kind === "raster" && layer.raster?.timelapse) {
+    return rasterTimelapseTotalWeight(layer, computeStrokeLength);
+  }
+  return computeLayerStrokeLength(layer);
+}
+
 export function allocateTimelapseLayerBudgets(layers: Layer[], progress: number): number[] {
   const p = Math.max(0, Math.min(1, progress));
-  const lengths = layers.map((layer) => layer.visible ? computeLayerStrokeLength(layer) : 0);
+  const lengths = layers.map((layer) => layer.visible ? computeLayerTimelapseLength(layer) : 0);
   const total = lengths.reduce((sum, length) => sum + length, 0);
   let remaining = p * total;
   const budgets = layers.map(() => 0);
@@ -2362,7 +2449,7 @@ export function allocateTimelapseLayerBudgets(layers: Layer[], progress: number)
 
 export function computeTotalLength(panel: Panel): number {
   return panel.layers.reduce(
-    (total, layer) => total + (layer.visible ? computeLayerStrokeLength(layer) : 0),
+    (total, layer) => total + (layer.visible ? computeLayerTimelapseLength(layer) : 0),
     0
   );
 }

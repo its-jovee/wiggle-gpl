@@ -220,6 +220,20 @@ export type ToneSettings = {
 
 export type LayerKind = "draw" | "text" | "tone" | "raster";
 
+/** Persisted raster edit history used only by timelapse playback. The flattened
+ *  PNG remains the authoritative layer image; this journal lets a timelapse
+ *  rebuild how that image changed without slowing normal raster rendering. */
+export type RasterTimelapseEvent =
+  | { kind: "stroke"; stroke: Stroke; strokeIndex: number }
+  | { kind: "checkpoint"; data: string };
+
+export type RasterTimelapse = {
+  /** Pixel state when recording began. Legacy projects become retroactive from
+   *  their first new raster edit by using the already-painted PNG as baseline. */
+  baseline: string;
+  events: RasterTimelapseEvent[];
+};
+
 /** A 1x1 fully-transparent PNG, used to seed a brand-new raster layer. */
 export const EMPTY_RASTER_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -238,7 +252,12 @@ export type Layer = {
   tone?: ToneSettings;
   /** Present on raster layers. `data` is a PNG data URL persisted in project JSON;
    *  the live pixels are held in `core/rasterStore.ts`, keyed by layer.id. */
-  raster?: { data: string; width: number; height: number };
+  raster?: {
+    data: string;
+    width: number;
+    height: number;
+    timelapse?: RasterTimelapse;
+  };
   clipToBelow?: boolean;
   /** Independent opacity envelopes for a drawing/layer. These compose with
    *  the layer's static opacity and transform animation at render time. */
@@ -397,6 +416,23 @@ export function newReferenceImage(
 
 export type PanelKind = "normal" | "timelapse";
 
+export type TimelapseCameraKeyframe = {
+  /** Normalized time within the timelapse clip. */
+  progress: number;
+  /** Camera focus in source-canvas coordinates. */
+  centerX: number;
+  centerY: number;
+  /** 1 = fit the whole source frame, larger values zoom in. */
+  zoom: number;
+  /** Curve used while travelling from this keyframe to the next. */
+  easing: EasingKind;
+};
+
+export type TimelapseSpec = {
+  sourceId: string;
+  camera?: TimelapseCameraKeyframe[];
+};
+
 /** Root composite order entry — layer and sub-panel ids may interleave. */
 export type PanelStackItem =
   | { kind: "layer"; id: string }
@@ -412,7 +448,7 @@ export type Panel = {
   layers: Layer[];
   activeLayerIndex?: number;
   kind?: PanelKind;
-  timelapse?: { sourceId: string };
+  timelapse?: TimelapseSpec;
   subPanels?: SubPanel[];
   /** Root composite order (bottom→top). Layer and sub-panel ids may interleave.
    *  Absent stacks resolve to [...layers, ...subPanels]. */

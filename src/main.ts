@@ -11,6 +11,7 @@ import {
   EasingKind, LayerLoopKind, LayerAnimTransform, FrameGroup, BrushPreset,
   PerspectiveGuide, PerspectiveGuideKind, LayerBlendMode, BrushSettings, ToneStyle,
   LayerNoiseDisplace, ReferenceImage,
+  TimelapseCameraKeyframe,
   newProject as createProject, newPanel, newLayer, newSubPanel, newLayerGroup, newPerspectiveGuide, newReferenceImage, migrateProject,
   isBlankQuickStartProject,
 } from "./core/types";
@@ -141,7 +142,13 @@ import {
   commitRasterPreparation, getRasterCanvas, installRasterCanvas, markRasterEdited,
   nextRasterStrokeIndex, onRasterReady, prepareRasterCanvases, pruneRasterStore,
   rasterPixelVersion, syncRasterToLayer,
+  installRasterTimelapseImage,
 } from "./core/rasterStore";
+import { appendRasterTimelapseStroke } from "./core/rasterTimelapse";
+import {
+  removeTimelapseCameraKeyframe,
+  timelapseCameraAtProgress, upsertTimelapseCameraKeyframe,
+} from "./core/timelapseCamera";
 import {
   cloneRasterCanvas, createRasterSelectionFromPixels, extractRasterSelection,
   flattenRasterSelection, rasterContentBounds, RasterStrokeSession,
@@ -238,7 +245,14 @@ let selectionState: SelectionState | null = null;
 let marqueeToolKind: MarqueeToolKind = "rect";
 let transformSnapshots: ItemSnapshot[] | null = null;
 let lastCanvasPointerPos: Vec2 | null = null;
+let lastTimelapseCursorPos: Vec2 | null = null;
+const timelapseEditProgress = new Map<string, number>();
 let antsOffset = 0;
+
+function editorTimelapseProgress(panel: Panel): number | undefined {
+  if (panel.kind !== "timelapse") return undefined;
+  return timelapseEditProgress.get(panel.id) ?? 1;
+}
 
 type ScaleToolDragState = {
   items: MarqueeRef[];
@@ -1387,6 +1401,7 @@ function panelTimelineSignature(panel: Panel): string {
     kind: panel.kind,
     durationMs: panel.durationMs,
     annotation: panel.annotation,
+    timelapse: panel.timelapse,
     enter: panel.enter,
     exit: panel.exit,
   });
@@ -1979,12 +1994,13 @@ function beginLiveRasterStroke(
   if (region) {
     clipRasterContextToRegion(rasterCtx, rasterCanvas.width, rasterCanvas.height, region);
   }
+  const strokeIndex = nextRasterStrokeIndex(layer);
   const painter = new RasterStrokeSession(
     rasterCtx,
     brushByKey(stroke.brush),
     stroke,
     liveStrokeLayerIndex,
-    nextRasterStrokeIndex(layer),
+    strokeIndex,
     activePanel().bg,
     firstPoint,
     firstPressure
@@ -1995,6 +2011,8 @@ function beginLiveRasterStroke(
     before,
     ctx: rasterCtx,
     painter,
+    strokeIndex,
+    recordAsCheckpoint: !!region,
     contextSaved: true,
   };
   markRasterEdited(layer);
@@ -2026,7 +2044,14 @@ function commitLiveStroke() {
     closeLiveRasterStrokeContext();
     if (liveRasterStroke.painter.touched) {
       markRasterEdited(liveStrokeLayer);
-      syncRasterToLayer(liveStrokeLayer);
+      if (liveRasterStroke.recordAsCheckpoint) {
+        syncRasterToLayer(liveStrokeLayer);
+      } else {
+        const baseline = liveRasterStroke.before.toDataURL("image/png");
+        installRasterTimelapseImage(baseline, liveRasterStroke.before);
+        appendRasterTimelapseStroke(liveStrokeLayer, liveStroke, liveRasterStroke.strokeIndex, baseline);
+        syncRasterToLayer(liveStrokeLayer, "none");
+      }
       commitHistory([liveStrokeLayer]);
     }
     return;
@@ -2092,6 +2117,7 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
   if (layer.kind === "raster") {
     const rasterCanvas = getRasterCanvas(layer);
     if (!rasterCanvas) { showToast("Layer still loading", "info"); return; }
+    const before = cloneRasterCanvas(rasterCanvas);
     const rasterCtx = rasterCanvas.getContext("2d")!;
     rasterCtx.save();
     const region = selectionState?.mode === "region" && selectionState.phase !== "creating"
@@ -2100,10 +2126,18 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
     if (region) {
       clipRasterContextToRegion(rasterCtx, rasterCanvas.width, rasterCanvas.height, region);
     }
-    stampStrokeToCanvas(rasterCtx, stroke, layerIndex, nextRasterStrokeIndex(layer), panel.bg);
+    const strokeIndex = nextRasterStrokeIndex(layer);
+    stampStrokeToCanvas(rasterCtx, stroke, layerIndex, strokeIndex, panel.bg);
     rasterCtx.restore();
     markRasterEdited(layer);
-    syncRasterToLayer(layer);
+    if (region) {
+      syncRasterToLayer(layer);
+    } else {
+      const baseline = before.toDataURL("image/png");
+      installRasterTimelapseImage(baseline, before);
+      appendRasterTimelapseStroke(layer, stroke, strokeIndex, baseline);
+      syncRasterToLayer(layer, "none");
+    }
   } else {
     layer.strokes.push(stroke);
   }
@@ -2257,6 +2291,8 @@ let liveRasterStroke: {
   before: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   painter: RasterStrokeSession;
+  strokeIndex: number;
+  recordAsCheckpoint: boolean;
   contextSaved: boolean;
 } | null = null;
 let layerMoveDrag: {
@@ -4335,6 +4371,7 @@ canvas.addEventListener("pointermove", (e) => {
   notePenPointerActivity(e);
   const hoverPos = canvasPos(e);
   lastCanvasPointerPos = hoverPos;
+  if (activePanel().kind === "timelapse") lastTimelapseCursorPos = hoverPos;
   updateEraserCursorOverlay(e.clientX, e.clientY);
   if (e.buttons === 0) updateCanvasCursor(hoverPos);
 
@@ -5209,7 +5246,8 @@ function drawCachedBaseFrame(panel: Panel) {
   if (cache.key !== key) {
     renderPanel(cache.ctx, panel, wiggleTick, project.width, project.height, {
       allPanels: project.panels,
-      timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+      timelapseProgress: editorTimelapseProgress(panel),
+      timelapseCameraProgress: editorTimelapseProgress(panel),
       skipAnim: keyframeArm ? false : true,
       skipJitter: !jitterEnabled,
       layerPreviewOffset: layerMovePreviewOffset(),
@@ -5240,7 +5278,8 @@ function paintEditorPanelBackground(panel: Panel) {
 function drawEditorActiveContent(panel: Panel, label: string) {
   profileRender(label, () => renderPanel(ctx, panel, wiggleTick, project.width, project.height, {
     allPanels: project.panels,
-    timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+    timelapseProgress: editorTimelapseProgress(panel),
+    timelapseCameraProgress: editorTimelapseProgress(panel),
     skipAnim: keyframeArm ? false : true,
     skipBg: true,
     skipJitter: !jitterEnabled,
@@ -5307,7 +5346,8 @@ function drawLiveErasePreviewFrame() {
     } else {
       renderPanel(ctx, panel, wiggleTick, project.width, project.height, {
         allPanels: project.panels,
-        timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+        timelapseProgress: editorTimelapseProgress(panel),
+        timelapseCameraProgress: editorTimelapseProgress(panel),
         skipAnim: keyframeArm ? false : true,
         skipJitter: !jitterEnabled,
         layerPreviewOffset: layerMovePreviewOffset(),
@@ -5357,7 +5397,8 @@ function cachedOnionFrame(slot: number, panel: Panel, label: string): HTMLCanvas
       renderPanel(c.ctx, panel, wiggleTick, project.width, project.height, {
         skipBg: true, skipFills: true, skipAnim: true,
         allPanels: project.panels,
-        timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+        timelapseProgress: editorTimelapseProgress(panel),
+        timelapseCameraProgress: editorTimelapseProgress(panel),
         skipJitter: !jitterEnabled,
         overscan: { x: overscanX, y: overscanY },
         renderCache: displayRenderCache,
@@ -5786,7 +5827,8 @@ function paintActivePanelNow() {
   } else {
     profileRender("session-swap", () => renderPanel(ctx, panel, wiggleTick, project.width, project.height, {
       allPanels: project.panels,
-      timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+      timelapseProgress: editorTimelapseProgress(panel),
+      timelapseCameraProgress: editorTimelapseProgress(panel),
       skipAnim: keyframeArm ? false : true,
       skipJitter: !jitterEnabled,
       layerPreviewOffset: layerMovePreviewOffset(),
@@ -5927,7 +5969,8 @@ function loop(now: number) {
       } else {
         profileRender("idle-main", () => renderPanel(ctx, panel, wiggleTick, project.width, project.height, {
           allPanels: project.panels,
-          timelapseProgress: panel.kind === "timelapse" ? 1 : undefined,
+          timelapseProgress: editorTimelapseProgress(panel),
+          timelapseCameraProgress: editorTimelapseProgress(panel),
           skipAnim: keyframeArm ? false : true,
           skipJitter: !jitterEnabled,
           layerPreviewOffset: layerMovePreviewOffset(),
@@ -9750,6 +9793,7 @@ function buildInspector() {
     appendBalloonToolInspector(balloonHost);
   }
 
+  if (activePanel().kind === "timelapse") appendTimelapseInspector(host, activePanel());
   appendPanelAnimInspector(host, activePanel());
   buildLayerNoiseDisplace();
   buildLayerCompositing();
@@ -9762,6 +9806,157 @@ function buildInspector() {
       ).forEach((control) => { control.disabled = true; });
     }
   }
+}
+
+function appendTimelapseInspector(host: HTMLElement, panel: Panel) {
+  const source = project.panels.find((candidate) => candidate.id === panel.timelapse?.sourceId);
+  if (!source || !panel.timelapse) return;
+  const progress = timelapseEditProgress.get(panel.id) ?? 1;
+  const state = timelapseCameraAtProgress(panel.timelapse.camera, progress, project.width, project.height);
+  const nearest = panel.timelapse.camera?.find((keyframe) => Math.abs(keyframe.progress - progress) <= 0.005);
+
+  const section = document.createElement("div");
+  section.className = "inspector-section";
+  const heading = document.createElement("div");
+  heading.className = "inspector-section-title";
+  heading.textContent = "Timelapse camera";
+  section.appendChild(heading);
+
+  const note = document.createElement("div");
+  note.className = "property-note";
+  note.textContent = `${panel.timelapse.camera?.length ?? 0} camera keyframe(s) · raster history records automatically`;
+  section.appendChild(note);
+
+  const row = (label: string, child: HTMLElement) => {
+    const wrap = document.createElement("div");
+    wrap.className = "inspector-field";
+    const text = document.createElement("span");
+    text.className = "inspector-field-label";
+    text.textContent = label;
+    wrap.append(text, child);
+    section.appendChild(wrap);
+  };
+
+  const scrubWrap = document.createElement("div");
+  scrubWrap.style.cssText = "display:grid;grid-template-columns:1fr 42px;gap:6px;align-items:center;";
+  const scrub = document.createElement("input");
+  scrub.type = "range";
+  scrub.min = "0";
+  scrub.max = "1";
+  scrub.step = "0.001";
+  scrub.value = String(progress);
+  const scrubLabel = document.createElement("span");
+  scrubLabel.className = "property-note";
+  scrubLabel.textContent = `${Math.round(progress * 100)}%`;
+  scrub.oninput = () => {
+    const next = +scrub.value;
+    timelapseEditProgress.set(panel.id, next);
+    scrubLabel.textContent = `${Math.round(next * 100)}%`;
+    invalidateBaseFrameCache();
+    paintActivePanelNow();
+  };
+  scrub.onchange = () => buildInspector();
+  scrubWrap.append(scrub, scrubLabel);
+  row("Time", scrubWrap);
+
+  const upsert = (nextState: { centerX: number; centerY: number; zoom: number }, easing = nearest?.easing ?? "easeInOut") => {
+    const keyframe: TimelapseCameraKeyframe = {
+      progress,
+      centerX: nextState.centerX,
+      centerY: nextState.centerY,
+      zoom: nextState.zoom,
+      easing,
+    };
+    panel.timelapse!.camera = upsertTimelapseCameraKeyframe(
+      panel.timelapse!.camera,
+      keyframe,
+      project.width,
+      project.height,
+    );
+    commitHistory();
+    buildInspector();
+  };
+
+  const focus = document.createElement("div");
+  focus.className = "inspector-field-pair";
+  for (const [axis, label] of [["centerX", "X"], ["centerY", "Y"]] as const) {
+    const field = document.createElement("label");
+    field.textContent = label;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "1";
+    input.value = String(Math.round(state[axis]));
+    input.onchange = () => upsert({ ...state, [axis]: +input.value });
+    field.appendChild(input);
+    focus.appendChild(field);
+  }
+  row("Focus", focus);
+
+  const zoomWrap = document.createElement("div");
+  zoomWrap.style.cssText = "display:grid;grid-template-columns:1fr 42px;gap:6px;align-items:center;";
+  const zoom = document.createElement("input");
+  zoom.type = "range";
+  zoom.min = "1";
+  zoom.max = "8";
+  zoom.step = "0.05";
+  zoom.value = String(state.zoom);
+  const zoomLabel = document.createElement("span");
+  zoomLabel.className = "property-note";
+  zoomLabel.textContent = `${state.zoom.toFixed(1)}×`;
+  zoom.oninput = () => { zoomLabel.textContent = `${(+zoom.value).toFixed(1)}×`; };
+  zoom.onchange = () => upsert({ ...state, zoom: +zoom.value });
+  zoomWrap.append(zoom, zoomLabel);
+  row("Zoom", zoomWrap);
+
+  const easing = document.createElement("select");
+  for (const kind of EASINGS) {
+    const option = document.createElement("option");
+    option.value = kind;
+    option.textContent = kind;
+    option.selected = kind === (nearest?.easing ?? "easeInOut");
+    easing.appendChild(option);
+  }
+  easing.onchange = () => upsert(state, easing.value as EasingKind);
+  row("Move", easing);
+
+  const buttons = document.createElement("div");
+  buttons.className = "inspector-buttons";
+  const button = (label: string, action: () => void, disabled = false) => {
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = "cellbtn";
+    control.textContent = label;
+    control.disabled = disabled;
+    control.onclick = action;
+    buttons.appendChild(control);
+  };
+  button("Set keyframe", () => upsert(state));
+  button("Focus cursor", () => {
+    if (!lastTimelapseCursorPos) return;
+    const sourcePoint = {
+      x: state.centerX + (lastTimelapseCursorPos.x - project.width / 2) / state.zoom,
+      y: state.centerY + (lastTimelapseCursorPos.y - project.height / 2) / state.zoom,
+    };
+    upsert({ centerX: sourcePoint.x, centerY: sourcePoint.y, zoom: Math.max(2, state.zoom) });
+  }, !lastTimelapseCursorPos);
+  button("Delete keyframe", () => {
+    panel.timelapse!.camera = removeTimelapseCameraKeyframe(
+      panel.timelapse!.camera,
+      progress,
+      project.width,
+      project.height,
+    );
+    commitHistory();
+    buildInspector();
+  }, !nearest);
+  button("Reset camera", () => {
+    panel.timelapse!.camera = [];
+    timelapseEditProgress.set(panel.id, 1);
+    commitHistory();
+    buildInspector();
+  }, (panel.timelapse.camera?.length ?? 0) === 0);
+  section.appendChild(buttons);
+  host.appendChild(section);
 }
 
 function appendLayerGroupInspector(host: HTMLElement, group: SubPanel) {

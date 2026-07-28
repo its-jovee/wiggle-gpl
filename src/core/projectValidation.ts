@@ -26,6 +26,8 @@ export const MAX_FILL_TOLERANCE = 64;
 export const MAX_FILL_GAP_CLOSE = 64;
 /** ~12MB decoded — generous but bounded; guards against corrupt/hostile files. */
 export const MAX_RASTER_DATA_CHARS = 16_000_000;
+export const MAX_RASTER_TIMELAPSE_EVENTS = 10_000;
+export const MAX_TIMELAPSE_CAMERA_KEYFRAMES = 100;
 export const MAX_REFERENCE_IMAGES = 32;
 export const MAX_REFERENCE_NAME_CHARS = 200;
 /** Reference bitmaps may be larger than the export frame (photos, sheets). */
@@ -197,6 +199,36 @@ function validateLayer(layer: Layer, path: string, errors: string[]): void {
       height < MIN_PROJECT_DIMENSION || height > MAX_PROJECT_DIMENSION) {
       errors.push(`${path}: raster dimensions ${width}x${height} out of bounds`);
     }
+    const timeline = layer.raster.timelapse;
+    if (timeline) {
+      if (typeof timeline.baseline !== "string" || !timeline.baseline.startsWith(PNG_DATA_URL_PREFIX)) {
+        errors.push(`${path}: raster timelapse baseline must be a PNG data URL`);
+      } else if (timeline.baseline.length > MAX_RASTER_DATA_CHARS) {
+        errors.push(`${path}: raster timelapse baseline exceeds max ${MAX_RASTER_DATA_CHARS} chars`);
+      }
+      if (!Array.isArray(timeline.events) || timeline.events.length > MAX_RASTER_TIMELAPSE_EVENTS) {
+        errors.push(`${path}: raster timelapse events exceed max ${MAX_RASTER_TIMELAPSE_EVENTS}`);
+      } else {
+        for (let i = 0; i < timeline.events.length; i++) {
+          const event = timeline.events[i];
+          if (event.kind === "checkpoint") {
+            if (typeof event.data !== "string" || !event.data.startsWith(PNG_DATA_URL_PREFIX) ||
+                event.data.length > MAX_RASTER_DATA_CHARS) {
+              errors.push(`${path}: raster timelapse checkpoint ${i + 1} is invalid`);
+            }
+          } else if (event.kind === "stroke") {
+            if (!Number.isInteger(event.strokeIndex) || event.strokeIndex < 0) {
+              errors.push(`${path}: raster timelapse stroke ${i + 1} index must be a non-negative integer`);
+            }
+            if (!event.stroke || event.stroke.points.length > MAX_POINTS_PER_STROKE) {
+              errors.push(`${path}: raster timelapse stroke ${i + 1} exceeds point limit`);
+            }
+          } else {
+            errors.push(`${path}: raster timelapse event ${i + 1} has an unknown kind`);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -310,6 +342,21 @@ export function validateProject(project: Project): ProjectValidationResult {
     if (panel.annotation !== undefined &&
         (typeof panel.annotation !== "string" || panel.annotation.length > MAX_PANEL_ANNOTATION_CHARS)) {
       errors.push(`panel ${pi + 1}: annotation must be a string of at most ${MAX_PANEL_ANNOTATION_CHARS} characters`);
+    }
+    const camera = panel.timelapse?.camera;
+    if (camera) {
+      if (!Array.isArray(camera) || camera.length > MAX_TIMELAPSE_CAMERA_KEYFRAMES) {
+        errors.push(`panel ${pi + 1}: timelapse camera exceeds max ${MAX_TIMELAPSE_CAMERA_KEYFRAMES} keyframes`);
+      } else {
+        for (let ki = 0; ki < camera.length; ki++) {
+          const keyframe = camera[ki];
+          if (!Number.isFinite(keyframe.progress) || keyframe.progress < 0 || keyframe.progress > 1 ||
+              !Number.isFinite(keyframe.centerX) || !Number.isFinite(keyframe.centerY) ||
+              !Number.isFinite(keyframe.zoom) || keyframe.zoom < 1 || keyframe.zoom > 8) {
+            errors.push(`panel ${pi + 1}: timelapse camera keyframe ${ki + 1} is out of bounds`);
+          }
+        }
+      }
     }
     if (panel.layers.length > MAX_LAYERS_PER_PANEL) {
       errors.push(`panel ${pi + 1}: ${panel.layers.length} layers exceeds max ${MAX_LAYERS_PER_PANEL}`);

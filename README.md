@@ -17,7 +17,8 @@ repository.
   sub-panel layers. Raster layers paint and erase live pixels and support
   marquee/lasso selection, move, scale, rotate, copy/cut/paste, and bucket fill.
 - Deterministic seeded wiggle shared by display and export.
-- Panel sequencing, onion skinning, timelapse, and an audio timeline.
+- Panel sequencing, onion skinning, editable timelapse camera keyframes,
+  automatic raster edit recording, and an audio timeline.
 - WebM preview and deterministic H.264 MP4 export through bundled ffmpeg.wasm.
 - A hardened Electron shell for the macOS desktop build.
 

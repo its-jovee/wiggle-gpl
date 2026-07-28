@@ -6,8 +6,8 @@ PRODUCT.md; for working rules, AGENTS.md.
 ## Data model (`src/core/types.ts`)
 ```
 Project { version, width=1080, height=1920, wiggleFps, panels[] }
-Panel    { id, durationMs, bg, paletteId, layers[], subPanels[], stack[] }
-Layer    { id, opacity, fadeIn?, fadeOut?, strokes[], fills[], texts[] }
+Panel    { id, durationMs, bg, paletteId, layers[], subPanels[], stack[], timelapse? }
+Layer    { id, opacity, fadeIn?, fadeOut?, strokes[], fills[], texts[], raster? }
 SubPanel { id, group?, layers[], subPanels[], stack[], enter?, exit? }
 Stroke   { brush, color, size, points[] }   // points are RAW, un-jittered
 ```
@@ -25,6 +25,14 @@ deterministic render timing on the same paths as sub-panels.
 Why raw points: storing un-jittered points means the wiggle can be recomputed at
 any time, at any scale, deterministically. If we stored jittered points we'd
 lose re-wiggling, clean rescale, and reproducible export — so this is fixed.
+
+Raster layers keep a flattened PNG as their authoritative fast render state.
+Their optional `raster.timelapse` journal stores the PNG that existed when
+recording began, compact paint/erase strokes with persistent stroke indices,
+and PNG checkpoints for destructive pixel operations. This makes recording
+automatic and lets legacy raster projects replay every edit made after they are
+opened, without replacing the parallel raster engine or making normal rendering
+walk the journal.
 
 ## Project Board and autosave (`src/core/projectLibrary.ts`, `src/core/autosave.ts`)
 The Project Board is an infinite spatial navigator above the single active
@@ -71,6 +79,14 @@ Per stroke:
 This mirrors Decker's `draw_line`: march the line, call the brush function at
 each step. The difference is we stamp real color to a 2D canvas instead of 1-bit
 masks with dither patterns.
+
+Timelapse panels reference a source panel. Vector layers consume their existing
+stroke-length reveal budget; raster layers consume the persisted raster journal,
+starting from its baseline and replaying strokes/checkpoints. A timelapse may
+also own normalized camera keyframes (`progress`, source focus, zoom, easing).
+The drawing reveal stays on the quantized wiggle clock, while camera progress
+is continuous for smooth moves. Both remain pure functions of clip time, so
+preview, WebM, GIF, and MP4 paths agree.
 
 ## Determinism (`src/core/rng.ts`)
 `noise(a,b,c)` is a hash-based PRNG returning [-1,1], stable for identical

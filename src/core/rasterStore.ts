@@ -15,6 +15,7 @@
 // ============================================================================
 
 import type { Layer, Project, SubPanel } from "./types";
+import { appendRasterTimelapseCheckpoint, rasterTimelapseImages } from "./rasterTimelapse";
 
 export type DecodedImage = { width: number; height: number } & CanvasImageSource;
 export type ImageDecoder = (dataUrl: string) => Promise<DecodedImage>;
@@ -41,9 +42,18 @@ export type PreparedRaster = {
   canvas: HTMLCanvasElement;
 };
 
-export type RasterPreparation = { entries: PreparedRaster[] };
+type PreparedTimelineImage = {
+  data: string;
+  canvas: HTMLCanvasElement;
+};
+
+export type RasterPreparation = {
+  entries: PreparedRaster[];
+  timelineImages: PreparedTimelineImage[];
+};
 
 const store = new Map<string, RasterEntry>();
+const timelineImageStore = new Map<string, { canvas: HTMLCanvasElement; decoding: boolean }>();
 let readyCallback: (() => void) | null = null;
 
 function defaultDecodeImage(dataUrl: string): Promise<DecodedImage> {
@@ -161,28 +171,44 @@ export async function prepareRasterCanvases(
 ): Promise<RasterPreparation> {
   const ids = panelIds ? new Set(panelIds) : undefined;
   const entries: PreparedRaster[] = [];
+  const timelineImages: PreparedTimelineImage[] = [];
+  const preparedTimelineData = new Set<string>();
   for (const layer of rasterLayersForProject(project, ids)) {
     const raster = layer.raster!;
     const existing = store.get(layer.id);
     if (existing && existing.sourceData === raster.data &&
         existing.sourceWidth === raster.width && existing.sourceHeight === raster.height &&
-        !existing.decoding) continue;
+        !existing.decoding) {
+      // Current pixels are ready; timeline images below may still need decode.
+    } else {
+      const image = await decodeImage(raster.data);
+      const canvas = makeCanvas(raster.width, raster.height);
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("raster decode produced no 2D context");
+      context.clearRect(0, 0, raster.width, raster.height);
+      context.drawImage(image, 0, 0);
+      entries.push({
+        layerId: layer.id,
+        sourceData: raster.data,
+        sourceWidth: raster.width,
+        sourceHeight: raster.height,
+        canvas,
+      });
+    }
 
-    const image = await decodeImage(raster.data);
-    const canvas = makeCanvas(raster.width, raster.height);
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("raster decode produced no 2D context");
-    context.clearRect(0, 0, raster.width, raster.height);
-    context.drawImage(image, 0, 0);
-    entries.push({
-      layerId: layer.id,
-      sourceData: raster.data,
-      sourceWidth: raster.width,
-      sourceHeight: raster.height,
-      canvas,
-    });
+    for (const data of rasterTimelapseImages(layer)) {
+      if (timelineImageStore.get(data)?.decoding === false || preparedTimelineData.has(data)) continue;
+      const image = await decodeImage(data);
+      const canvas = makeCanvas(raster.width, raster.height);
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("raster timelapse decode produced no 2D context");
+      context.clearRect(0, 0, raster.width, raster.height);
+      context.drawImage(image, 0, 0);
+      timelineImages.push({ data, canvas });
+      preparedTimelineData.add(data);
+    }
   }
-  return { entries };
+  return { entries, timelineImages };
 }
 
 /** Atomically install a successful raster preparation after its project has
@@ -200,6 +226,9 @@ export function commitRasterPreparation(preparation: RasterPreparation): void {
       nextStrokeIndex: previous?.nextStrokeIndex ?? 0,
     });
   }
+  for (const prepared of preparation.timelineImages ?? []) {
+    timelineImageStore.set(prepared.data, { canvas: prepared.canvas, decoding: false });
+  }
 }
 
 /** Call after mutating a raster layer's runtime canvas directly. */
@@ -211,9 +240,13 @@ export function markRasterEdited(layer: Layer): void {
 /** Serializes the runtime canvas back into layer.raster.data. Call before
  *  commitHistory so the JSON snapshot contains the new pixels. Updates the
  *  entry's sourceData so this sync doesn't itself trigger a re-decode. */
-export function syncRasterToLayer(layer: Layer): void {
+export function syncRasterToLayer(
+  layer: Layer,
+  timelineMode: "checkpoint" | "none" = "checkpoint",
+): void {
   const entry = store.get(layer.id);
   if (!entry || !layer.raster) return;
+  const beforeData = layer.raster.data;
   const data = entry.canvas.toDataURL("image/png");
   layer.raster.data = data;
   layer.raster.width = entry.canvas.width;
@@ -221,6 +254,48 @@ export function syncRasterToLayer(layer: Layer): void {
   entry.sourceData = data;
   entry.sourceWidth = entry.canvas.width;
   entry.sourceHeight = entry.canvas.height;
+  timelineImageStore.set(data, { canvas: cloneCanvas(entry.canvas), decoding: false });
+  if (timelineMode === "checkpoint") {
+    appendRasterTimelapseCheckpoint(layer, beforeData, data);
+  }
+}
+
+function cloneCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+  const canvas = makeCanvas(source.width, source.height);
+  canvas.getContext("2d")?.drawImage(source, 0, 0);
+  return canvas;
+}
+
+/** Returns a decoded checkpoint/baseline image, starting one async decode on
+ *  demand when a legacy project was opened outside the prepared load path. */
+export function getRasterTimelapseImage(
+  data: string,
+  width: number,
+  height: number,
+): HTMLCanvasElement | null {
+  const existing = timelineImageStore.get(data);
+  if (existing) return existing.decoding ? null : existing.canvas;
+  const pending = { canvas: makeCanvas(width, height), decoding: true };
+  timelineImageStore.set(data, pending);
+  decodeImage(data).then((image) => {
+    const current = timelineImageStore.get(data);
+    if (!current) return;
+    current.canvas.width = width;
+    current.canvas.height = height;
+    const context = current.canvas.getContext("2d");
+    context?.clearRect(0, 0, width, height);
+    context?.drawImage(image, 0, 0);
+    current.decoding = false;
+    readyCallback?.();
+  }).catch(() => {
+    const current = timelineImageStore.get(data);
+    if (current) current.decoding = false;
+  });
+  return null;
+}
+
+export function installRasterTimelapseImage(data: string, canvas: HTMLCanvasElement): void {
+  timelineImageStore.set(data, { canvas: cloneCanvas(canvas), decoding: false });
 }
 
 /** Installs an already-rendered canvas as the live pixels for a raster layer. */

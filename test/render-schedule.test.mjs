@@ -247,6 +247,16 @@ test("playback renders only on panel/tick changes unless panel is time-continuou
   );
   assert.equal(schedule.panelHasPlaybackContinuity(staticPanel), false);
   assert.equal(schedule.panelHasPlaybackContinuity(timelapsePanel), false);
+  assert.equal(schedule.panelHasPlaybackContinuity({
+    ...timelapsePanel,
+    timelapse: {
+      sourceId: "src",
+      camera: [
+        { progress: 0, centerX: 50, centerY: 50, zoom: 1, easing: "linear" },
+        { progress: 1, centerX: 75, centerY: 75, zoom: 2, easing: "easeInOut" },
+      ],
+    },
+  }), true);
   assert.equal(
     schedule.panelHasPlaybackContinuity({
       ...staticPanel,

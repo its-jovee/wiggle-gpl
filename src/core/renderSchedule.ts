@@ -211,7 +211,9 @@ function layerHasPlaybackContinuity(layer: Layer): boolean {
 
 /** Panel visuals change every playback frame (not just on wiggle ticks). */
 export function panelHasPlaybackContinuity(panel: Panel): boolean {
-  // Timelapse progress is wiggle-quantized; it only changes on seqTick like other panels.
+  // Drawing reveal is wiggle-quantized, but an editable camera track glides at
+  // display/export frame rate between distinct keyframes.
+  if ((panel.timelapse?.camera?.length ?? 0) > 1) return true;
   if (hasAnimSpec(panel.enter) || hasAnimSpec(panel.exit)) return true;
   for (const layer of panel.layers) {
     if (layerHasPlaybackContinuity(layer)) return true;
