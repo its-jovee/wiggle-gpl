@@ -199,24 +199,18 @@ import {
   MAX_SUBPANELS_PER_PANEL,
 } from "./core/projectValidation";
 import { APP_NAME, APP_VERSION } from "./core/appMeta";
+import {
+  activeBrushKey,
+  activeToolFromRecentKey,
+  brushTool,
+  editorTool,
+  isActiveEditorTool,
+  recentToolKey,
+  type ActiveTool,
+  type EditorToolKind,
+} from "./tools/activeTool";
 
 if (location.protocol === "file:") document.body.classList.add("file-mode");
-
-const BUCKET_KEY = "__bucket__";
-const GRADIENT_KEY = "__gradient__";
-const TEXT_KEY = "__text__";
-const SUBPANEL_KEY = "__subpanel__";
-const BALLOON_KEY = "__balloon__";
-const CUT_SUBPANEL_KEY = "__cut_subpanel__";
-const SELECT_KEY = "__select__";
-const MARQUEE_KEY = "__marquee__";
-const MOVE_LAYER_KEY = "__move_layer__";
-const PERSPECTIVE_KEY = "__perspective__";
-const SCALE_KEY = "__scale__";
-const TOOL_KEYS = new Set([
-  BUCKET_KEY, GRADIENT_KEY, TEXT_KEY, SUBPANEL_KEY, BALLOON_KEY, CUT_SUBPANEL_KEY,
-  SELECT_KEY, MARQUEE_KEY, MOVE_LAYER_KEY, PERSPECTIVE_KEY, SCALE_KEY,
-]);
 
 /** MRU quick-access strip in the draw inspector (brushes + pseudo-tools). */
 const RECENT_TOOLS_MAX = 5;
@@ -265,7 +259,10 @@ type ScaleToolDragState = {
 };
 let scaleToolDrag: ScaleToolDragState | null = null;
 
-let currentBrush = BRUSHES[0].key;
+let activeTool: ActiveTool = brushTool(BRUSHES[0].key);
+/** Last selected paint brush remains available while a non-paint tool is
+ * active, so Tone and brush preset controls retain the user's brush. */
+let lastBrushKey = BRUSHES[0].key;
 let currentColor = BUILTIN_PALETTES[0].colors[5];
 /** Virtual transparent palette swatch. The last real color stays selected
  *  underneath so color inputs remain valid and switching back is instant. */
@@ -276,8 +273,29 @@ let activeBrushPresetId: string | null = null;
 let closeBrushPicker: (() => void) | null = null;
 let closeFontPicker: (() => void) | null = null;
 
+function currentBrushKey(): string {
+  return activeBrushKey(activeTool) ?? lastBrushKey;
+}
+
+function activateBrush(key: string) {
+  activeTool = brushTool(key);
+  lastBrushKey = key;
+}
+
+function activateEditorTool(kind: EditorToolKind) {
+  activeTool = editorTool(kind);
+}
+
+function toolIs(kind: EditorToolKind): boolean {
+  return isActiveEditorTool(activeTool, kind);
+}
+
+function isKnownBrushKey(key: string): boolean {
+  return BRUSHES.some((brush) => brush.key === key);
+}
+
 function isKnownRecentToolKey(key: string): boolean {
-  return TOOL_KEYS.has(key) || BRUSHES.some((b) => b.key === key);
+  return activeToolFromRecentKey(key, isKnownBrushKey) !== null;
 }
 
 function readRecentToolKeys(): string[] {
@@ -285,7 +303,10 @@ function readRecentToolKeys(): string[] {
     const raw = JSON.parse(localStorage.getItem(RECENT_TOOLS_KEY) ?? "null");
     if (!Array.isArray(raw)) return [...DEFAULT_RECENT_TOOLS];
     const keys = raw
-      .filter((k): k is string => typeof k === "string" && isKnownRecentToolKey(k));
+      .filter((k): k is string => typeof k === "string" && isKnownRecentToolKey(k))
+      .map((key) => activeToolFromRecentKey(key, isKnownBrushKey))
+      .filter((tool): tool is ActiveTool => tool !== null)
+      .map(recentToolKey);
     const unique = [...new Set(keys)].slice(0, RECENT_TOOLS_MAX);
     return unique.length ? unique : [...DEFAULT_RECENT_TOOLS];
   } catch {
@@ -304,8 +325,8 @@ function writeRecentToolKeys(keys: string[]) {
 /** Most-recent-first list of brush/tool keys for the quick-access strip. */
 let recentToolKeys = readRecentToolKeys();
 
-function rememberRecentTool(key: string) {
-  if (!isKnownRecentToolKey(key)) return;
+function rememberRecentTool(tool: ActiveTool) {
+  const key = recentToolKey(tool);
   recentToolKeys = [key, ...recentToolKeys.filter((k) => k !== key)].slice(0, RECENT_TOOLS_MAX);
   writeRecentToolKeys(recentToolKeys);
 }
@@ -369,7 +390,7 @@ const lastBrushByTool: Partial<Record<BrushToolKey, string>> = {};
 let deferredRasterBrush: string | null = null;
 /** Whether the Tone tool chip is engaged, and which layer to restore when
  *  the user switches to any other tool/brush. The Tone tool is a layer
- *  shortcut, not a brush — currentBrush is left untouched while it's active. */
+ *  shortcut, not a brush — the active paint brush is left untouched. */
 let toneToolActive = false;
 let toneToolPrevLayerIndex: number | null = null;
 let currentPalette: Palette = BUILTIN_PALETTES[0];
@@ -590,11 +611,11 @@ function applyBrushPresetById(id: string) {
   if (!preset) return;
   const applied = applyBrushPreset(preset);
   const resolved = resolveBrushForLayer(applied.brush, activeLayer()?.kind ?? null);
-  currentBrush = resolved.brush.key;
+  activateBrush(resolved.brush.key);
   currentSize = applied.size;
   currentBrushSettings = { ...applied.settings };
   activeBrushPresetId = preset.id;
-  rememberRecentTool(currentBrush);
+  rememberRecentTool(activeTool);
   updateBrushSizeControl();
   updateBrushSettingsControls();
   buildBrushBar();
@@ -604,10 +625,11 @@ function applyBrushPresetById(id: string) {
 }
 
 function saveCurrentBrushPreset() {
-  const name = window.prompt("Preset name", brushByKey(currentBrush).label);
+  const brushKey = currentBrushKey();
+  const name = window.prompt("Preset name", brushByKey(brushKey).label);
   if (!name) return;
   const preset = brushPresetFromState(crypto.randomUUID(), name, {
-    brush: currentBrush,
+    brush: brushKey,
     size: currentSize,
     settings: currentBrushSettings,
   });
@@ -622,7 +644,7 @@ function updateActiveBrushPreset() {
   const existing = activeBrushPreset();
   if (!existing) return;
   const preset = brushPresetFromState(existing.id, existing.name, {
-    brush: currentBrush,
+    brush: currentBrushKey(),
     size: currentSize,
     settings: currentBrushSettings,
   });
@@ -2072,7 +2094,8 @@ function commitLiveStroke() {
 }
 
 function isRadialBrushActive(): boolean {
-  return !TOOL_KEYS.has(currentBrush) && brushByKey(currentBrush).radial === true;
+  const brushKey = activeBrushKey(activeTool);
+  return brushKey !== null && brushByKey(brushKey).radial === true;
 }
 
 function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
@@ -2085,7 +2108,7 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
   if (!layer || !layer.visible) return;
   if (!activeLayerIsEditable(true)) return;
   const paintableTone = layer.kind === "tone" && layer.tone?.coverage === "painted";
-  const gradientTone = currentBrush === GRADIENT_KEY && layer.kind === "tone";
+  const gradientTone = toolIs("gradient") && layer.kind === "tone";
   if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone && !gradientTone) {
     const c = activeContainer();
     const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible && !l.locked);
@@ -2102,11 +2125,13 @@ function commitMangaRadialStroke(center: Vec2, edge: Vec2) {
     return;
   }
 
+  const brushKey = activeBrushKey(activeTool);
+  if (!brushKey) return;
   const stroke: Stroke = {
-    brush: currentBrush,
+    brush: brushKey,
     color: currentColor,
     size: currentSize,
-    erase: transparentPaintSelected || brushByKey(currentBrush).erase === true,
+    erase: transparentPaintSelected || brushByKey(brushKey).erase === true,
     brushSettings: { ...currentBrushSettings },
     points: [{ x: center.x, y: center.y }, { x: edge.x, y: edge.y }],
     pressures: [1, 1],
@@ -2599,13 +2624,13 @@ function updateCanvasCursor(pos?: Vec2) {
   canvas.style.cursor = "";
   // The eraser ring overlay is driven by pointermove; drop it whenever the
   // eraser isn't the effective tool so it can't linger over other tools.
-  if (!isEraseBrushKey(currentBrush)) hideEraserCursorOverlay();
+  if (!isEraseToolActive()) hideEraserCursorOverlay();
   if (playing || panDrag || spacePanDown) return;
-  if (isEraseBrushKey(currentBrush)) {
+  if (isEraseToolActive()) {
     canvas.style.cursor = "none";
     return;
   }
-  if (currentBrush === MARQUEE_KEY && selectionState) {
+  if (toolIs("marquee") && selectionState) {
     const at = pos ?? lastCanvasPointerPos;
     const manipulableIdleObject = selectionState.mode === "object" && selectionState.phase === "idle";
     const manipulableRasterRegion = isManipulableRasterRegion(selectionState);
@@ -2627,7 +2652,7 @@ function updateCanvasCursor(pos?: Vec2) {
         }
       }
     }
-  } else if (currentBrush === SCALE_KEY) {
+  } else if (toolIs("scale")) {
     const at = pos ?? lastCanvasPointerPos;
     const target = scaleToolDrag ? { bounds: scaleToolDrag.bounds } : scaleToolItems();
     if (at && target) {
@@ -2641,8 +2666,12 @@ function updateCanvasCursor(pos?: Vec2) {
 }
 
 function isEraseBrushKey(key: string, eraseWithColor = transparentPaintSelected): boolean {
-  if (TOOL_KEYS.has(key)) return false;
   return eraseWithColor || isErasePreviewBrush(brushByKey(key));
+}
+
+function isEraseToolActive(): boolean {
+  const brushKey = activeBrushKey(activeTool);
+  return brushKey !== null && isEraseBrushKey(brushKey);
 }
 
 function cutAtShape(shape: SelectionShape, inverted = false): MarqueeRef[] {
@@ -3822,7 +3851,7 @@ function armLayerKeyframe(which: "from" | "to") {
   const anim = ensureLayerAnimation(layer);
   anim.enabled = true;
   keyframeArm = which;
-  currentBrush = MOVE_LAYER_KEY;
+  activateEditorTool("move-layer");
   buildTimeline();
   buildLayers();
   buildInspector();
@@ -3854,7 +3883,7 @@ function shouldStartViewportPan(e: PointerEvent) {
   // left-drag navigates instead of leaving an accidental dab/history entry.
   // Canvas tools (select, marquee, fill, text, etc.) still accept mouse clicks.
   return e.button === 0
-    && !TOOL_KEYS.has(currentBrush)
+    && activeTool.kind === "brush"
     && pointerDevices.isDistinctMouse(e)
     && !penContactContinuityActive();
 }
@@ -3937,7 +3966,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Select tool — universal mouse / picker. Priority: tail handle (when a
   // balloon/thought is selected) → text → sub-panel → deselect.
-  if (currentBrush === SELECT_KEY) {
+  if (toolIs("select")) {
     const sps = frameSubPanels(activeStackContainer());
     if (selectedSubPanelId) {
       const sp = findSubPanelById(activePanel(), selectedSubPanelId) ?? sps.find(s => s.id === selectedSubPanelId);
@@ -3993,7 +4022,7 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 
   // Marquee tool — region mask (clip draw/fill) or extracted object group.
-  if (currentBrush === MARQUEE_KEY) {
+  if (toolIs("marquee")) {
     if (!activeLayerIsEditable(true)) return;
     if (selectionState?.mode === "object" && selectionState.phase === "idle") {
       const handle = hitTestTransformHandle(pos, selectionState.bounds, viewport.scale);
@@ -4075,7 +4104,7 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 
   // Scale tool — resize/rotate the active layer's content (or the current selection).
-  if (currentBrush === SCALE_KEY) {
+  if (toolIs("scale")) {
     if (!activeLayerIsEditable(true)) return;
     let target = scaleToolItems();
     if (!target) return;
@@ -4114,7 +4143,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Move Layer tool — shifts every drawable item in the active layer. This is
   // intentionally separate from marquee selection and keeps strokes raw.
-  if (currentBrush === MOVE_LAYER_KEY) {
+  if (toolIs("move-layer")) {
     const layer = activeLayer();
     if (!layer || !layer.visible) return;
     if (!activeLayerIsEditable(true)) return;
@@ -4146,7 +4175,7 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 
   // Perspective ruler tool: place / drag vanishing points and the horizon.
-  if (currentBrush === PERSPECTIVE_KEY) {
+  if (toolIs("perspective")) {
     const panel = activePanel();
     prunePerspectiveGuides(panel);
     let guide = activePerspectiveGuide();
@@ -4187,14 +4216,14 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 
   // Sub-panel / balloon tool: drag-create
-  if (currentBrush === SUBPANEL_KEY || currentBrush === BALLOON_KEY) {
+  if (toolIs("subpanel") || toolIs("balloon")) {
     subPanelDrag = { start: pos, end: pos };
     capturePointer(e);
     return;
   }
 
   // Cut Subpanel: drag a straight cut line across a frame
-  if (currentBrush === CUT_SUBPANEL_KEY) {
+  if (toolIs("cut-subpanel")) {
     cutSubPanelDrag = { start: pos, end: pos };
     capturePointer(e);
     return;
@@ -4202,7 +4231,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
   // Text tool: click existing text to re-edit; otherwise place a new one.
   // Route into the sub-panel at the click point if the user is at panel root.
-  if (currentBrush === TEXT_KEY) {
+  if (toolIs("text")) {
     maybeEnterSubPanelAt(pos);
     const textHit = hitTestText(pos);
     if (textHit) {
@@ -4237,7 +4266,7 @@ canvas.addEventListener("pointerdown", (e) => {
   // strokes directly (they commit through the normal liveStroke path — the
   // tone pattern is revealed by the mask at render time).
   const paintableTone = layer.kind === "tone" && layer.tone?.coverage === "painted";
-  const gradientTone = currentBrush === GRADIENT_KEY && layer.kind === "tone";
+  const gradientTone = toolIs("gradient") && layer.kind === "tone";
   if (layer.kind !== "draw" && layer.kind !== "raster" && layer.kind !== undefined && !paintableTone && !gradientTone) {
     const c = activeContainer();
     const idx = c.layers.findIndex(l => (l.kind ?? "draw") === "draw" && l.visible && !l.locked);
@@ -4249,13 +4278,12 @@ canvas.addEventListener("pointerdown", (e) => {
   }
 
   const regionClip = activeRegionShape(selectionState);
-  if (regionClip && !activeRegionContains(selectionState, pos) &&
-      currentBrush !== MARQUEE_KEY && currentBrush !== SELECT_KEY && currentBrush !== MOVE_LAYER_KEY) {
+  if (regionClip && !activeRegionContains(selectionState, pos)) {
     setStatus("Click inside the selection");
     return;
   }
 
-  if (currentBrush === GRADIENT_KEY) {
+  if (toolIs("gradient")) {
     gradientDrag = { start: pos, end: pos, pointerId: e.pointerId };
     capturePointer(e);
     return;
@@ -4267,7 +4295,7 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
 
-  if (currentBrush === BUCKET_KEY) {
+  if (toolIs("bucket")) {
     const layer2 = activeLayer()!;
     if (layer2.kind === "raster") {
       const rasterCanvas = getRasterCanvas(layer2);
@@ -4348,9 +4376,11 @@ canvas.addEventListener("pointerdown", (e) => {
     { point: pos, pressure: firstPressure },
     project.drawingSettings.smoothing
   );
+  const brushKey = activeBrushKey(activeTool);
+  if (!brushKey) return;
   liveStroke = {
-    brush: currentBrush, color: currentColor, size: currentSize,
-    erase: transparentPaintSelected || brushByKey(currentBrush).erase === true,
+    brush: brushKey, color: currentColor, size: currentSize,
+    erase: transparentPaintSelected || brushByKey(brushKey).erase === true,
     brushSettings: { ...currentBrushSettings },
     points: [applyPerspectiveSnap(pos)], pressures: [firstPressure],
   };
@@ -4486,7 +4516,7 @@ canvas.addEventListener("pointermove", (e) => {
       return;
     }
   }
-  if (currentBrush === SCALE_KEY && scaleToolDrag && e.buttons !== 0) {
+  if (toolIs("scale") && scaleToolDrag && e.buttons !== 0) {
     const pos = canvasPos(e);
     const { handle, pivot, startBounds, snapshots, items } = scaleToolDrag;
     if (handle === "rotate") {
@@ -4681,7 +4711,7 @@ window.addEventListener("pointerup", (e) => {
       return;
     }
   }
-  if (currentBrush === SCALE_KEY && scaleToolDrag) {
+  if (toolIs("scale") && scaleToolDrag) {
     const touchedLayers = [...new Set(
       scaleToolDrag.items.filter(i => i.kind !== "subpanel").map(i => (i as { layer: Layer }).layer)
     )];
@@ -4723,7 +4753,7 @@ window.addEventListener("pointerup", (e) => {
     const bw = Math.abs(end.x - start.x);
     const bh = Math.abs(end.y - start.y);
     if (bw > 20 && bh > 20) {
-      const shape = currentBrush === BALLOON_KEY ? pendingBalloonShape : pendingSubPanelShape;
+      const shape = toolIs("balloon") ? pendingBalloonShape : pendingSubPanelShape;
       createSubPanel({ x: bx, y: by, w: bw, h: bh }, shape);
     }
     return;
@@ -4842,7 +4872,7 @@ function hasLiveEditorInteraction(): boolean {
 canvas.addEventListener("dblclick", (e) => {
   if (playing) return;
   const pos = canvasPos(e);
-  if (currentBrush === SELECT_KEY || currentBrush === TEXT_KEY) {
+  if (toolIs("select") || toolIs("text")) {
     // Second click of a double-click already opened the editor on pointerup.
     if (activeTextInput) return;
     const textHit = hitTestText(pos);
@@ -4884,7 +4914,7 @@ canvas.addEventListener("dblclick", (e) => {
 // Single click on a child sub-panel = select for inspector (scoped to current container).
 canvas.addEventListener("click", (e) => {
   if (playing) return;
-  if (TOOL_KEYS.has(currentBrush)) return;
+  if (activeTool.kind !== "brush") return;
   const pos = canvasPos(e);
   const sps = frameSubPanels(activeStackContainer());
   for (let i = sps.length - 1; i >= 0; i--) {
@@ -5112,8 +5142,9 @@ function applySubPanelShapeDefaults(sp: SubPanel, shape: SubPanelShape) {
 }
 
 function createSubPanel(bounds: { x: number; y: number; w: number; h: number }, shape: SubPanelShape) {
-  // Use the current draw brush for the border; fall back to "round".
-  const brush = TOOL_KEYS.has(currentBrush) ? "round" : currentBrush;
+  // Preserve the previous sentinel-tool behavior: frame tools use the neutral
+  // round border rather than leaking a parked raster-only brush into vectors.
+  const brush = activeBrushKey(activeTool) ?? "round";
   const panel = activePanel();
   if (countSubPanels(panel) >= MAX_SUBPANELS_PER_PANEL) {
     setStatus(`Sub-panel limit reached (${MAX_SUBPANELS_PER_PANEL})`);
@@ -5533,7 +5564,7 @@ function hideEraserCursorOverlay() {
 function updateEraserCursorOverlay(clientX: number, clientY: number) {
   const erasing = drawing && liveStroke &&
     isEraseBrushKey(liveStroke.brush, liveStroke.erase === true);
-  const hovering = !drawing && isEraseBrushKey(currentBrush);
+  const hovering = !drawing && isEraseToolActive();
   if ((!erasing && !hovering) || playing || panDrag || spacePanDown) {
     hideEraserCursorOverlay();
     return;
@@ -5660,7 +5691,7 @@ function drawPerspectiveGuideLines(ctx: CanvasRenderingContext2D, guide: Perspec
 function drawPerspectiveOverlay(ctx: CanvasRenderingContext2D) {
   if (activePanel().kind === "timelapse") return;
   const guide = activePerspectiveGuide();
-  const toolActive = currentBrush === PERSPECTIVE_KEY;
+  const toolActive = toolIs("perspective");
 
   // While the tool is active, ghost the rulers bound to other layers so the
   // user can see where they are without them snapping anything.
@@ -5732,7 +5763,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const showTransformHandles = currentBrush === MARQUEE_KEY && (
+  const showTransformHandles = toolIs("marquee") && (
     (selectionState.mode === "object" &&
       (selectionState.phase === "idle" || selectionState.phase === "transforming")) ||
     isManipulableRasterRegion(selectionState)
@@ -5763,7 +5794,7 @@ function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
 }
 
 function drawScaleToolOverlay(ctx: CanvasRenderingContext2D) {
-  if (currentBrush !== SCALE_KEY) return;
+  if (!toolIs("scale")) return;
   const target = scaleToolDrag
     ? { bounds: scaleToolDrag.bounds }
     : scaleToolItems();
@@ -6034,7 +6065,7 @@ function loop(now: number) {
       ctx.arc(center.x, center.y, Math.max(radius, 1), 0, Math.PI * 2);
       ctx.stroke();
       if (radius >= MANGA_RADIAL_MIN_RADIUS) {
-        const brush = brushByKey(currentBrush);
+        const brush = brushByKey(currentBrushKey());
         const settings = effectiveBrushSettings(brush.spacing, currentSize, currentBrushSettings);
         const c = activeContainer();
         const layerIndex = c.getActiveLayerIndex();
@@ -6162,9 +6193,10 @@ requestLoopFrame();
 
 // ---- UI: brushes / palette / layers / timeline / inspector / breadcrumb ---
 
-/** Keep currentBrush compatible with the active layer; park/restore raster-only. */
+/** Keep the active brush compatible with the active layer; park/restore raster-only. */
 function syncBrushAvailability(announce = true): boolean {
-  if (TOOL_KEYS.has(currentBrush)) return false;
+  const selectedBrushKey = activeBrushKey(activeTool);
+  if (!selectedBrushKey) return false;
   const layerKind = activeLayer()?.kind ?? null;
 
   if (
@@ -6172,19 +6204,19 @@ function syncBrushAvailability(announce = true): boolean {
     deferredRasterBrush &&
     isBrushKeyAvailable(deferredRasterBrush, "raster")
   ) {
-    if (currentBrush !== deferredRasterBrush) {
-      currentBrush = deferredRasterBrush;
+    if (selectedBrushKey !== deferredRasterBrush) {
+      activateBrush(deferredRasterBrush);
       if (announce) setStatus(`Restored ${brushByKey(deferredRasterBrush).label}`);
     }
     deferredRasterBrush = null;
     return true;
   }
 
-  const resolved = resolveBrushForLayer(currentBrush, layerKind);
+  const resolved = resolveBrushForLayer(selectedBrushKey, layerKind);
   if (!resolved.changed) return false;
-  const previous = BRUSHES.find((b) => b.key === currentBrush);
-  if (previous?.rasterOnly) deferredRasterBrush = currentBrush;
-  currentBrush = resolved.brush.key;
+  const previous = BRUSHES.find((b) => b.key === selectedBrushKey);
+  if (previous?.rasterOnly) deferredRasterBrush = selectedBrushKey;
+  activateBrush(resolved.brush.key);
   if (announce && resolved.reason) setStatus(resolved.reason);
   return true;
 }
@@ -6214,8 +6246,8 @@ function selectBrushKey(key: string) {
   const brush = BRUSHES.find((entry) => entry.key === key);
   let layerChanged = false;
   if (brush?.rasterOnly) layerChanged = ensureActiveRasterLayer(true);
-  currentBrush = key;
-  if (!TOOL_KEYS.has(key)) lastBrushByTool[brushToolForKey(key)] = key;
+  activateBrush(key);
+  lastBrushByTool[brushToolForKey(key)] = key;
   deferredRasterBrush = null;
   if (layerChanged) {
     buildLayers();
@@ -6225,9 +6257,9 @@ function selectBrushKey(key: string) {
 
 function buildBrushBar() {
   syncBrushAvailability(true);
-  canvas.classList.toggle("select-cursor", currentBrush === SELECT_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY);
-  canvas.classList.toggle("marquee-cursor", currentBrush === MARQUEE_KEY);
-  canvas.classList.toggle("cut-subpanel-cursor", currentBrush === CUT_SUBPANEL_KEY);
+  canvas.classList.toggle("select-cursor", toolIs("select") || toolIs("move-layer") || toolIs("scale"));
+  canvas.classList.toggle("marquee-cursor", toolIs("marquee"));
+  canvas.classList.toggle("cut-subpanel-cursor", toolIs("cut-subpanel"));
   const drawTools = $("tools-draw");
   const editTools = $("tools-edit");
   const insertTools = $("tools-insert");
@@ -6249,17 +6281,17 @@ function buildBrushBar() {
     toneToolActive = false;
     toneToolPrevLayerIndex = null;
   };
-  const switchTo = (k: string) => {
+  const switchTo = (nextTool: ActiveTool) => {
     const hadTone = toneToolActive;
     // Gradient is a valid tone-layer operation. Keep the Tone shortcut's
     // active layer selected instead of restoring the prior draw layer.
-    exitToneTool(k !== GRADIENT_KEY);
-    if (TOOL_KEYS.has(k)) {
-      currentBrush = k;
+    exitToneTool(nextTool.kind !== "gradient");
+    if (nextTool.kind === "brush") {
+      selectBrushKey(nextTool.brushKey);
     } else {
-      selectBrushKey(k);
+      activeTool = nextTool;
     }
-    rememberRecentTool(k);
+    rememberRecentTool(activeTool);
     selectDrag = null;
     if (scaleToolDrag) {
       for (const snap of scaleToolDrag.snapshots) restoreFromSnapshot(snap);
@@ -6284,18 +6316,18 @@ function buildBrushBar() {
     buildInspector();
     buildBrushBar();
   };
-  const addTool = (host: HTMLElement, key: string, label: string, icon: StudioIcon) => {
+  const addTool = (host: HTMLElement, kind: EditorToolKind, label: string, icon: StudioIcon) => {
     const btn = document.createElement("button");
-    btn.className = "chip tool" + (currentBrush === key ? " active" : "");
+    btn.className = "chip tool" + (toolIs(kind) ? " active" : "");
     btn.title = label;
     btn.setAttribute("aria-label", label);
     btn.appendChild(svgIcon(icon, 16));
-    btn.onclick = () => switchTo(key);
+    btn.onclick = () => switchTo(editorTool(kind));
     host.appendChild(btn);
   };
   const addBrushTool = (tool: BrushToolKey, label: string, icon: StudioIcon) => {
     const layerKind = activeLayer()?.kind ?? null;
-    const active = !TOOL_KEYS.has(currentBrush) && brushToolForKey(currentBrush) === tool;
+    const active = activeTool.kind === "brush" && brushToolForKey(activeTool.brushKey) === tool;
     const btn = document.createElement("button");
     btn.className = "chip tool" + (active ? " active" : "");
     btn.title = label;
@@ -6306,7 +6338,7 @@ function buildBrushBar() {
       const remembered = lastBrushByTool[tool];
       const next =
         remembered && isBrushKeyAvailable(remembered, layerKind) ? remembered : fallback;
-      switchTo(next);
+      switchTo(brushTool(next));
     };
     drawTools.appendChild(btn);
   };
@@ -6320,8 +6352,8 @@ function buildBrushBar() {
   for (const tool of BRUSH_TOOLS) {
     addBrushTool(tool.key, tool.label, brushToolIcons[tool.key]);
   }
-  addTool(drawTools, BUCKET_KEY, "Bucket", StudioIcons.Bucket);
-  addTool(drawTools, GRADIENT_KEY, "Gradient", StudioIcons.Gradient);
+  addTool(drawTools, "bucket", "Bucket", StudioIcons.Bucket);
+  addTool(drawTools, "gradient", "Gradient", StudioIcons.Gradient);
   {
     const toneBtn = document.createElement("button");
     toneBtn.className = "chip tool" + (toneToolActive ? " active" : "");
@@ -6331,26 +6363,29 @@ function buildBrushBar() {
     toneBtn.onclick = () => engageToneTool();
     drawTools.appendChild(toneBtn);
   }
-  addTool(editTools, SELECT_KEY, "Select", StudioIcons.Pointer);
-  addTool(editTools, MARQUEE_KEY, "Marquee", StudioIcons.Selection);
-  addTool(editTools, MOVE_LAYER_KEY, "Move active layer", StudioIcons.Move);
-  addTool(editTools, SCALE_KEY, "Scale", StudioIcons.Scale);
-  addTool(insertTools, TEXT_KEY, "Text", StudioIcons.Text);
-  addTool(insertTools, SUBPANEL_KEY, "Sub-Panel", StudioIcons.SubPanel);
-  addTool(insertTools, BALLOON_KEY, "Balloon", StudioIcons.Balloon);
-  addTool(insertTools, CUT_SUBPANEL_KEY, "Cut Subpanel", StudioIcons.CutSubPanel);
-  addTool(insertTools, PERSPECTIVE_KEY, "Perspective Ruler", StudioIcons.Perspective);
+  addTool(editTools, "select", "Select", StudioIcons.Pointer);
+  addTool(editTools, "marquee", "Marquee", StudioIcons.Selection);
+  addTool(editTools, "move-layer", "Move active layer", StudioIcons.Move);
+  addTool(editTools, "scale", "Scale", StudioIcons.Scale);
+  addTool(insertTools, "text", "Text", StudioIcons.Text);
+  addTool(insertTools, "subpanel", "Sub-Panel", StudioIcons.SubPanel);
+  addTool(insertTools, "balloon", "Balloon", StudioIcons.Balloon);
+  addTool(insertTools, "cut-subpanel", "Cut Subpanel", StudioIcons.CutSubPanel);
+  addTool(insertTools, "perspective", "Perspective Ruler", StudioIcons.Perspective);
 
-  const activeTool = TOOL_KEYS.has(currentBrush) ? "classic" : brushToolForKey(currentBrush);
-  const activeToolLabel = BRUSH_TOOLS.find((tool) => tool.key === activeTool)?.label ?? "Classic";
+  const activeBrushTool = activeTool.kind === "brush"
+    ? brushToolForKey(activeTool.brushKey)
+    : "classic";
+  const activeToolLabel = BRUSH_TOOLS.find((tool) => tool.key === activeBrushTool)?.label ?? "Classic";
   const layerKind = activeLayer()?.kind ?? null;
   // List raster-only (Krita) brushes even on draw layers so they don't look
   // "missing" — selecting one switches/creates a raster layer via selectBrushKey.
-  const activeBrushes = brushesForTool(activeTool, "raster");
-  const usableBrushes = brushesForTool(activeTool, layerKind);
-  const activeBrush = usableBrushes.find((b) => b.key === currentBrush)
-    ?? activeBrushes.find((b) => b.key === currentBrush)
-    ?? defaultBrushForTool(activeTool, layerKind);
+  const activeBrushes = brushesForTool(activeBrushTool, "raster");
+  const usableBrushes = brushesForTool(activeBrushTool, layerKind);
+  const selectedBrushKey = activeBrushKey(activeTool) ?? "";
+  const activeBrush = usableBrushes.find((b) => b.key === selectedBrushKey)
+    ?? activeBrushes.find((b) => b.key === selectedBrushKey)
+    ?? defaultBrushForTool(activeBrushTool, layerKind);
   const appendBrushPreview = (
     host: HTMLElement,
     brush: typeof BRUSHES[number],
@@ -6375,49 +6410,53 @@ function buildBrushBar() {
     host.appendChild(preview);
   };
 
-  const toolMeta: Record<string, { label: string; icon: StudioIcon }> = {
-    [BUCKET_KEY]: { label: "Bucket", icon: StudioIcons.Bucket },
-    [GRADIENT_KEY]: { label: "Gradient", icon: StudioIcons.Gradient },
-    [TEXT_KEY]: { label: "Text", icon: StudioIcons.Text },
-    [SUBPANEL_KEY]: { label: "Sub-Panel", icon: StudioIcons.SubPanel },
-    [BALLOON_KEY]: { label: "Balloon", icon: StudioIcons.Balloon },
-    [CUT_SUBPANEL_KEY]: { label: "Cut Subpanel", icon: StudioIcons.CutSubPanel },
-    [SELECT_KEY]: { label: "Select", icon: StudioIcons.Pointer },
-    [MARQUEE_KEY]: { label: "Marquee", icon: StudioIcons.Selection },
-    [MOVE_LAYER_KEY]: { label: "Move active layer", icon: StudioIcons.Move },
-    [SCALE_KEY]: { label: "Scale", icon: StudioIcons.Scale },
-    [PERSPECTIVE_KEY]: { label: "Perspective Ruler", icon: StudioIcons.Perspective },
+  const toolMeta: Record<EditorToolKind, { label: string; icon: StudioIcon }> = {
+    bucket: { label: "Bucket", icon: StudioIcons.Bucket },
+    gradient: { label: "Gradient", icon: StudioIcons.Gradient },
+    text: { label: "Text", icon: StudioIcons.Text },
+    subpanel: { label: "Sub-Panel", icon: StudioIcons.SubPanel },
+    balloon: { label: "Balloon", icon: StudioIcons.Balloon },
+    "cut-subpanel": { label: "Cut Subpanel", icon: StudioIcons.CutSubPanel },
+    select: { label: "Select", icon: StudioIcons.Pointer },
+    marquee: { label: "Marquee", icon: StudioIcons.Selection },
+    "move-layer": { label: "Move active layer", icon: StudioIcons.Move },
+    scale: { label: "Scale", icon: StudioIcons.Scale },
+    perspective: { label: "Perspective Ruler", icon: StudioIcons.Perspective },
   };
 
   if (recentHost) {
     for (const key of recentToolKeys) {
-      if (TOOL_KEYS.has(key)) {
-        const meta = toolMeta[key];
-        if (!meta) continue;
+      const recentTool = activeToolFromRecentKey(key, isKnownBrushKey);
+      if (!recentTool) continue;
+      if (recentTool.kind !== "brush") {
+        const meta = toolMeta[recentTool.kind];
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "recent-tool" + (currentBrush === key ? " active" : "");
+        btn.className = "recent-tool" + (toolIs(recentTool.kind) ? " active" : "");
         btn.title = meta.label;
         btn.setAttribute("aria-label", meta.label);
         btn.setAttribute("role", "listitem");
         btn.appendChild(svgIcon(meta.icon, 16));
-        btn.onclick = () => switchTo(key);
+        btn.onclick = () => switchTo(recentTool);
         recentHost.appendChild(btn);
         continue;
       }
-      if (!isBrushKeyAvailable(key, layerKind)) {
-        const brush = BRUSHES.find((entry) => entry.key === key);
+      const brushKey = recentTool.brushKey;
+      if (!isBrushKeyAvailable(brushKey, layerKind)) {
+        const brush = BRUSHES.find((entry) => entry.key === brushKey);
         if (!brush?.rasterOnly) continue;
       }
-      const brush = brushByKey(key);
+      const brush = brushByKey(brushKey);
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "recent-tool" + (currentBrush === key ? " active" : "");
+      btn.className = "recent-tool" + (
+        activeTool.kind === "brush" && activeTool.brushKey === brushKey ? " active" : ""
+      );
       btn.title = brush.label;
       btn.setAttribute("aria-label", brush.label);
       btn.setAttribute("role", "listitem");
       appendBrushPreview(btn, brush, "recent-tool-preview", 34, 34);
-      btn.onclick = () => switchTo(key);
+      btn.onclick = () => switchTo(recentTool);
       recentHost.appendChild(btn);
     }
   }
@@ -6520,7 +6559,7 @@ function buildBrushBar() {
 
   let lastGroup: string | null = null;
   for (const b of activeBrushes) {
-    const groupName = b.group ?? (activeTool === "classic" ? "Classic" : activeToolLabel);
+    const groupName = b.group ?? (activeBrushTool === "classic" ? "Classic" : activeToolLabel);
     if (groupName !== lastGroup) {
       lastGroup = groupName;
       const header = document.createElement("div");
@@ -6542,7 +6581,7 @@ function buildBrushBar() {
     option.appendChild(optionLabel);
     option.onclick = () => {
       closePicker();
-      switchTo(b.key);
+      switchTo(brushTool(b.key));
     };
     menu.appendChild(option);
   }
@@ -6615,18 +6654,20 @@ function buildBrushPresetControls() {
 
 function drawContextSummaryLabel(): string {
   if (toneToolActive) return "Tone";
-  const regBrush = TOOL_KEYS.has(currentBrush) ? null : brushByKey(currentBrush);
+  const brushKey = activeBrushKey(activeTool);
+  const regBrush = brushKey ? brushByKey(brushKey) : null;
   if (!regBrush) return "Brush";
   if (regBrush.erase || transparentPaintSelected) return "Eraser";
   if (regBrush.group === "Manga FX") return "Manga FX";
-  const tool = brushToolForKey(currentBrush);
+  const tool = brushToolForKey(regBrush.key);
   return BRUSH_TOOLS.find((t) => t.key === tool)?.label ?? "Classic";
 }
 
 function updateToolContext() {
-  const currentRegistryBrush = TOOL_KEYS.has(currentBrush)
-    ? null
-    : BRUSHES.find((b) => b.key === currentBrush) ?? null;
+  const brushKey = activeBrushKey(activeTool);
+  const currentRegistryBrush = brushKey
+    ? BRUSHES.find((b) => b.key === brushKey) ?? null
+    : null;
   const isEraser = !!currentRegistryBrush &&
     (currentRegistryBrush.erase === true || transparentPaintSelected);
   const isBrushLike = !!currentRegistryBrush && !isEraser;
@@ -6636,13 +6677,13 @@ function updateToolContext() {
     : null;
   const contexts = [
     ["draw-context", isBrushLike || isEraser],
-    ["text-context", currentBrush === TEXT_KEY || !!selectedText],
-    ["bucket-context", currentBrush === BUCKET_KEY],
-    ["gradient-context", currentBrush === GRADIENT_KEY],
-    ["edit-context", currentBrush === SELECT_KEY || currentBrush === MARQUEE_KEY || currentBrush === MOVE_LAYER_KEY || currentBrush === SCALE_KEY || hasSelection],
-    ["subpanel-context", currentBrush === SUBPANEL_KEY || currentBrush === CUT_SUBPANEL_KEY || (!!selectedSubPanel && !isBalloonShape(selectedSubPanel.shape))],
-    ["balloon-context", currentBrush === BALLOON_KEY || (!!selectedSubPanel && isBalloonShape(selectedSubPanel.shape))],
-    ["perspective-context", currentBrush === PERSPECTIVE_KEY],
+    ["text-context", toolIs("text") || !!selectedText],
+    ["bucket-context", toolIs("bucket")],
+    ["gradient-context", toolIs("gradient")],
+    ["edit-context", toolIs("select") || toolIs("marquee") || toolIs("move-layer") || toolIs("scale") || hasSelection],
+    ["subpanel-context", toolIs("subpanel") || toolIs("cut-subpanel") || (!!selectedSubPanel && !isBalloonShape(selectedSubPanel.shape))],
+    ["balloon-context", toolIs("balloon") || (!!selectedSubPanel && isBalloonShape(selectedSubPanel.shape))],
+    ["perspective-context", toolIs("perspective")],
   ] as const;
   for (const [id, active] of contexts) {
     $(id).classList.toggle("active", active);
@@ -6660,7 +6701,7 @@ function updateToolContext() {
       || (module.classList.contains("tool-context") && !module.classList.contains("active")),
     );
   });
-  if (currentBrush === PERSPECTIVE_KEY) buildPerspectiveInspector();
+  if (toolIs("perspective")) buildPerspectiveInspector();
 }
 
 function buildPerspectiveInspector() {
@@ -6812,7 +6853,7 @@ function buildEditContext() {
     host.appendChild(btn);
   };
 
-  if (currentBrush === MARQUEE_KEY || selectionState) {
+  if (toolIs("marquee") || selectionState) {
     const toolRow = document.createElement("div");
     toolRow.className = "row";
     toolRow.style.marginBottom = "8px";
@@ -6826,7 +6867,7 @@ function buildEditContext() {
     host.appendChild(toolRow);
   }
 
-  if (currentBrush === SCALE_KEY && !selectionState) {
+  if (toolIs("scale") && !selectionState) {
     const hint = document.createElement("div");
     hint.className = "context-hint";
     hint.textContent = "Scale: drag handles around the active layer to resize or rotate its content.";
@@ -6838,7 +6879,7 @@ function buildEditContext() {
   }
 
   if (!selectionState) {
-    if (currentBrush === MOVE_LAYER_KEY) {
+    if (toolIs("move-layer")) {
       const hint = document.createElement("div");
       hint.className = "context-hint";
       hint.textContent = keyframeArm
@@ -6850,7 +6891,7 @@ function buildEditContext() {
       }
       return;
     }
-    if (currentBrush === MARQUEE_KEY) {
+    if (toolIs("marquee")) {
       const hint = document.createElement("div");
       hint.className = "context-hint";
       hint.textContent = activeLayer()?.kind === "raster"
@@ -9208,7 +9249,7 @@ function buildLayers() {
 
   // Rulers are layer-bound: switching layers can swap which ruler applies,
   // so keep the perspective inspector in sync.
-  if (currentBrush === PERSPECTIVE_KEY) buildPerspectiveInspector();
+  if (toolIs("perspective")) buildPerspectiveInspector();
   refreshTimelinePanelActionsBar();
 }
 
@@ -9785,11 +9826,11 @@ function buildInspector() {
         if (shape !== "custom") pendingSubPanelShape = shape;
       });
     }
-  } else if (currentBrush === SUBPANEL_KEY) {
+  } else if (toolIs("subpanel")) {
     appendSubPanelToolInspector(subPanelHost);
-  } else if (currentBrush === CUT_SUBPANEL_KEY) {
+  } else if (toolIs("cut-subpanel")) {
     appendCutSubPanelToolInspector(subPanelHost);
-  } else if (currentBrush === BALLOON_KEY) {
+  } else if (toolIs("balloon")) {
     appendBalloonToolInspector(balloonHost);
   }
 
@@ -12432,20 +12473,20 @@ function commandList(): Command[] {
     { id: "help-about", label: "About Wigo Studio", group: "Help", run: openAboutDialog },
     { id: "marquee-rect", label: "Marquee: Rectangle", group: "Edit", run: () => {
       marqueeToolKind = "rect";
-      currentBrush = MARQUEE_KEY;
-      rememberRecentTool(MARQUEE_KEY);
+      activateEditorTool("marquee");
+      rememberRecentTool(activeTool);
       buildBrushBar();
     } },
     { id: "marquee-ellipse", label: "Marquee: Ellipse", group: "Edit", run: () => {
       marqueeToolKind = "ellipse";
-      currentBrush = MARQUEE_KEY;
-      rememberRecentTool(MARQUEE_KEY);
+      activateEditorTool("marquee");
+      rememberRecentTool(activeTool);
       buildBrushBar();
     } },
     { id: "marquee-lasso", label: "Marquee: Lasso", group: "Edit", run: () => {
       marqueeToolKind = "lasso";
-      currentBrush = MARQUEE_KEY;
-      rememberRecentTool(MARQUEE_KEY);
+      activateEditorTool("marquee");
+      rememberRecentTool(activeTool);
       buildBrushBar();
     } },
     { id: "selection-extract", label: "Extract Selection", group: "Edit",
