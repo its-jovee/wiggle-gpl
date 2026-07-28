@@ -80,6 +80,7 @@ import { easeProgress } from "./core/anim";
 import { timelineScrollAfterRebuild } from "./core/timelineScroll";
 import {
   PEN_STARTUP_FALLBACK_PRESSURE,
+  PointerDeviceTracker,
   backfillLeadingPressures,
   readPointerPressure,
   simplifyStroke,
@@ -417,7 +418,8 @@ let exportCancelled = false;
  * reading arrives.
  */
 function notePenPointerActivity(e: PointerEvent) {
-  if (e.pointerType === "pen") lastPenActivityMs = performance.now();
+  pointerDevices.observePen(e);
+  if (pointerDevices.isPenLike(e)) lastPenActivityMs = performance.now();
 }
 
 function markStylusPressureInterrupt() {
@@ -437,11 +439,14 @@ function clearStylusPressureRecovery() {
 function pressureForNewStroke(e: PointerEvent): number {
   notePenPointerActivity(e);
   const sample = readPointerPressure(e, pressureEnabled, {
-    recovery: stylusPressureRecoveryActive(),
+    recovery: pointerDevices.shouldRecoverPressure(
+      e,
+      stylusPressureRecoveryActive() || penContactContinuityActive()
+    ),
     fallbackPressure: lastRealPenPressure,
   });
   if (sample.real) {
-    if (e.pointerType === "pen") {
+    if (pointerDevices.isPenLike(e)) {
       lastRealPenPressure = sample.pressure;
       clearStylusPressureRecovery();
     }
@@ -457,7 +462,10 @@ function pressureForNewStroke(e: PointerEvent): number {
 function pressureForLiveStroke(e: PointerEvent): number {
   notePenPointerActivity(e);
   const sample = readPointerPressure(e, pressureEnabled, {
-    recovery: stylusPressureRecoveryActive(),
+    recovery: pointerDevices.shouldRecoverPressure(
+      e,
+      stylusPressureRecoveryActive() || penContactContinuityActive()
+    ),
     fallbackPressure: lastRealPenPressure,
   });
   if (sample.real) {
@@ -468,7 +476,7 @@ function pressureForLiveStroke(e: PointerEvent): number {
         sample.pressure
       );
     }
-    if (e.pointerType === "pen") {
+    if (pointerDevices.isPenLike(e)) {
       lastRealPenPressure = sample.pressure;
       clearStylusPressureRecovery();
     }
@@ -1343,9 +1351,10 @@ function releaseCanvasPointerCapture(pointerId: number | null) {
   } catch { /* already released / unsupported */ }
 }
 
-function cancelLiveInteractionsForUndo() {
+function cancelLiveInteractionsForUndo(): boolean {
   markStylusPressureInterrupt();
-  if (drawing) {
+  const cancelledLiveStroke = drawing || !!liveStroke || !!liveRasterStroke;
+  if (cancelledLiveStroke) {
     if (liveRasterStroke) rollbackLiveRasterStroke();
     if (drawingPointerId != null) suppressStrokeUntilPointerUp = drawingPointerId;
     releaseCanvasPointerCapture(drawingPointerId);
@@ -1370,6 +1379,7 @@ function cancelLiveInteractionsForUndo() {
   transformSnapshots = null;
   keyframeArm = null;
   scaleToolDrag = null; // snapshots reference replaced Layer objects
+  return cancelledLiveStroke;
 }
 
 function panelTimelineSignature(panel: Panel): string {
@@ -1408,7 +1418,17 @@ function performUndoRedo(isRedo: boolean) {
 }
 
 async function performUndoRedoNow(isRedo: boolean) {
-  cancelLiveInteractionsForUndo();
+  const cancelledLiveStroke = cancelLiveInteractionsForUndo();
+  // A live raster stroke has already changed visible pixels but has not entered
+  // history yet. Rolling it back and then advancing history would make one
+  // Ctrl/Cmd+Z remove two strokes. The first undo cancels the live stroke; a
+  // second undo reaches the previous committed edit.
+  if (!isRedo && cancelledLiveStroke) {
+    setStatus("Undo");
+    updateUndoRedoButtons();
+    requestLoopFrame();
+    return;
+  }
   const prepared = isRedo ? history.prepareRedo(project) : history.prepareUndo(project);
   if (!prepared) { setStatus(isRedo ? "Nothing to redo" : "Nothing to undo"); return; }
 
@@ -2214,12 +2234,19 @@ let liveStrokeSyntheticPressureCount = 0;
 /** Last positive pen pressure — reused when the tablet briefly reports 0 / demotes
  *  the stylus to mouse after wheel or keyboard interrupts. */
 let lastRealPenPressure = PEN_STARTUP_FALLBACK_PRESSURE;
+const pointerDevices = new PointerDeviceTracker();
 /** Most recent pen pointer activity (including hover). Arms recovery after interrupts. */
 let lastPenActivityMs = 0;
 /** Until this timestamp, mouse/default-pressure samples are treated as synthetic pen. */
 let stylusPressureRecoveryUntil = 0;
 const STYLUS_RECOVERY_ARM_MS = 8000;
 const STYLUS_RECOVERY_HOLD_MS = 4000;
+/** Pen hover normally precedes contact by only a few milliseconds. Preserve
+ * that continuity if Chromium changes both the pointer label and pointer id. */
+const PEN_CONTACT_CONTINUITY_MS = 350;
+function penContactContinuityActive(): boolean {
+  return performance.now() - lastPenActivityMs < PEN_CONTACT_CONTINUITY_MS;
+}
 /** After undo cancels a live pen stroke, ignore further paint until that
  *  pointer lifts — otherwise mid-air residual moves feel like a dead brush. */
 let suppressStrokeUntilPointerUp: number | null = null;
@@ -3786,10 +3813,21 @@ function canvasPos(e: PointerEvent | MouseEvent) {
 }
 
 function shouldStartViewportPan(e: PointerEvent) {
-  return spacePanDown || e.button === 1 || (e.buttons & 4) !== 0;
+  if (spacePanDown || e.button === 1 || (e.buttons & 4) !== 0) return true;
+  // Hybrid pen + mouse workflow: with a paint brush active, a separate mouse
+  // left-drag navigates instead of leaving an accidental dab/history entry.
+  // Canvas tools (select, marquee, fill, text, etc.) still accept mouse clicks.
+  return e.button === 0
+    && !TOOL_KEYS.has(currentBrush)
+    && pointerDevices.isDistinctMouse(e)
+    && !penContactContinuityActive();
 }
 
 function beginViewportPan(e: PointerEvent) {
+  if (e.pointerType === "mouse") {
+    pointerDevices.observeMouse(e);
+    markStylusPressureInterrupt();
+  }
   panDrag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: viewport.tx, ty: viewport.ty };
   stageArea.classList.add("panning");
   try { canvas.setPointerCapture(e.pointerId); } catch {}
@@ -3828,6 +3866,19 @@ function finishLiveStrokeSmoothing() {
   if (!liveSmoothingSession) return;
   appendSmoothedStrokeSamples(finishStrokeSmoothingSession(liveSmoothingSession));
 }
+
+// Clicking editor chrome with the mouse is the most common device switch. Arm
+// pressure recovery before the next canvas contact, while remembering this
+// particular stream as the real mouse so it remains full-pressure if the user
+// intentionally paints with it.
+document.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "pen") {
+    notePenPointerActivity(e);
+  } else if (e.pointerType === "mouse" && e.target !== canvas) {
+    pointerDevices.observeMouse(e);
+    markStylusPressureInterrupt();
+  }
+}, true);
 
 canvas.addEventListener("pointerdown", (e) => {
   if (playing) return;

@@ -82,6 +82,88 @@ export type PointerPressureInput = {
   tiltY?: number;
 };
 
+export type PointerIdentityInput = {
+  pointerType: string;
+  pointerId: number;
+  /** Chromium 128+ device identity. Zero means the browser did not expose it. */
+  persistentDeviceId?: number;
+};
+
+/**
+ * Remembers which PointerEvent streams belong to the pen and mouse. Some
+ * tablet/Chromium combinations temporarily report the pen as `pointerType:
+ * "mouse"` after the user switches devices. Pointer ids are the fallback;
+ * persistentDeviceId makes the distinction durable when the browser exposes
+ * it.
+ */
+export class PointerDeviceTracker {
+  private sawPen = false;
+  private readonly penPointerIds = new Set<number>();
+  private readonly penDeviceIds = new Set<number>();
+  private readonly mousePointerIds = new Set<number>();
+  private readonly mouseDeviceIds = new Set<number>();
+
+  private deviceId(e: PointerIdentityInput): number | null {
+    const id = e.persistentDeviceId ?? 0;
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  observePen(e: PointerIdentityInput): void {
+    if (e.pointerType !== "pen") return;
+    this.sawPen = true;
+    this.penPointerIds.add(e.pointerId);
+    this.mousePointerIds.delete(e.pointerId);
+    const deviceId = this.deviceId(e);
+    if (deviceId !== null) {
+      this.penDeviceIds.add(deviceId);
+      this.mouseDeviceIds.delete(deviceId);
+    }
+  }
+
+  /** Record a pointer used for an unambiguously mouse-like action: clicking
+   * editor chrome or panning the canvas. A stream already known as the pen is
+   * deliberately not reclassified when Chromium merely changes its label. */
+  observeMouse(e: PointerIdentityInput): void {
+    if (e.pointerType !== "mouse" || this.isPenLike(e)) return;
+    this.mousePointerIds.add(e.pointerId);
+    const deviceId = this.deviceId(e);
+    if (deviceId !== null) this.mouseDeviceIds.add(deviceId);
+  }
+
+  hasSeenPen(): boolean {
+    return this.sawPen;
+  }
+
+  isPenLike(e: PointerIdentityInput): boolean {
+    if (e.pointerType === "pen") return true;
+    const deviceId = this.deviceId(e);
+    return this.penPointerIds.has(e.pointerId)
+      || (deviceId !== null && this.penDeviceIds.has(deviceId));
+  }
+
+  isKnownMouse(e: PointerIdentityInput): boolean {
+    if (e.pointerType !== "mouse" || this.isPenLike(e)) return false;
+    const deviceId = this.deviceId(e);
+    return this.mousePointerIds.has(e.pointerId)
+      || (deviceId !== null && this.mouseDeviceIds.has(deviceId));
+  }
+
+  /** A mouse-labelled stream from a different device can navigate the canvas
+   * after a pen has been observed. The caller still applies a short hover-to-
+   * contact grace period so a pen whose id changes is not mistaken for it. */
+  isDistinctMouse(e: PointerIdentityInput): boolean {
+    return this.sawPen && e.pointerType === "mouse" && !this.isPenLike(e);
+  }
+
+  /** Known mouse streams retain normal full-size mouse drawing. Unknown or
+   * pen-owned mouse-labelled streams use stylus recovery while it is armed. */
+  shouldRecoverPressure(e: PointerIdentityInput, recoveryArmed: boolean): boolean {
+    if (e.pointerType !== "mouse") return recoveryArmed;
+    if (this.isPenLike(e)) return true;
+    return recoveryArmed && !this.isKnownMouse(e);
+  }
+}
+
 export type PressureSample = {
   pressure: number;
   real: boolean;

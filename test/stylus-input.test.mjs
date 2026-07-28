@@ -131,6 +131,37 @@ test("leading backfill clamps count to the pressures array length", () => {
   assert.deepEqual(pressures, [0.9, 0.9]);
 });
 
+test("pointer tracker keeps a temporarily mouse-labelled pen attached to the pen", () => {
+  const tracker = new input.PointerDeviceTracker();
+  tracker.observePen({ pointerType: "pen", pointerId: 7, persistentDeviceId: 42 });
+
+  const demoted = { pointerType: "mouse", pointerId: 7, persistentDeviceId: 42 };
+  assert.equal(tracker.isPenLike(demoted), true);
+  assert.equal(tracker.isDistinctMouse(demoted), false);
+  assert.equal(tracker.shouldRecoverPressure(demoted, false), true);
+});
+
+test("pointer tracker distinguishes a mouse used alongside a pen", () => {
+  const tracker = new input.PointerDeviceTracker();
+  tracker.observePen({ pointerType: "pen", pointerId: 7, persistentDeviceId: 42 });
+  const mouse = { pointerType: "mouse", pointerId: 1, persistentDeviceId: 9 };
+  tracker.observeMouse(mouse);
+
+  assert.equal(tracker.hasSeenPen(), true);
+  assert.equal(tracker.isKnownMouse(mouse), true);
+  assert.equal(tracker.isDistinctMouse(mouse), true);
+  assert.equal(tracker.shouldRecoverPressure(mouse, true), false);
+});
+
+test("pointer tracker does not let a mouse observation steal a known pen id", () => {
+  const tracker = new input.PointerDeviceTracker();
+  tracker.observePen({ pointerType: "pen", pointerId: 3 });
+  tracker.observeMouse({ pointerType: "mouse", pointerId: 3 });
+
+  assert.equal(tracker.isPenLike({ pointerType: "mouse", pointerId: 3 }), true);
+  assert.equal(tracker.isKnownMouse({ pointerType: "mouse", pointerId: 3 }), false);
+});
+
 test("stroke simplification preserves pressure-only shape changes", () => {
   const stroke = {
     points: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 10, y: 0 }],
