@@ -46,11 +46,11 @@
     "vite": "^8.1.5"
   },
   "dependencies": {
-    "@ffmpeg/core": "0.12.6",
+    "@ffmpeg/core": "0.12.10",
     "@ffmpeg/ffmpeg": "0.12.15",
     "@ffmpeg/util": "0.12.2",
     "electron-updater": "^6.8.9",
-    "reicon": "^1.1.103"
+    "reicon": "^1.2.1"
   },
   "build": {
     "appId": "com.wigglegpl.app",
